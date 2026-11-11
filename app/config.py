@@ -22,6 +22,6 @@ class Settings(BaseSettings):
     oauth_state_secret: str = ""
     token_public_key: str = ""
     token_key_version: int = 1
-    post_connect_url: str = "/"
+    post_connect_url: str = "/app"
     cookie_secure: bool = True
     oauth_start_rate_limit: int = 20  # per client IP and hour

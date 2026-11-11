@@ -13,9 +13,11 @@ Las dos sesiones trabajan en la **misma carpeta y la misma rama** (`main`). Cada
 
 ## Cómo encajan
 
-- La web es una aplicación estática (React 18, Vite, TypeScript estricto) en `web/`.
+- La web vive en `web/` y tiene dos partes, servidas por el mismo nginx:
+  - **Sitio público** (inicio, `/privacidad/`, `/condiciones-de-uso/`): HTML estático generado por `web/build.py` a partir de `web/src` y `docs/legal`. No se rehace en React.
+  - **Aplicación** (`/app`): React 18, Vite y TypeScript estricto, compilada con base `/app/`. Es la única parte con sesión.
 - En producción, un contenedor `web` con nginx sirve los estáticos y redirige `/api/` a la API. Mismo origen: sin CORS.
-- La interfaz entrega `web/Dockerfile` (compilación + nginx sin privilegios, escuchando en el 8080) y `web/nginx.conf` con `location /api/ { proxy_pass http://api:8000; }`. El backend añade el servicio `web` a `docker-compose.yml`.
+- La interfaz entrega `web/Dockerfile` (compila las dos partes; nginx sin privilegios, escuchando en el 8080) y `web/nginx.conf` con `location /api/ { proxy_pass http://api:8000; }`. El respaldo a `index.html` se aplica **solo** a `/app`; las páginas legales y el inicio se sirven como archivos. El backend añade el servicio `web` a `docker-compose.yml`.
 - En desarrollo, el servidor de Vite redirige `/api` a `http://localhost:8000`.
 - Sin Google real: con `FICHAITOR_FAKE_GOOGLE=true` y `FICHAITOR_FAKE_PLACES=true` todo el recorrido funciona con datos de ejemplo.
 
@@ -23,9 +25,9 @@ Las dos sesiones trabajan en la **misma carpeta y la misma rama** (`main`). Cada
 
 - Prefijo `/api/v1`. JSON en UTF-8.
 - Errores: `{"detail": "texto en español listo para mostrar"}` con el código HTTP correspondiente. En los 422 de validación automática, `detail` puede ser una lista: muestra un mensaje genérico.
-- Sesión: cookie `fichaitor_session`, HttpOnly. La web no la lee ni la escribe; solo envía las peticiones con `credentials: "same-origin"`.
-- Toda petición que cambie algo (`POST`, `PATCH`, `DELETE`) con sesión lleva la cabecera `X-Requested-With: fichaitor`. Sin ella, la API responde 403.
-- 401 significa "sin sesión": la web lleva a la pantalla de conectar.
+- Sesión: cookie `fichaitor_session`, HttpOnly, `SameSite=Lax`, `Path=/`, 30 días. La web no la lee ni la escribe; solo envía las peticiones con `credentials: "same-origin"`.
+- Toda petición que cambie algo (`POST`, `PATCH`, `DELETE`) con sesión lleva la cabecera `X-Requested-With: fichaitor`. Sin ella, la API responde 403, haya sesión o no: la cabecera se comprueba antes que la sesión.
+- 401 significa "sin sesión" (no hay cookie, o la sesión ha caducado o se ha cerrado): la web lleva a la pantalla de conectar.
 
 ## Rutas públicas (ya existen)
 
@@ -69,7 +71,7 @@ Respuesta 200:
   "channel": "whatsapp",
   "contact": "600 11 22 33",
   "consent": true,
-  "consent_version": "2026-11-v1",
+  "consent_version": "waitlist-2026-11-11",
   "place_id": "ChIJ...",
   "business_name": "Bar La Parra",
   "score": 68,
@@ -77,7 +79,7 @@ Respuesta 200:
 }
 ```
 
-`channel`: `whatsapp` o `email`. `consent` debe ser `true`. `consent_version` es el identificador del texto legal mostrado; lo define la sesión de interfaz. Respuesta 201 `{"status": "ok"}`. Errores: 422 con mensaje, 429, 503.
+`channel`: `whatsapp` o `email`. `consent` debe ser `true`. `consent_version` es el identificador del texto legal mostrado. El vigente es `waitlist-2026-11-11`; el texto y su historial están en `docs/legal/consentimiento-lista-espera.md`. Respuesta 201 `{"status": "ok"}`. Errores: 422 con mensaje, 429, 503.
 
 ## Conexión con Google (ya existe)
 
@@ -94,9 +96,11 @@ Al terminar, Google devuelve al usuario a `/app` con uno de estos parámetros:
 | `/app?google=sin_permiso` | No marcó el permiso de la ficha. Explicar y ofrecer reintentar |
 | `/app?google=error` | Fallo. Ofrecer reintentar |
 
-Con `google=ok` la API ya ha puesto la cookie de sesión.
+Con `google=ok` la API ya ha puesto la cookie de sesión. La cuenta es la identidad de Google: no hay registro ni contraseña, y volver a conectar con la misma cuenta de Google entra en la misma cuenta de Fichaitor.
 
-## Rutas con sesión (en construcción en el backend)
+Al volver a conectar, las fichas se actualizan con lo que Google lista en ese momento. Una ficha conserva su `id` entre conexiones. Si Google deja de listar una ficha, desaparece de `locations`; si era la elegida, `selected_location_id` vuelve a `null`. Con `fichas=pendiente` se conservan las fichas que la cuenta ya tuviera.
+
+## Rutas con sesión
 
 ### `GET /api/v1/me`
 
@@ -110,7 +114,10 @@ Con `google=ok` la API ya ha puesto la cookie de sesión.
 }
 ```
 
-401 si no hay sesión.
+- `locations` viene ordenado por `title`. Puede ser una lista vacía.
+- `id`: `loc_` seguido de letras y números. Es propio de cada cuenta: no sirve en otra.
+- `place_id` puede ser `null`: Google no siempre lo da (fichas sin verificar o sin ubicación en el mapa).
+- 401 si no hay sesión.
 
 ### `POST /api/v1/me/location`
 
@@ -118,15 +125,29 @@ Con `google=ok` la API ya ha puesto la cookie de sesión.
 { "location_id": "loc_3f2a" }
 ```
 
-Devuelve el mismo cuerpo que `GET /me`. 404 si la ficha no es de esa cuenta.
+Devuelve el mismo cuerpo que `GET /me`, ya con `selected_location_id`. Se puede llamar otra vez para cambiar de ficha.
+
+Errores: 401, 403 (falta la cabecera), 404 (la ficha no es de esa cuenta o no existe; la respuesta es la misma en los dos casos), 422.
 
 ### `GET /api/v1/me/diagnosis`
 
-Diagnóstico de la ficha elegida, con la misma forma que el diagnóstico público. 409 si aún no se ha elegido ficha. Si la ficha no tiene `place_id`, 404 con mensaje.
+Diagnóstico de la ficha elegida, con la misma forma que el diagnóstico público.
+
+La API busca la ficha por su `place_id`. Si la ficha no tiene `place_id`, o Google ya no lo reconoce, la busca por su título.
+
+Errores:
+
+| Código | Cuándo |
+|---|---|
+| 401 | Sin sesión |
+| 409 | Aún no se ha elegido ficha. Lleva a la lista de fichas |
+| 404 | No se ha encontrado la ficha en Google Maps ni por `place_id` ni por título. `detail` trae el mensaje |
+| 429 | Demasiados diagnósticos nuevos de esa cuenta. Los repetidos salen de la caché y no cuentan |
+| 503 | Google no responde |
 
 ### `POST /api/v1/auth/logout`
 
-204 y borra la cookie.
+204 sin cuerpo. Cierra la sesión en el servidor y borra la cookie. Lleva la cabecera `X-Requested-With: fichaitor`; sin ella, 403. Responde 204 también si no había sesión.
 
 ## Pantallas mínimas para tener algo visible
 

@@ -1,5 +1,6 @@
 """Fake Google OAuth for tests and local development."""
 
+from app.adapters.places.fake import DEMO
 from app.ports.google_oauth import (
     SCOPES,
     GoogleOAuthError,
@@ -21,15 +22,15 @@ class FakeGoogleOAuth:
     ) -> None:
         self._refresh_token = refresh_token
         self._scopes = scopes
-        self._locations = (
+        # Same place as the fake Places gateway, so the whole journey works without Google.
+        self.profile_locations = (
             locations
             if locations is not None
-            else [
-                ProfileLocation("accounts/1", "locations/1", "Bar La Parra (ejemplo)", "p1", True)
-            ]
+            else [ProfileLocation("accounts/1", "locations/1", DEMO.name, DEMO.place_id, True)]
         )
+        self.identity_value = Identity(sub="google-sub-1", email="dueno@example.com")
         self._fail_exchange = fail_exchange
-        self._fail_locations = fail_locations
+        self.fail_locations = fail_locations
         self.exchanged: list[str] = []
 
     def authorization_url(self, state: str) -> str:
@@ -42,9 +43,9 @@ class FakeGoogleOAuth:
         return TokenSet("fake-access-token", self._refresh_token, self._scopes)
 
     async def identity(self, access_token: str) -> Identity:
-        return Identity(sub="google-sub-1", email="dueno@example.com")
+        return self.identity_value
 
     async def locations(self, access_token: str) -> list[ProfileLocation]:
-        if self._fail_locations:
+        if self.fail_locations:
             raise GoogleOAuthError("fallo simulado")
-        return self._locations
+        return self.profile_locations

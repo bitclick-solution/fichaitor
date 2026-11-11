@@ -1,6 +1,7 @@
 """Google Places API (New) adapter. Read-only, public data."""
 
 from datetime import date
+from urllib.parse import quote
 
 import httpx
 
@@ -8,6 +9,7 @@ from app.domain.diagnosis import PlaceSnapshot
 from app.ports.places import PlacesUnavailable
 
 SEARCH_URL = "https://places.googleapis.com/v1/places:searchText"
+DETAILS_URL = "https://places.googleapis.com/v1/places/{place_id}"
 SERVICE_FLAGS = (
     "delivery",
     "takeout",
@@ -37,6 +39,7 @@ FIELDS = (
     *SERVICE_FLAGS,
 )
 FIELD_MASK = ",".join(f"places.{f}" for f in FIELDS)
+DETAILS_FIELD_MASK = ",".join(FIELDS)
 
 
 def to_snapshot(raw: dict) -> PlaceSnapshot:
@@ -88,3 +91,19 @@ class GooglePlaces:
             raise PlacesUnavailable(f"Places respondió {resp.status_code}")
         places = resp.json().get("places", [])
         return to_snapshot(places[0]) if places else None
+
+    async def get(self, place_id: str) -> PlaceSnapshot | None:
+        try:
+            resp = await self._client.get(
+                DETAILS_URL.format(place_id=quote(place_id, safe="")),
+                headers={"X-Goog-Api-Key": self._api_key, "X-Goog-FieldMask": DETAILS_FIELD_MASK},
+                params={"languageCode": "es", "regionCode": "ES"},
+            )
+        except httpx.HTTPError as exc:
+            raise PlacesUnavailable(str(exc)) from exc
+        # 404: unknown or retired identifier. 400: not a valid identifier at all.
+        if resp.status_code in (400, 404):
+            return None
+        if resp.status_code != 200:
+            raise PlacesUnavailable(f"Places respondió {resp.status_code}")
+        return to_snapshot(resp.json())

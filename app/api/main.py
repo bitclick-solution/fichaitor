@@ -1,4 +1,6 @@
 import logging
+import time
+from collections.abc import Callable
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, HTTPException, Request
@@ -10,7 +12,9 @@ from app.adapters.places.fake import FakePlaces
 from app.adapters.places.google import GooglePlaces
 from app.adapters.store.memory import MemoryStore
 from app.adapters.store.postgres import PostgresStore
+from app.api.diagnosis_out import DiagnosisResponse, to_response
 from app.api.google_oauth import build_router as build_google_router
+from app.api.me import build_router as build_me_router
 from app.api.waitlist import SOURCE_PATTERN, build_router
 from app.application.diagnosis_service import DiagnosisService, RateLimited
 from app.application.rate_limit import SlidingWindowLimiter
@@ -27,30 +31,6 @@ class DiagnosisRequest(BaseModel):
     source: str | None = Field(default=None, pattern=SOURCE_PATTERN)
 
 
-class FindingOut(BaseModel):
-    code: str
-    title: str
-    detail: str
-    impact: str
-
-
-class LockedCheckOut(BaseModel):
-    code: str
-    title: str
-
-
-class DiagnosisResponse(BaseModel):
-    place_id: str
-    name: str
-    address: str
-    category: str
-    score: int
-    label: str
-    findings: list[FindingOut]
-    locked_checks: list[LockedCheckOut]
-    maps_url: str
-
-
 def _client_ip(request: Request, trust_proxy: bool) -> str:
     if trust_proxy:
         forwarded = request.headers.get("x-forwarded-for", "")
@@ -64,6 +44,7 @@ def create_app(
     places: PlacesGateway | None = None,
     store: Store | None = None,
     google: GoogleOAuth | None = None,
+    clock: Callable[[], float] = time.time,
 ) -> FastAPI:
     settings = settings or Settings()
     if google is None:
@@ -157,8 +138,16 @@ def create_app(
                 cookie_secure=settings.cookie_secure,
                 limiter=SlidingWindowLimiter(settings.oauth_start_rate_limit, 3600),
                 client_ip=client_ip,
+                clock=clock,
             )
         )
+
+    # Always present: without a session they answer 401, which the web reads as "connect".
+    app.include_router(
+        build_me_router(
+            store=store, diagnosis=service, cookie_secure=settings.cookie_secure, clock=clock
+        )
+    )
 
     @app.get("/healthz")
     async def healthz() -> dict[str, str]:
@@ -183,21 +172,6 @@ def create_app(
                 404, "No encontramos ese negocio. Prueba con el nombre y la localidad."
             )
         await track("diagnosis", body.source, result.place_id, result.score)
-        return DiagnosisResponse(
-            place_id=result.place_id,
-            name=result.name,
-            address=result.address,
-            category=result.category,
-            score=result.score,
-            label=result.label,
-            findings=[
-                FindingOut(code=f.code, title=f.title, detail=f.detail, impact=f.impact.value)
-                for f in result.findings
-            ],
-            locked_checks=[
-                LockedCheckOut(code=c.code, title=c.title) for c in result.locked_checks
-            ],
-            maps_url=result.maps_url,
-        )
+        return to_response(result)
 
     return app

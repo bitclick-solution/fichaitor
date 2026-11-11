@@ -36,7 +36,34 @@ Puesta en marcha de la conexión:
 3. Da de alta la URI de redirección en el cliente OAuth de Google, exactamente igual que en el `.env`.
 4. Reinicia la API y abre `http://localhost:8000/api/v1/google/oauth/start`.
 
-Falta: la página web, los textos de privacidad y consentimiento, cuentas y sesiones, y las pruebas contra Google real.
+Cuarto bloque: **cuentas y sesiones**. La cuenta es la identidad de Google: no hay contraseñas. Al conectar, la API crea o recupera la cuenta, guarda sus fichas, abre una sesión de 30 días y pone la cookie `fichaitor_session` (HttpOnly, `SameSite=Lax`). En la base solo se guarda el SHA-256 del token de la cookie.
+
+| Ruta | Qué hace |
+|---|---|
+| `GET /api/v1/me` | Correo, fichas de la cuenta y ficha elegida |
+| `POST /api/v1/me/location` | Elige una ficha. 404 si no es de esa cuenta |
+| `GET /api/v1/me/diagnosis` | Diagnóstico de la ficha elegida, buscada por su `place_id` |
+| `POST /api/v1/auth/logout` | Cierra la sesión y borra la cookie |
+
+- Sin sesión, o con la sesión caducada o cerrada, responden 401.
+- Las rutas que cambian algo exigen la cabecera `X-Requested-With: fichaitor`. Sin ella, 403.
+- Cerrar sesión marca la sesión como revocada; no borra la fila.
+- El usuario de la API lee y escribe en `account`, `location` y `session` solo las columnas que usan estas rutas, y no puede borrar. Sigue sin poder leer contactos ni tokens de Google.
+- El contrato completo con la web está en [docs/contrato-web-api.md](docs/contrato-web-api.md).
+
+Tras actualizar el código, vuelve a aplicar el esquema (se puede aplicar las veces que haga falta):
+
+```bash
+docker compose exec -T db psql -q -U fichaitor -d fichaitor -v ON_ERROR_STOP=1 < db/schema.sql
+```
+
+Pruebas de integración contra PostgreSQL (sin estas variables se omiten):
+
+```bash
+FICHAITOR_TEST_DATABASE_URL=postgresql://fichaitor_api_dev:dev@127.0.0.1:5433/fichaitor FICHAITOR_TEST_OWNER_URL=postgresql://fichaitor:dev@127.0.0.1:5433/fichaitor uv run pytest -q
+```
+
+Falta: el worker, borrar la cuenta desde el panel, la limpieza periódica de sesiones caducadas y las pruebas contra Google real.
 
 ### Ejecutarlo
 

@@ -28,6 +28,7 @@ class FakePlaces:
         self._places = places if places is not None else {"demo": DEMO}
         self._fail = fail
         self.calls = 0
+        self.id_calls: list[str] = []
 
     async def find(self, query: str) -> PlaceSnapshot | None:
         self.calls += 1
@@ -38,3 +39,9 @@ class FakePlaces:
             if key in q:
                 return place
         return None
+
+    async def get(self, place_id: str) -> PlaceSnapshot | None:
+        self.id_calls.append(place_id)
+        if self._fail:
+            raise PlacesUnavailable("fallo simulado")
+        return next((p for p in self._places.values() if p.place_id == place_id), None)

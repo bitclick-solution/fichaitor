@@ -8,8 +8,10 @@ from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import RedirectResponse
 
 from app.adapters.crypto.sealed import seal
+from app.api.session import SESSION_COOKIE, set_session_cookie, utc
 from app.application.rate_limit import SlidingWindowLimiter
 from app.domain.oauth_state import InvalidState, make_state, verify_state
+from app.domain.session import SESSION_TTL_SECONDS, hash_token, new_token
 from app.ports.google_oauth import BUSINESS_SCOPE, GoogleOAuth, GoogleOAuthError
 from app.ports.store import GoogleConnection, Store
 
@@ -108,12 +110,30 @@ def build_router(
         except Exception as exc:  # tokens and emails must never reach the logs
             log.error("no se pudo guardar la conexión: %s", type(exc).__name__)
             return back("error")
+        # The account is the Google identity: connecting is also signing in.
+        token = new_token()
+        try:
+            now = clock()
+            account_id = await store.upsert_account(identity.sub, identity.email)
+            if locations is not None:  # not listed: keep whatever the account already had
+                await store.sync_locations(account_id, locations, utc(now))
+            previous = request.cookies.get(SESSION_COOKIE)
+            if previous:
+                await store.revoke_session(hash_token(previous), utc(now))
+            await store.create_session(
+                account_id, hash_token(token), utc(now), utc(now + SESSION_TTL_SECONDS)
+            )
+        except Exception as exc:  # tokens and emails must never reach the logs
+            log.error("no se pudo abrir la sesión: %s", type(exc).__name__)
+            return back("error")
         try:
             await store.record_event("connected")
         except Exception as exc:
             log.warning("evento de embudo no registrado: %s", type(exc).__name__)
         # "pendiente": connected, but Google did not let us list the profiles.
         # It does not mean the owner has none.
-        return back("ok", fichas="pendiente" if locations is None else len(locations))
+        resp = back("ok", fichas="pendiente" if locations is None else len(locations))
+        set_session_cookie(resp, token, cookie_secure)
+        return resp
 
     return router
