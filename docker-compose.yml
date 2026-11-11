@@ -29,6 +29,9 @@ services:
     environment:
       FICHAITOR_FAKE_PLACES: ${FICHAITOR_FAKE_PLACES:-true}
       FICHAITOR_DATABASE_URL: ${FICHAITOR_DATABASE_URL:-postgresql://fichaitor_api_dev:dev@db:5432/fichaitor}
+      # La API va detrás del nginx de `web`, que fija X-Forwarded-For. Sin esto todos los
+      # visitantes comparten la IP del contenedor web y, con ella, los límites por IP.
+      FICHAITOR_TRUST_PROXY_HEADERS: "true"
     depends_on:
       db:
         condition: service_healthy
