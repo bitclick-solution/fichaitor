@@ -1,0 +1,129 @@
+{
+  "version": 1,
+  "updated": "2026-11-11",
+  "about": "Fechas comerciales y temporadas, mantenidas a mano. Las fechas salen de una regla, no de una lista por año. Reglas: fixed (mes y día), nth_weekday (enésimo día de la semana de un mes; weekday 0 es lunes) y easter (Domingo de Pascua); offset_days suma o resta días. Los sectores son los de sectores.json.",
+  "events": [
+    {
+      "id": "winter_sales",
+      "name": "rebajas de invierno",
+      "type": "commercial",
+      "lead_days": 14,
+      "rule": { "kind": "fixed", "month": 1, "day": 7 },
+      "sectors": ["retail"],
+      "question": "Las rebajas de invierno suelen empezar el {date}. ¿Tienes rebajas o un horario distinto?",
+      "note": "Inicio habitual, el día después de Reyes. Desde 2012 cada comercio elige sus fechas: es una costumbre, no una norma."
+    },
+    {
+      "id": "valentines_day",
+      "name": "San Valentín",
+      "type": "commercial",
+      "lead_days": 14,
+      "rule": { "kind": "fixed", "month": 2, "day": 14 },
+      "sectors": ["hospitality", "retail", "beauty_health"],
+      "question": "Se acerca San Valentín ({date}). ¿Tienes algún menú, oferta u horario especial?"
+    },
+    {
+      "id": "fathers_day",
+      "name": "Día del Padre",
+      "type": "commercial",
+      "lead_days": 14,
+      "rule": { "kind": "fixed", "month": 3, "day": 19 },
+      "sectors": ["hospitality", "retail", "beauty_health"],
+      "question": "Se acerca el Día del Padre ({date}). ¿Tienes alguna oferta o un horario especial?",
+      "note": "En España es el 19 de marzo, San José. Es festivo solo en algunas comunidades y eso sale del archivo de festivos."
+    },
+    {
+      "id": "holy_week",
+      "name": "Semana Santa",
+      "type": "season",
+      "lead_days": 21,
+      "rule": { "kind": "easter", "offset_days": -7 },
+      "duration_days": 9,
+      "sectors": ["hospitality", "retail", "beauty_health", "professional_services", "other"],
+      "question": "Se acerca la Semana Santa (empieza el {date}). ¿Cambia tu horario esos días?",
+      "note": "Del Domingo de Ramos (Pascua menos 7 días) al Lunes de Pascua."
+    },
+    {
+      "id": "mothers_day",
+      "name": "Día de la Madre",
+      "type": "commercial",
+      "lead_days": 14,
+      "rule": { "kind": "nth_weekday", "month": 5, "weekday": 6, "n": 1 },
+      "sectors": ["hospitality", "retail", "beauty_health"],
+      "question": "Se acerca el Día de la Madre ({date}). ¿Tienes alguna oferta o un horario especial?",
+      "note": "Primer domingo de mayo en España."
+    },
+    {
+      "id": "summer_hours",
+      "name": "horario de verano",
+      "type": "season",
+      "lead_days": 21,
+      "rule": { "kind": "fixed", "month": 7, "day": 1 },
+      "sectors": ["hospitality", "retail", "beauty_health", "professional_services", "other"],
+      "question": "Se acerca el verano. ¿Cambias de horario o cierras por vacaciones a partir del {date}?",
+      "note": "Fecha de referencia: el 1 de julio, cuando suele empezar la jornada de verano. Es una convención."
+    },
+    {
+      "id": "summer_sales",
+      "name": "rebajas de verano",
+      "type": "commercial",
+      "lead_days": 14,
+      "rule": { "kind": "fixed", "month": 7, "day": 1 },
+      "sectors": ["retail"],
+      "question": "Las rebajas de verano suelen empezar el {date}. ¿Tienes rebajas o un horario distinto?",
+      "note": "Inicio habitual. Desde 2012 cada comercio elige sus fechas."
+    },
+    {
+      "id": "back_to_school",
+      "name": "vuelta al cole",
+      "type": "season",
+      "lead_days": 21,
+      "rule": { "kind": "fixed", "month": 9, "day": 1 },
+      "sectors": ["retail", "beauty_health", "other"],
+      "question": "Se acerca la vuelta al cole (a partir del {date}). ¿Vuelves al horario habitual o tienes algo especial?",
+      "note": "Fecha de referencia: el 1 de septiembre. El curso empieza en días distintos según la comunidad, entre el 5 y el 12 de septiembre."
+    },
+    {
+      "id": "black_friday",
+      "name": "Black Friday",
+      "type": "commercial",
+      "lead_days": 14,
+      "rule": { "kind": "nth_weekday", "month": 11, "weekday": 3, "n": 4, "offset_days": 1 },
+      "sectors": ["retail", "beauty_health"],
+      "question": "Se acerca Black Friday ({date}). ¿Tienes alguna oferta especial o un horario distinto?",
+      "note": "El día siguiente al cuarto jueves de noviembre. Casi siempre es el cuarto viernes, salvo cuando noviembre empieza en viernes (2019, 2024, 2030), que es el quinto."
+    },
+    {
+      "id": "cyber_monday",
+      "name": "Cyber Monday",
+      "type": "commercial",
+      "lead_days": 14,
+      "rule": { "kind": "nth_weekday", "month": 11, "weekday": 3, "n": 4, "offset_days": 4 },
+      "sectors": ["retail"],
+      "question": "Se acerca Cyber Monday ({date}). ¿Tienes alguna oferta especial?",
+      "note": "El lunes siguiente a Black Friday. Puede caer en diciembre."
+    },
+    {
+      "id": "christmas",
+      "name": "Navidad",
+      "type": "season",
+      "lead_days": 21,
+      "rule": { "kind": "fixed", "month": 12, "day": 24 },
+      "duration_days": 2,
+      "sectors": ["hospitality", "retail", "beauty_health", "professional_services", "other"],
+      "question": "Se acerca la Navidad. ¿Qué horario tendrás en Nochebuena ({date}) y tienes algo especial?",
+      "note": "Nochebuena y Navidad. El festivo del 25 sale del archivo de festivos y se agrupa con esta fecha."
+    },
+    {
+      "id": "new_years_eve",
+      "name": "Nochevieja",
+      "type": "season",
+      "lead_days": 21,
+      "rule": { "kind": "fixed", "month": 12, "day": 31 },
+      "duration_days": 2,
+      "sectors": ["hospitality", "retail", "beauty_health", "professional_services", "other"],
+      "question": "Se acerca la Nochevieja ({date}). ¿Cambia tu horario o tienes algo especial?",
+      "note": "Nochevieja y Año Nuevo."
+    }
+  ]
+}

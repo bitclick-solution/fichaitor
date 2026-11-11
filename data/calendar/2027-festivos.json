@@ -1,0 +1,618 @@
+{
+  "year": 2027,
+  "coverage": {
+    "from": "2027-01-01",
+    "to": "2027-12-31"
+  },
+  "source": {
+    "title": "Resolución de 8 de octubre de 2026, de la Dirección General de Trabajo, por la que se publica relación de fiestas laborales para el año 2027.",
+    "reference": "BOE-A-2026-21254",
+    "published": "2026-10-13",
+    "url": "https://www.boe.es/diario_boe/txt.php?id=BOE-A-2026-21254",
+    "consulted": "2026-11-11",
+    "cross_checked_with": [
+      "https://fedratecalc.com/es/calendario-laboral-2027/",
+      "https://payfit.com/es/contenido-practico/calendario-laboral-2027/",
+      "https://www.garrigues.com/es_ES/noticia/publicado-boe-calendario-laboral-espana-2027"
+    ],
+    "xml": "https://www.boe.es/diario_boe/xml.php?id=BOE-A-2026-21254"
+  },
+  "regions": {
+    "AN": {
+      "name": "Andalucía",
+      "verified": true
+    },
+    "AR": {
+      "name": "Aragón",
+      "verified": true
+    },
+    "AS": {
+      "name": "Principado de Asturias",
+      "verified": true
+    },
+    "IB": {
+      "name": "Illes Balears",
+      "verified": true
+    },
+    "CN": {
+      "name": "Canarias",
+      "verified": true
+    },
+    "CB": {
+      "name": "Cantabria",
+      "verified": true
+    },
+    "CM": {
+      "name": "Castilla-La Mancha",
+      "verified": true
+    },
+    "CL": {
+      "name": "Castilla y León",
+      "verified": true
+    },
+    "CT": {
+      "name": "Cataluña",
+      "verified": true
+    },
+    "EX": {
+      "name": "Extremadura",
+      "verified": true
+    },
+    "GA": {
+      "name": "Galicia",
+      "verified": true
+    },
+    "MD": {
+      "name": "Comunidad de Madrid",
+      "verified": true
+    },
+    "MC": {
+      "name": "Región de Murcia",
+      "verified": true
+    },
+    "NC": {
+      "name": "Comunidad Foral de Navarra",
+      "verified": true
+    },
+    "PV": {
+      "name": "País Vasco",
+      "verified": true
+    },
+    "RI": {
+      "name": "La Rioja",
+      "verified": true
+    },
+    "VC": {
+      "name": "Comunitat Valenciana",
+      "verified": true
+    },
+    "CE": {
+      "name": "Ciudad de Ceuta",
+      "verified": true
+    },
+    "ML": {
+      "name": "Ciudad de Melilla",
+      "verified": true
+    }
+  },
+  "holidays": [
+    {
+      "date": "2027-01-01",
+      "name": "Año Nuevo",
+      "scope": "national",
+      "substitutable": false,
+      "boe_code": "*"
+    },
+    {
+      "date": "2027-01-06",
+      "name": "Epifanía del Señor",
+      "scope": "national",
+      "substitutable": true,
+      "boe_code": "**"
+    },
+    {
+      "date": "2027-03-01",
+      "name": "Día de Andalucía",
+      "scope": "AN",
+      "substitutable": false,
+      "boe_code": "***"
+    },
+    {
+      "date": "2027-03-01",
+      "name": "Día de les Illes Balears",
+      "scope": "IB",
+      "substitutable": false,
+      "boe_code": "***"
+    },
+    {
+      "date": "2027-03-10",
+      "name": "Fiesta del Eid Fitr",
+      "scope": "ML",
+      "substitutable": false,
+      "boe_code": "***"
+    },
+    {
+      "date": "2027-03-19",
+      "name": "San José",
+      "scope": "GA",
+      "substitutable": true,
+      "boe_code": "**"
+    },
+    {
+      "date": "2027-03-19",
+      "name": "San José",
+      "scope": "MD",
+      "substitutable": true,
+      "boe_code": "**"
+    },
+    {
+      "date": "2027-03-19",
+      "name": "San José",
+      "scope": "MC",
+      "substitutable": true,
+      "boe_code": "**"
+    },
+    {
+      "date": "2027-03-19",
+      "name": "San José",
+      "scope": "NC",
+      "substitutable": true,
+      "boe_code": "**"
+    },
+    {
+      "date": "2027-03-19",
+      "name": "San José",
+      "scope": "VC",
+      "substitutable": true,
+      "boe_code": "**"
+    },
+    {
+      "date": "2027-03-25",
+      "name": "Jueves Santo",
+      "scope": "AN",
+      "substitutable": true,
+      "boe_code": "**"
+    },
+    {
+      "date": "2027-03-25",
+      "name": "Jueves Santo",
+      "scope": "AR",
+      "substitutable": true,
+      "boe_code": "**"
+    },
+    {
+      "date": "2027-03-25",
+      "name": "Jueves Santo",
+      "scope": "AS",
+      "substitutable": true,
+      "boe_code": "**"
+    },
+    {
+      "date": "2027-03-25",
+      "name": "Jueves Santo",
+      "scope": "IB",
+      "substitutable": true,
+      "boe_code": "**"
+    },
+    {
+      "date": "2027-03-25",
+      "name": "Jueves Santo",
+      "scope": "CN",
+      "substitutable": true,
+      "boe_code": "**"
+    },
+    {
+      "date": "2027-03-25",
+      "name": "Jueves Santo",
+      "scope": "CB",
+      "substitutable": true,
+      "boe_code": "**"
+    },
+    {
+      "date": "2027-03-25",
+      "name": "Jueves Santo",
+      "scope": "CM",
+      "substitutable": true,
+      "boe_code": "**"
+    },
+    {
+      "date": "2027-03-25",
+      "name": "Jueves Santo",
+      "scope": "CL",
+      "substitutable": true,
+      "boe_code": "**"
+    },
+    {
+      "date": "2027-03-25",
+      "name": "Jueves Santo",
+      "scope": "EX",
+      "substitutable": true,
+      "boe_code": "**"
+    },
+    {
+      "date": "2027-03-25",
+      "name": "Jueves Santo",
+      "scope": "GA",
+      "substitutable": true,
+      "boe_code": "**"
+    },
+    {
+      "date": "2027-03-25",
+      "name": "Jueves Santo",
+      "scope": "MD",
+      "substitutable": true,
+      "boe_code": "**"
+    },
+    {
+      "date": "2027-03-25",
+      "name": "Jueves Santo",
+      "scope": "MC",
+      "substitutable": true,
+      "boe_code": "**"
+    },
+    {
+      "date": "2027-03-25",
+      "name": "Jueves Santo",
+      "scope": "NC",
+      "substitutable": true,
+      "boe_code": "**"
+    },
+    {
+      "date": "2027-03-25",
+      "name": "Jueves Santo",
+      "scope": "PV",
+      "substitutable": true,
+      "boe_code": "**"
+    },
+    {
+      "date": "2027-03-25",
+      "name": "Jueves Santo",
+      "scope": "RI",
+      "substitutable": true,
+      "boe_code": "**"
+    },
+    {
+      "date": "2027-03-25",
+      "name": "Jueves Santo",
+      "scope": "CE",
+      "substitutable": true,
+      "boe_code": "**"
+    },
+    {
+      "date": "2027-03-25",
+      "name": "Jueves Santo",
+      "scope": "ML",
+      "substitutable": true,
+      "boe_code": "**"
+    },
+    {
+      "date": "2027-03-26",
+      "name": "Viernes Santo",
+      "scope": "national",
+      "substitutable": false,
+      "boe_code": "*"
+    },
+    {
+      "date": "2027-03-29",
+      "name": "Lunes de Pascua",
+      "scope": "IB",
+      "substitutable": false,
+      "boe_code": "***"
+    },
+    {
+      "date": "2027-03-29",
+      "name": "Lunes de Pascua",
+      "scope": "CT",
+      "substitutable": false,
+      "boe_code": "***"
+    },
+    {
+      "date": "2027-03-29",
+      "name": "Lunes de Pascua",
+      "scope": "NC",
+      "substitutable": false,
+      "boe_code": "***"
+    },
+    {
+      "date": "2027-03-29",
+      "name": "Lunes de Pascua",
+      "scope": "PV",
+      "substitutable": false,
+      "boe_code": "***"
+    },
+    {
+      "date": "2027-03-29",
+      "name": "Lunes de Pascua",
+      "scope": "RI",
+      "substitutable": false,
+      "boe_code": "***"
+    },
+    {
+      "date": "2027-03-29",
+      "name": "Lunes de Pascua",
+      "scope": "VC",
+      "substitutable": false,
+      "boe_code": "***"
+    },
+    {
+      "date": "2027-04-23",
+      "name": "San Jorge/Día de Aragón",
+      "scope": "AR",
+      "substitutable": false,
+      "boe_code": "***"
+    },
+    {
+      "date": "2027-04-23",
+      "name": "Fiesta de Castilla y León",
+      "scope": "CL",
+      "substitutable": false,
+      "boe_code": "***"
+    },
+    {
+      "date": "2027-05-01",
+      "name": "Fiesta del Trabajo",
+      "scope": "national",
+      "substitutable": false,
+      "boe_code": "*"
+    },
+    {
+      "date": "2027-05-17",
+      "name": "Día de las Letras Gallegas",
+      "scope": "GA",
+      "substitutable": false,
+      "boe_code": "***"
+    },
+    {
+      "date": "2027-05-17",
+      "name": "Eidul Adha-Fiesta Sacrificio",
+      "scope": "CE",
+      "substitutable": false,
+      "boe_code": "***"
+    },
+    {
+      "date": "2027-05-17",
+      "name": "Fiesta Sacrificio-Aid Al Adha",
+      "scope": "ML",
+      "substitutable": false,
+      "boe_code": "***"
+    },
+    {
+      "date": "2027-05-27",
+      "name": "Corpus Christi",
+      "scope": "CM",
+      "substitutable": false,
+      "boe_code": "***"
+    },
+    {
+      "date": "2027-05-31",
+      "name": "Día de Castilla-La Mancha",
+      "scope": "CM",
+      "substitutable": false,
+      "boe_code": "***"
+    },
+    {
+      "date": "2027-06-09",
+      "name": "Día de la Región de Murcia",
+      "scope": "MC",
+      "substitutable": false,
+      "boe_code": "***"
+    },
+    {
+      "date": "2027-06-09",
+      "name": "Día de La Rioja",
+      "scope": "RI",
+      "substitutable": false,
+      "boe_code": "***"
+    },
+    {
+      "date": "2027-06-24",
+      "name": "Día de San Juan",
+      "scope": "CT",
+      "substitutable": false,
+      "boe_code": "***"
+    },
+    {
+      "date": "2027-07-28",
+      "name": "Día de las Instituciones de Cantabria",
+      "scope": "CB",
+      "substitutable": false,
+      "boe_code": "***"
+    },
+    {
+      "date": "2027-08-05",
+      "name": "Nuestra Señora de África",
+      "scope": "CE",
+      "substitutable": false,
+      "boe_code": "***"
+    },
+    {
+      "date": "2027-08-16",
+      "name": "Lunes siguiente a asunción de la Virgen",
+      "scope": "AN",
+      "substitutable": true,
+      "boe_code": "**"
+    },
+    {
+      "date": "2027-08-16",
+      "name": "Lunes siguiente a asunción de la Virgen",
+      "scope": "AR",
+      "substitutable": true,
+      "boe_code": "**"
+    },
+    {
+      "date": "2027-08-16",
+      "name": "Lunes siguiente a asunción de la Virgen",
+      "scope": "AS",
+      "substitutable": true,
+      "boe_code": "**"
+    },
+    {
+      "date": "2027-08-16",
+      "name": "Lunes siguiente a asunción de la Virgen",
+      "scope": "CN",
+      "substitutable": true,
+      "boe_code": "**"
+    },
+    {
+      "date": "2027-08-16",
+      "name": "Lunes siguiente a asunción de la Virgen",
+      "scope": "CL",
+      "substitutable": true,
+      "boe_code": "**"
+    },
+    {
+      "date": "2027-08-16",
+      "name": "Lunes siguiente a asunción de la Virgen",
+      "scope": "MD",
+      "substitutable": true,
+      "boe_code": "**"
+    },
+    {
+      "date": "2027-09-08",
+      "name": "Día de Asturias",
+      "scope": "AS",
+      "substitutable": false,
+      "boe_code": "***"
+    },
+    {
+      "date": "2027-09-08",
+      "name": "Día de Extremadura",
+      "scope": "EX",
+      "substitutable": false,
+      "boe_code": "***"
+    },
+    {
+      "date": "2027-09-11",
+      "name": "Fiesta Nacional de Cataluña",
+      "scope": "CT",
+      "substitutable": false,
+      "boe_code": "***"
+    },
+    {
+      "date": "2027-09-15",
+      "name": "La Bien Aparecida",
+      "scope": "CB",
+      "substitutable": false,
+      "boe_code": "***"
+    },
+    {
+      "date": "2027-10-07",
+      "name": "Aniversario 1er Gobierno Euskadi",
+      "scope": "PV",
+      "substitutable": false,
+      "boe_code": "***"
+    },
+    {
+      "date": "2027-10-09",
+      "name": "Día de la Comunitat Valenciana",
+      "scope": "VC",
+      "substitutable": false,
+      "boe_code": "***"
+    },
+    {
+      "date": "2027-10-11",
+      "name": "Sustitución 15 de agosto",
+      "scope": "EX",
+      "substitutable": false,
+      "boe_code": "***"
+    },
+    {
+      "date": "2027-10-12",
+      "name": "Fiesta Nacional de España",
+      "scope": "national",
+      "substitutable": false,
+      "boe_code": "*"
+    },
+    {
+      "date": "2027-11-01",
+      "name": "Todos los Santos",
+      "scope": "national",
+      "substitutable": false,
+      "boe_code": "*"
+    },
+    {
+      "date": "2027-12-06",
+      "name": "Día de la Constitución Española",
+      "scope": "national",
+      "substitutable": false,
+      "boe_code": "*"
+    },
+    {
+      "date": "2027-12-08",
+      "name": "Inmaculada Concepción",
+      "scope": "national",
+      "substitutable": false,
+      "boe_code": "*"
+    },
+    {
+      "date": "2027-12-25",
+      "name": "Natividad del Señor",
+      "scope": "national",
+      "substitutable": false,
+      "boe_code": "*"
+    }
+  ],
+  "subregional": [
+    {
+      "date": "2027-02-02",
+      "name": "Virgen de la Candelaria",
+      "scope": "CN",
+      "area": "Tenerife",
+      "replaces": null
+    },
+    {
+      "date": "2027-08-05",
+      "name": "Nuestra Señora de Las Nieves",
+      "scope": "CN",
+      "area": "La Palma",
+      "replaces": null
+    },
+    {
+      "date": "2027-09-08",
+      "name": "Nuestra Señora del Pino",
+      "scope": "CN",
+      "area": "Gran Canaria",
+      "replaces": null
+    },
+    {
+      "date": "2027-09-15",
+      "name": "Nuestra Señora de los Volcanes",
+      "scope": "CN",
+      "area": "Lanzarote y La Graciosa",
+      "replaces": null
+    },
+    {
+      "date": "2027-09-17",
+      "name": "Nuestra Señora de la Peña",
+      "scope": "CN",
+      "area": "Fuerteventura",
+      "replaces": null
+    },
+    {
+      "date": "2027-09-24",
+      "name": "Nuestra Señora de los Reyes",
+      "scope": "CN",
+      "area": "El Hierro",
+      "replaces": null
+    },
+    {
+      "date": "2027-10-04",
+      "name": "Nuestra Señora de Guadalupe",
+      "scope": "CN",
+      "area": "La Gomera",
+      "replaces": null
+    },
+    {
+      "date": "2027-06-17",
+      "name": "Fiesta de Arán",
+      "scope": "CT",
+      "area": "Arán",
+      "replaces": "2027-03-29"
+    }
+  ],
+  "notes": [
+    "1. En la Comunidad Autónoma de Canarias, el Decreto 115/2026, de 29 de junio, por el que se determina el calendario de fiestas laborales de la Comunidad Autónoma de Canarias para el año 2027 (BOC de 3 de julio de 2026) dispone que: «En las islas de El Hierro, Fuerteventura, Gran Canaria, La Gomera, La Palma, Lanzarote y La Graciosa, y Tenerife, las fiestas laborales serán, además, las siguientes: en El Hierro: el 24 de septiembre, festividad de Nuestra Señora de los Reyes; en Fuerteventura: el 17 de septiembre, festividad de Nuestra Señora de la Peña; en Gran Canaria: el 8 de septiembre, festividad de Nuestra Señora del Pino; en La Gomera: el 4 de octubre, festividad de Nuestra Señora de Guadalupe; en La Palma: el 5 de agosto, festividad de Nuestra Señora de Las Nieves; en Lanzarote y La Graciosa: el 15 de septiembre, festividad de Nuestra Señora de los Volcanes; en Tenerife: el 2 de febrero, festividad de la Virgen de la Candelaria».",
+    "2. En la Comunidad Autónoma de Cataluña, la Orden EMT/52/2026, de 25 de marzo, por la que se establece el calendario oficial de fiestas laborales en Cataluña para el año 2027 (DOGC de 1 de abril de 2026) dispone que: «En el territorio de Arán, la fiesta del día 29 de marzo (Pasqua Florida) queda sustituida por la de 17 de junio (Fiesta de Arán), jueves»."
+  ],
+  "verification_note": "Generado desde el XML oficial del BOE con boe_import y contrastado el 2026-11-11 con dos fuentes secundarias por comunidad. Una de ellas (payfit) atribuye el 5 de agosto a Melilla; el BOE lo asigna a Ceuta y es lo que figura aquí."
+}

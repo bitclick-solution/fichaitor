@@ -1,0 +1,211 @@
+{
+  "year": 2026,
+  "coverage": {
+    "from": "2026-11-11",
+    "to": "2026-12-31"
+  },
+  "source": {
+    "title": "Resolución de 17 de octubre de 2025, de la Dirección General de Trabajo, por la que se publica la relación de fiestas laborales para el año 2026.",
+    "reference": "BOE-A-2025-21667",
+    "published": "2025-10-28",
+    "url": "https://www.boe.es/diario_boe/txt.php?id=BOE-A-2025-21667",
+    "consulted": "2026-11-11",
+    "cross_checked_with": [
+      "https://teamsystem.es/magazine/calendario-laboral-2026/",
+      "https://www.sage.com/es-es/blog/calendario-laboral-festivos-comunes-en-toda-espana/"
+    ],
+    "xml": "https://www.boe.es/diario_boe/xml.php?id=BOE-A-2025-21667"
+  },
+  "regions": {
+    "AN": {
+      "name": "Andalucía",
+      "verified": true
+    },
+    "AR": {
+      "name": "Aragón",
+      "verified": true
+    },
+    "AS": {
+      "name": "Principado de Asturias",
+      "verified": true
+    },
+    "IB": {
+      "name": "Illes Balears",
+      "verified": true
+    },
+    "CN": {
+      "name": "Canarias",
+      "verified": true
+    },
+    "CB": {
+      "name": "Cantabria",
+      "verified": true
+    },
+    "CM": {
+      "name": "Castilla-La Mancha",
+      "verified": true
+    },
+    "CL": {
+      "name": "Castilla y León",
+      "verified": true
+    },
+    "CT": {
+      "name": "Cataluña",
+      "verified": true
+    },
+    "EX": {
+      "name": "Extremadura",
+      "verified": true
+    },
+    "GA": {
+      "name": "Galicia",
+      "verified": true
+    },
+    "MD": {
+      "name": "Comunidad de Madrid",
+      "verified": true
+    },
+    "MC": {
+      "name": "Región de Murcia",
+      "verified": true
+    },
+    "NC": {
+      "name": "Comunidad Foral de Navarra",
+      "verified": true
+    },
+    "PV": {
+      "name": "País Vasco",
+      "verified": true
+    },
+    "RI": {
+      "name": "La Rioja",
+      "verified": true
+    },
+    "VC": {
+      "name": "Comunitat Valenciana",
+      "verified": true
+    },
+    "CE": {
+      "name": "Ciudad de Ceuta",
+      "verified": true
+    },
+    "ML": {
+      "name": "Ciudad de Melilla",
+      "verified": true
+    }
+  },
+  "holidays": [
+    {
+      "date": "2026-12-07",
+      "name": "Lunes siguiente al Día de la Constitución Española",
+      "scope": "AN",
+      "substitutable": true,
+      "boe_code": "**"
+    },
+    {
+      "date": "2026-12-07",
+      "name": "Lunes siguiente al Día de la Constitución Española",
+      "scope": "AR",
+      "substitutable": true,
+      "boe_code": "**"
+    },
+    {
+      "date": "2026-12-07",
+      "name": "Lunes siguiente al Día de la Constitución Española",
+      "scope": "AS",
+      "substitutable": true,
+      "boe_code": "**"
+    },
+    {
+      "date": "2026-12-07",
+      "name": "Lunes siguiente al Día de la Constitución Española",
+      "scope": "CB",
+      "substitutable": true,
+      "boe_code": "**"
+    },
+    {
+      "date": "2026-12-07",
+      "name": "Lunes siguiente al Día de la Constitución Española",
+      "scope": "CL",
+      "substitutable": true,
+      "boe_code": "**"
+    },
+    {
+      "date": "2026-12-07",
+      "name": "Lunes siguiente al Día de la Constitución Española",
+      "scope": "EX",
+      "substitutable": true,
+      "boe_code": "**"
+    },
+    {
+      "date": "2026-12-07",
+      "name": "Lunes siguiente al Día de la Constitución Española",
+      "scope": "MD",
+      "substitutable": true,
+      "boe_code": "**"
+    },
+    {
+      "date": "2026-12-07",
+      "name": "Lunes siguiente al Día de la Constitución Española",
+      "scope": "MC",
+      "substitutable": true,
+      "boe_code": "**"
+    },
+    {
+      "date": "2026-12-07",
+      "name": "Lunes siguiente al Día de la Constitución Española",
+      "scope": "RI",
+      "substitutable": true,
+      "boe_code": "**"
+    },
+    {
+      "date": "2026-12-07",
+      "name": "Lunes siguiente al Día de la Constitución Española",
+      "scope": "ML",
+      "substitutable": true,
+      "boe_code": "**"
+    },
+    {
+      "date": "2026-12-08",
+      "name": "Inmaculada Concepción",
+      "scope": "national",
+      "substitutable": false,
+      "boe_code": "*"
+    },
+    {
+      "date": "2026-12-25",
+      "name": "Natividad del Señor",
+      "scope": "national",
+      "substitutable": false,
+      "boe_code": "*"
+    },
+    {
+      "date": "2026-12-26",
+      "name": "San Esteban",
+      "scope": "IB",
+      "substitutable": false,
+      "boe_code": "***"
+    },
+    {
+      "date": "2026-12-26",
+      "name": "San Esteban",
+      "scope": "CT",
+      "substitutable": false,
+      "boe_code": "***"
+    }
+  ],
+  "subregional": [
+    {
+      "date": "2026-06-17",
+      "name": "Fiesta de Arán",
+      "scope": "CT",
+      "area": "Arán",
+      "replaces": "2026-12-26"
+    }
+  ],
+  "notes": [
+    "1. En la Comunidad Autónoma de Canarias, el Decreto 61/2025, de 28 de abril, por el que se determina el calendario de fiestas laborales de la Comunidad Autónoma de Canarias para el año 2026 (BOC de 5 de mayo de 2025) dispone que: «En las islas de El Hierro, Fuerteventura, Gran Canaria, La Gomera, La Palma, Lanzarote, La Graciosa y Tenerife, las fiestas laborales serán, además, las siguientes: en El Hierro: el 24 de septiembre, festividad de Nuestra Señora de los Reyes; en Fuerteventura: el 18 de septiembre, festividad de Nuestra Señora de la Peña; en Gran Canaria: el 8 de septiembre, festividad de Nuestra Señora del Pino; en La Gomera: el 5 de octubre, festividad de Nuestra Señora de Guadalupe; en La Palma: el 5 de agosto, festividad de Nuestra Señora de Las Nieves; en Lanzarote y La Graciosa: el 15 de septiembre, festividad de Nuestra Señora de los Volcanes; en Tenerife: el 2 de febrero, festividad de la Virgen de la Candelaria».",
+    "2. En la Comunidad Autónoma de Cataluña, la Orden EMT/66/2025, de 30 de abril, por la que se establece el calendario oficial de fiestas laborales en Cataluña para el año 2026 (DOGC de 6 de mayo de 2025) dispone que: «En el territorio de Arán, la fiesta del día 26 de diciembre (Sant Esteve) queda sustituida por la de 17 de junio (Fiesta de Arán), miércoles»."
+  ],
+  "verification_note": "Solo contiene las fiestas del 11 de noviembre al 31 de diciembre de 2026. Generado desde el XML oficial del BOE. El contraste con fuentes secundarias es parcial: coinciden en el 8 y el 25 de diciembre y en la lista del 7 de diciembre; alguna añade Ceuta al 7 de diciembre, que el BOE no recoge. Prevalece el BOE."
+}
