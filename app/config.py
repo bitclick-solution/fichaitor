@@ -13,3 +13,15 @@ class Settings(BaseSettings):
     database_url: str = ""
     waitlist_rate_limit: int = 5  # per client IP
     waitlist_rate_window_seconds: int = 3600
+
+    # Google OAuth. Changing Google Cloud project means changing the first three values.
+    google_client_id: str = ""
+    google_client_secret: str = ""
+    google_redirect_uri: str = ""
+    fake_google: bool = False
+    oauth_state_secret: str = ""
+    token_public_key: str = ""
+    token_key_version: int = 1
+    post_connect_url: str = "/"
+    cookie_secure: bool = True
+    oauth_start_rate_limit: int = 20  # per client IP and hour

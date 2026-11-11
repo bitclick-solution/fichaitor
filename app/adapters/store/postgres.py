@@ -1,8 +1,10 @@
 """PostgreSQL store. Explicit SQL, no ORM. The API role can only INSERT."""
 
+import json
+
 import asyncpg
 
-from app.ports.store import WaitlistSignup
+from app.ports.store import GoogleConnection, WaitlistSignup
 
 
 class PostgresStore:
@@ -38,6 +40,21 @@ class PostgresStore:
             signup.score,
             signup.source,
             signup.consent_version,
+        )
+
+    async def add_google_connection(self, connection: GoogleConnection) -> None:
+        await self._require_pool().execute(
+            """
+            INSERT INTO google_connection
+                (google_sub, email, refresh_token_enc, key_version, scopes, locations)
+            VALUES ($1, $2, $3, $4, $5, $6::jsonb)
+            """,
+            connection.google_sub,
+            connection.email,
+            connection.refresh_token_enc,
+            connection.key_version,
+            list(connection.scopes),
+            json.dumps(list(connection.locations)),
         )
 
     async def record_event(

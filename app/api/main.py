@@ -4,14 +4,18 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI, HTTPException, Request
 from pydantic import BaseModel, Field
 
+from app.adapters.google_oauth.fake import FakeGoogleOAuth
+from app.adapters.google_oauth.real import RealGoogleOAuth
 from app.adapters.places.fake import FakePlaces
 from app.adapters.places.google import GooglePlaces
 from app.adapters.store.memory import MemoryStore
 from app.adapters.store.postgres import PostgresStore
+from app.api.google_oauth import build_router as build_google_router
 from app.api.waitlist import SOURCE_PATTERN, build_router
 from app.application.diagnosis_service import DiagnosisService, RateLimited
 from app.application.rate_limit import SlidingWindowLimiter
 from app.config import Settings
+from app.ports.google_oauth import GoogleOAuth
 from app.ports.places import PlacesGateway, PlacesUnavailable
 from app.ports.store import Store
 
@@ -59,8 +63,36 @@ def create_app(
     settings: Settings | None = None,
     places: PlacesGateway | None = None,
     store: Store | None = None,
+    google: GoogleOAuth | None = None,
 ) -> FastAPI:
     settings = settings or Settings()
+    if google is None:
+        if settings.fake_google:
+            google = FakeGoogleOAuth()
+        elif settings.google_client_id:
+            if not (settings.google_client_secret and settings.google_redirect_uri):
+                raise RuntimeError(
+                    "Faltan FICHAITOR_GOOGLE_CLIENT_SECRET o FICHAITOR_GOOGLE_REDIRECT_URI"
+                )
+            google = RealGoogleOAuth(
+                settings.google_client_id,
+                settings.google_client_secret,
+                settings.google_redirect_uri,
+            )
+    if google is not None:
+        missing = [
+            name
+            for name, value in (
+                ("FICHAITOR_OAUTH_STATE_SECRET", settings.oauth_state_secret),
+                ("FICHAITOR_TOKEN_PUBLIC_KEY", settings.token_public_key),
+            )
+            if not value
+        ]
+        if missing:
+            raise RuntimeError(
+                f"Variable vacía en el .env: {', '.join(missing)}. "
+                "La clave pública se genera con scripts/gen_token_keys.py"
+            )
     if store is None:
         if settings.database_url:
             store = PostgresStore(settings.database_url)
@@ -112,6 +144,21 @@ def create_app(
             client_ip,
         )
     )
+
+    if google is not None:
+        app.include_router(
+            build_google_router(
+                google=google,
+                store=store,
+                state_secret=settings.oauth_state_secret,
+                token_public_key=settings.token_public_key,
+                token_key_version=settings.token_key_version,
+                post_connect_url=settings.post_connect_url,
+                cookie_secure=settings.cookie_secure,
+                limiter=SlidingWindowLimiter(settings.oauth_start_rate_limit, 3600),
+                client_ip=client_ip,
+            )
+        )
 
     @app.get("/healthz")
     async def healthz() -> dict[str, str]:

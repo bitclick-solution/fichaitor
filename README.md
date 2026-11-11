@@ -22,7 +22,21 @@ docker compose exec -T db psql -U fichaitor -d fichaitor -c "select created_at, 
 docker compose exec -T db psql -U fichaitor -d fichaitor -c "select kind, source, count(*) from funnel_event group by 1, 2 order by 1, 2"
 ```
 
-Falta: la página web, los textos de privacidad y consentimiento, y la prueba contra Google real.
+Tercer bloque: la **conexión con Google** (`GET /api/v1/google/oauth/start` y `/callback`). Guarda el token de renovación cifrado con clave pública: la API puede cifrarlo pero no leerlo; la clave privada es solo del worker. Las rutas solo existen si el `.env` tiene los datos del cliente OAuth. Para cambiar de proyecto de Google Cloud se cambian tres variables.
+
+Puesta en marcha de la conexión:
+
+1. Genera las claves de cifrado y guarda la privada fuera del repositorio:
+
+   ```bash
+   uv run python scripts/gen_token_keys.py
+   ```
+
+2. Rellena en `.env` el bloque "Conexión con Google" de `.env.example`.
+3. Da de alta la URI de redirección en el cliente OAuth de Google, exactamente igual que en el `.env`.
+4. Reinicia la API y abre `http://localhost:8000/api/v1/google/oauth/start`.
+
+Falta: la página web, los textos de privacidad y consentimiento, cuentas y sesiones, y las pruebas contra Google real.
 
 ### Ejecutarlo
 

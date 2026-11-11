@@ -1,10 +1,11 @@
 """In-memory store for tests and local development without a database."""
 
-from app.ports.store import WaitlistSignup
+from app.ports.store import GoogleConnection, WaitlistSignup
 
 
 class MemoryStore:
     def __init__(self, fail: bool = False) -> None:
+        self.connections: list[GoogleConnection] = []
         self.signups: dict[tuple[str, str], WaitlistSignup] = {}
         self.events: list[tuple[str, str | None, str | None, int | None]] = []
         self._fail = fail
@@ -13,6 +14,11 @@ class MemoryStore:
         if self._fail:
             raise RuntimeError("fallo simulado")
         self.signups.setdefault((signup.channel, signup.contact), signup)
+
+    async def add_google_connection(self, connection: GoogleConnection) -> None:
+        if self._fail:
+            raise RuntimeError("fallo simulado")
+        self.connections.append(connection)
 
     async def record_event(
         self,
