@@ -48,6 +48,8 @@ def reconnect_key(google_sub: str, location: str, now: float) -> str:
 class SummaryView:
     summary: StoredSummary | None  # None: nothing written yet, a sync has been requested
     stale: bool  # the figures are old and a sync has been requested
+    title: str = ""  # of the selected profile, as the connection listed it
+    place_id: str | None = None
 
 
 class ProfileSync:
@@ -103,16 +105,17 @@ class ProfileSync:
         summary = profile.summary
         if summary is None:
             await self._enqueue(profile.google_sub, profile.location)
-            return SummaryView(None, stale=False)
+            return SummaryView(None, False, profile.title, profile.place_id)
 
         now = datetime.fromtimestamp(self._clock(), UTC)
         old = summary.synced_at is not None and now - summary.synced_at > self._stale_after
         if summary.status == STATUS_OK:
-            refresh = old or summary.synced_at is None
+            # A summary written before the facts existed is synced again to get them.
+            refresh = old or summary.synced_at is None or summary.facts is None
         else:
             # A failed attempt is retried once its window has passed, so that a
             # reconnection or a recovered Google ends up showing in the panel.
             refresh = now - summary.status_at > timedelta(seconds=self._window)
         if refresh:
             await self._enqueue(profile.google_sub, profile.location)
-        return SummaryView(summary, stale=old)
+        return SummaryView(summary, old, profile.title, profile.place_id)

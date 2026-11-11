@@ -1,7 +1,8 @@
 """Google Business Profile, read side, for the worker.
 
-Token refresh, reviews (My Business v4), profile hours and Google's own changes
-(Business Information v1). Endpoints verified in docs/fase0/matriz-api.md.
+Token refresh, reviews and media (My Business v4), the profile itself, its attributes
+and Google's own changes (Business Information v1). Endpoints verified in
+docs/fase0/matriz-api.md.
 
 Error messages carry only a status code: never a token, a request body or a
 response body (Google may echo what it was sent).
@@ -9,11 +10,13 @@ response body (Google may echo what it was sent).
 
 import asyncio
 import re
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 
 import httpx
 
 from app.domain.profile_summary import (
+    MediaSummary,
+    ProfileDetails,
     ProfileHours,
     Review,
     ReviewSet,
@@ -27,8 +30,14 @@ TOKEN_URL = "https://oauth2.googleapis.com/token"
 REVIEWS_URL = "https://mybusiness.googleapis.com/v4/{account}/{location}/reviews"
 LOCATION_URL = "https://mybusinessbusinessinformation.googleapis.com/v1/{location}"
 GOOGLE_UPDATED_URL = LOCATION_URL + ":getGoogleUpdated"
+ATTRIBUTES_URL = LOCATION_URL + "/attributes"
+MEDIA_URL = "https://mybusiness.googleapis.com/v4/{account}/{location}/media"
 
-HOURS_MASK = "name,regularHours,specialHours"
+# Everything the diagnosis of a connected profile needs, in one read.
+DETAILS_MASK = (
+    "name,title,storefrontAddress,categories,profile,phoneNumbers,websiteUri,"
+    "regularHours,specialHours,serviceItems,openInfo,metadata"
+)
 # getGoogleUpdated compares these fields between the owner's version and Google's.
 UPDATED_MASK = (
     "title,phoneNumbers,categories,storefrontAddress,websiteUri,"
@@ -37,6 +46,10 @@ UPDATED_MASK = (
 RETRIES = 3  # Business Information answers 503 now and then
 REVIEWS_PAGE_SIZE = 50  # the maximum Google accepts
 MAX_REVIEW_PAGES = 200  # 10.000 reviews; also stops a page token that never ends
+MEDIA_PAGE_SIZE = 100
+MAX_MEDIA_PAGES = 5  # enough to date the newest photo; the count comes in every page
+MAX_SPECIAL_PERIOD_DAYS = 31  # a longer special-hours period counts up to here
+CLOSED_STATUSES = frozenset({"CLOSED_PERMANENTLY", "CLOSED_TEMPORARILY"})
 
 _ACCOUNT = re.compile(r"accounts/[A-Za-z0-9_-]{1,64}")
 _LOCATION = re.compile(r"locations/[A-Za-z0-9_-]{1,64}")
@@ -116,16 +129,72 @@ class RealGoogleProfile:
                 return ReviewSet(reviews=tuple(found), total=total, average=average)
         raise GoogleProfileError("demasiadas páginas de reseñas")
 
-    async def hours(self, access_token: str, location: str) -> ProfileHours:
+    async def details(self, access_token: str, location: str) -> ProfileDetails:
         body = await self._get(
-            LOCATION_URL.format(location=_loc(location)), access_token, {"readMask": HOURS_MASK}
+            LOCATION_URL.format(location=_loc(location)),
+            access_token,
+            {"readMask": DETAILS_MASK},
         )
-        periods = (body.get("regularHours") or {}).get("periods") or []
-        special = (body.get("specialHours") or {}).get("specialHourPeriods") or []
-        dates = (_date(period.get("startDate")) for period in special)
-        return ProfileHours(
-            has_regular_hours=bool(periods),
-            special_dates=tuple(d for d in dates if d is not None),
+        periods = _dict(body.get("regularHours")).get("periods") or []
+        special = _dict(body.get("specialHours")).get("specialHourPeriods") or []
+        categories = _dict(body.get("categories"))
+        metadata = _dict(body.get("metadata"))
+        services = body.get("serviceItems")
+        additional = categories.get("additionalCategories")
+        return ProfileDetails(
+            hours=ProfileHours(
+                has_regular_hours=bool(periods),
+                special_dates=tuple(
+                    day for period in special if isinstance(period, dict) for day in _days(period)
+                ),
+            ),
+            title=_text(body.get("title")),
+            address=_address(_dict(body.get("storefrontAddress"))),
+            category=_text(_dict(categories.get("primaryCategory")).get("displayName")),
+            additional_categories=len(additional) if isinstance(additional, list) else 0,
+            description_length=len(_text(_dict(body.get("profile")).get("description"))),
+            has_phone=bool(_text(_dict(body.get("phoneNumbers")).get("primaryPhone"))),
+            has_website=bool(_text(body.get("websiteUri"))),
+            service_count=len(services) if isinstance(services, list) else 0,
+            is_open=_dict(body.get("openInfo")).get("status") not in CLOSED_STATUSES,
+            place_id=_text(metadata.get("placeId")),
+            maps_url=_text(metadata.get("mapsUri")),
+        )
+
+    async def attribute_count(self, access_token: str, location: str) -> int:
+        body = await self._get(ATTRIBUTES_URL.format(location=_loc(location)), access_token, {})
+        attributes = body.get("attributes")
+        return len(attributes) if isinstance(attributes, list) else 0
+
+    async def media(self, access_token: str, account: str, location: str) -> MediaSummary:
+        url = MEDIA_URL.format(account=_checked(_ACCOUNT, account), location=_loc(location))
+        total: int | None = None
+        seen = 0
+        latest: datetime | None = None
+        page_token: str | None = None
+        complete = False
+        for _ in range(MAX_MEDIA_PAGES):
+            params: dict[str, str | int] = {"pageSize": MEDIA_PAGE_SIZE}
+            if page_token:
+                params["pageToken"] = page_token
+            body = await self._get(url, access_token, params)
+            items = [item for item in body.get("mediaItems") or [] if isinstance(item, dict)]
+            seen += len(items)
+            for item in items:
+                created = _datetime(item.get("createTime"))
+                if created is not None and (latest is None or created > latest):
+                    latest = created
+            if total is None and isinstance(body.get("totalMediaItemCount"), int):
+                total = body["totalMediaItemCount"]
+            page_token = body.get("nextPageToken")
+            if not page_token:
+                complete = True
+                break
+        # Google does not say in which order the items come: the newest date is only
+        # known when every item has been read.
+        return MediaSummary(
+            count=max(total if total is not None else seen, 0),
+            latest_at=latest if complete else None,
         )
 
     async def google_updated_fields(self, access_token: str, location: str) -> tuple[str, ...]:
@@ -206,6 +275,31 @@ def _datetime(value: object) -> datetime | None:
     except ValueError:
         return None
     return parsed if parsed.tzinfo else None
+
+
+def _dict(value: object) -> dict:
+    return value if isinstance(value, dict) else {}
+
+
+def _text(value: object) -> str:
+    return value.strip() if isinstance(value, str) else ""
+
+
+def _address(raw: dict) -> str:
+    """'Calle Elvira 1, 18010 Granada' from Google's postal address."""
+    lines = [_text(line) for line in raw.get("addressLines") or []]
+    town = " ".join(p for p in (_text(raw.get("postalCode")), _text(raw.get("locality"))) if p)
+    return ", ".join(part for part in (*lines, town) if part)
+
+
+def _days(period: dict) -> list[date]:
+    """Every day of a special-hours period: its start date, or from start to end."""
+    start = _date(period.get("startDate"))
+    if start is None:
+        return []
+    end = _date(period.get("endDate")) or start
+    length = min(max((end - start).days, 0), MAX_SPECIAL_PERIOD_DAYS - 1)
+    return [start + timedelta(days=offset) for offset in range(length + 1)]
 
 
 def _date(value: object) -> date | None:

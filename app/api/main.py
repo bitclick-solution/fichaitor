@@ -1,13 +1,17 @@
 import logging
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from contextlib import asynccontextmanager
+from dataclasses import replace
+from datetime import UTC, datetime
 
 from fastapi import FastAPI, HTTPException, Request
 from pydantic import BaseModel, Field
 
+from app.adapters.calendar.loader import CalendarDataError, load_calendar
 from app.adapters.google_oauth.fake import FakeGoogleOAuth
 from app.adapters.google_oauth.real import RealGoogleOAuth
+from app.adapters.google_profile.fake import demo_facts
 from app.adapters.job_queue.demo import DemoSyncQueue
 from app.adapters.job_queue.memory import MemoryJobQueue
 from app.adapters.places.fake import FakePlaces
@@ -17,11 +21,13 @@ from app.adapters.store.postgres import PostgresStore
 from app.api.diagnosis_out import DiagnosisResponse, to_response
 from app.api.google_oauth import build_router as build_google_router
 from app.api.me import build_router as build_me_router
+from app.api.screenshot import build_router_from_settings as build_screenshot_router
 from app.api.waitlist import SOURCE_PATTERN, build_router
 from app.application.diagnosis_service import DiagnosisService, RateLimited
 from app.application.profile_sync import ProfileSync
 from app.application.rate_limit import SlidingWindowLimiter
 from app.config import Settings
+from app.domain.calendar import NATIONAL, Holiday
 from app.ports.google_oauth import GoogleOAuth
 from app.ports.job_queue import JobEnqueuer
 from app.ports.places import PlacesGateway, PlacesUnavailable
@@ -43,6 +49,34 @@ def _client_ip(request: Request, trust_proxy: bool) -> str:
     return request.client.host if request.client else "unknown"
 
 
+class DemoProfileQueue(DemoSyncQueue):
+    """The demo queue, which also stores the facts of the demo profile, as the worker
+    does after a sync: without them the panel would have a summary and no diagnosis."""
+
+    async def enqueue(self, kind: str, payload: dict, **options) -> bool:
+        created = await super().enqueue(kind, payload, **options)
+        key = (payload.get("google_sub"), payload.get("location"))
+        summary = self._store.summaries.get(key)
+        if created and summary is not None and summary.facts is None:
+            now = datetime.fromtimestamp(self._clock(), UTC)
+            self._store.put_summary(*key, replace(summary, facts=demo_facts(now)))
+        return created
+
+
+def national_holidays() -> tuple[Holiday, ...]:
+    """National holidays of the calendar data, for the diagnosis of connected profiles.
+
+    The region of a business is not known yet, so regional holidays are left out.
+    A missing or broken calendar does not stop the API: that check is skipped.
+    """
+    try:
+        holidays = load_calendar().calendar.holidays
+    except CalendarDataError as exc:
+        log.error("calendario de festivos no disponible: %s", exc)
+        return ()
+    return tuple(h for h in holidays if h.scope == NATIONAL and h.verified)
+
+
 def create_app(
     settings: Settings | None = None,
     places: PlacesGateway | None = None,
@@ -50,8 +84,11 @@ def create_app(
     google: GoogleOAuth | None = None,
     clock: Callable[[], float] = time.time,
     jobs: JobEnqueuer | None = None,
+    holidays: Sequence[Holiday] | None = None,
 ) -> FastAPI:
     settings = settings or Settings()
+    if holidays is None:
+        holidays = national_holidays()
     if google is None:
         if settings.fake_google:
             google = FakeGoogleOAuth()
@@ -90,7 +127,7 @@ def create_app(
         if isinstance(store, PostgresStore):
             jobs = store  # enqueues on the API's own pool; the worker process does the job
         elif isinstance(store, MemoryStore) and settings.fake_google:
-            jobs = DemoSyncQueue(store, clock)  # no database, no worker: demo figures
+            jobs = DemoProfileQueue(store, clock)  # no database, no worker: demo data
         else:
             jobs = MemoryJobQueue()
     sync = ProfileSync(
@@ -138,6 +175,12 @@ def create_app(
         except Exception as exc:  # measuring must never break the diagnosis
             log.warning("evento de embudo no registrado: %s", type(exc).__name__)
 
+    # Reviews screenshot demo. Without FICHAITOR_GEMINI_API_KEY and without
+    # FICHAITOR_FAKE_SCREENSHOT the route is not mounted (404).
+    screenshot_router = build_screenshot_router(client_ip, track, clock=clock)
+    if screenshot_router is not None:
+        app.include_router(screenshot_router)
+
     app.include_router(
         build_router(
             store,
@@ -169,8 +212,8 @@ def create_app(
     app.include_router(
         build_me_router(
             store=store,
-            diagnosis=service,
             sync=sync,
+            holidays=holidays,
             cookie_secure=settings.cookie_secure,
             clock=clock,
         )

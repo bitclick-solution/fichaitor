@@ -6,7 +6,12 @@ from datetime import datetime
 import asyncpg
 
 from app.adapters.job_queue.postgres import LOST_WORKER_ERROR
-from app.domain.profile_summary import STATUS_ERROR, STATUS_OK, ProfileSummary
+from app.domain.profile_summary import (
+    STATUS_ERROR,
+    STATUS_OK,
+    ProfileSummary,
+    facts_to_json,
+)
 from app.ports.worker_store import ConnectedLocation, StoredConnection
 
 
@@ -50,8 +55,8 @@ class PostgresWorkerStore:
                 (google_sub, location, status, status_at, synced_at, review_count,
                  average_rating, unanswered_count, unanswered_low_count, last_review_at,
                  has_regular_hours, upcoming_special_hours, google_changed,
-                 google_changed_fields)
-            VALUES ($1, $2, $3, $4, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
+                 google_changed_fields, facts)
+            VALUES ($1, $2, $3, $4, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14::jsonb)
             ON CONFLICT (google_sub, location) DO UPDATE SET
                 status = EXCLUDED.status,
                 status_at = EXCLUDED.status_at,
@@ -64,7 +69,8 @@ class PostgresWorkerStore:
                 has_regular_hours = EXCLUDED.has_regular_hours,
                 upcoming_special_hours = EXCLUDED.upcoming_special_hours,
                 google_changed = EXCLUDED.google_changed,
-                google_changed_fields = EXCLUDED.google_changed_fields
+                google_changed_fields = EXCLUDED.google_changed_fields,
+                facts = EXCLUDED.facts
             """,
             google_sub,
             location,
@@ -79,6 +85,7 @@ class PostgresWorkerStore:
             summary.upcoming_special_hours,
             summary.google_changed,
             list(summary.google_changed_fields),
+            json.dumps(facts_to_json(summary.facts)) if summary.facts is not None else None,
         )
 
     async def save_status(self, google_sub: str, location: str, status: str, at: datetime) -> None:

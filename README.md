@@ -10,14 +10,14 @@ Estado: **en construcción**. La API, el worker, la base de datos y la web funci
 
 | Pieza | Estado |
 |---|---|
-| API (`app/api`, FastAPI) | Funciona: diagnóstico público, lista de espera, conexión con Google, cuentas y sesiones, y resumen de la ficha |
-| Worker (`app/worker`) | Funciona: cola de jobs en PostgreSQL y job `sync_profile`, que lee la ficha en Google y guarda sus cifras |
+| API (`app/api`, FastAPI) | Funciona: diagnóstico público, lista de espera, conexión con Google, cuentas y sesiones, y resumen y diagnóstico de la ficha conectada |
+| Worker (`app/worker`) | Funciona: cola de jobs en PostgreSQL y job `sync_profile`, que lee la ficha en Google y guarda sus cifras y los hechos del diagnóstico |
 | Base de datos (PostgreSQL 16) | Funciona: `db/schema.sql` y `db/schema_worker.sql`, idempotentes, con un rol de mínimo privilegio para la API y otro para el worker |
 | Web (`web/`) | Funciona: sitio público con el diagnóstico y panel en `/app` (React + Vite), servidos por nginx en `http://127.0.0.1:8080` |
-| Calendario de fechas clave | Datos y reglas listos ([docs/calendario.md](docs/calendario.md)). Ningún servicio los usa todavía |
+| Calendario de fechas clave | Datos y reglas listos ([docs/calendario.md](docs/calendario.md)). El diagnóstico del panel usa los festivos nacionales; las propuestas de fechas clave aún no las usa ningún servicio |
 | Integración continua | Formato, análisis estático y pruebas contra PostgreSQL en cada push ([docs/ci.md](docs/ci.md)) |
 
-Lo que funciona hoy de principio a fin: un negocio consulta el diagnóstico público de su ficha, se apunta a la lista de espera, conecta su cuenta de Google, elige ficha y ve en el panel las reseñas sin responder, los horarios y los cambios hechos por Google. Sin credenciales de Google, todo el recorrido funciona con datos de ejemplo.
+Lo que funciona hoy de principio a fin: un negocio consulta el diagnóstico público de su ficha, se apunta a la lista de espera, conecta su cuenta de Google, elige ficha y ve en el panel las reseñas sin responder, los horarios, los cambios hechos por Google y qué mejorar, todo con los datos de su ficha conectada. Sin credenciales de Google, todo el recorrido funciona con datos de ejemplo.
 
 Lo que falta del MVP ([docs/05-roadmap.md](docs/05-roadmap.md), fase 3):
 
@@ -66,7 +66,7 @@ Cuarto bloque: **cuentas y sesiones**. La cuenta es la identidad de Google: no h
 |---|---|
 | `GET /api/v1/me` | Correo, fichas de la cuenta y ficha elegida |
 | `POST /api/v1/me/location` | Elige una ficha. 404 si no es de esa cuenta |
-| `GET /api/v1/me/diagnosis` | Diagnóstico de la ficha elegida, buscada por su `place_id` |
+| `GET /api/v1/me/diagnosis` | Diagnóstico de la ficha elegida, calculado con lo que el worker lee de la ficha conectada. No usa Google Places |
 | `GET /api/v1/me/summary` | Resumen de la ficha elegida, leído de lo que guarda el worker |
 | `POST /api/v1/auth/logout` | Cierra la sesión y borra la cookie |
 
@@ -88,7 +88,7 @@ Pruebas de integración contra PostgreSQL (sin estas variables se omiten):
 FICHAITOR_TEST_DATABASE_URL=postgresql://fichaitor_api_dev:dev@127.0.0.1:5433/fichaitor FICHAITOR_TEST_OWNER_URL=postgresql://fichaitor:dev@127.0.0.1:5433/fichaitor FICHAITOR_TEST_WORKER_URL=postgresql://fichaitor_worker_dev:dev@127.0.0.1:5433/fichaitor uv run pytest -q
 ```
 
-Quinto bloque: el **worker** y el **resumen de la ficha**. El worker toma jobs de una cola en PostgreSQL; el job `sync_profile` lee la ficha en Google y guarda sus cifras en `profile_summary`. Está documentado en [docs/worker.md](docs/worker.md).
+Quinto bloque: el **worker**, el **resumen de la ficha** y el **diagnóstico de la ficha conectada**. El worker toma jobs de una cola en PostgreSQL; el job `sync_profile` lee la ficha en Google y guarda en `profile_summary` sus cifras y los hechos con los que se calcula el diagnóstico. Está documentado en [docs/worker.md](docs/worker.md).
 
 La API conecta el panel con esos datos:
 
@@ -96,6 +96,7 @@ La API conecta el panel con esos datos:
 - **Al volver a conectar con Google**, si la cuenta ya tenía ficha elegida, encola su sincronización al momento, sin esperar a la ventana. Como máximo, una por ficha y minuto.
 - **Una sincronización por ficha y ventana** de `FICHAITOR_SYNC_WINDOW_SECONDS` (15 minutos por defecto). La ventana va en la clave de idempotencia del job.
 - **`GET /api/v1/me/summary`** devuelve las cifras, o `status: "pendiente"` mientras el worker no ha terminado la primera lectura. La web sondea cada 3 segundos.
+- **`GET /api/v1/me/diagnosis`** calcula el diagnóstico ("Qué mejorar") con los hechos guardados y el calendario de festivos nacionales (`app/domain/profile_diagnosis.py`). No llama a Google Places, no cuesta dinero y no tiene límite. Mientras no hay datos responde 404 con `status: "pendiente"`. Añade a las reglas del diagnóstico público las que solo se saben con la ficha conectada: reseñas sin responder, festivos próximos sin horario, descripción y cambios hechos por Google.
 - **Todo fallo de la sincronización deja un estado** en el resumen (`needs_reconnect` o `error`), también cuando no hay conexión guardada o la ficha ya no está en ella. `pendiente` solo dura lo que tarda el worker en tomar el job.
 - Si encolar falla, la ruta del usuario responde igual y el fallo queda en el log, sin identificadores.
 - El resumen se busca por la identidad de Google de la cuenta de la sesión y su ficha elegida. Una cuenta no lee el resumen de otra, aunque administren la misma ficha.
@@ -111,9 +112,9 @@ Para ver el recorrido completo sin Google (conectar, elegir ficha y ver el resum
    docker compose up -d --build
    ```
 
-4. Abre `http://127.0.0.1:8080/app`, conecta y elige la ficha de ejemplo. El worker usa su ficha de demostración y el resumen aparece en unos segundos.
+4. Abre `http://127.0.0.1:8080/app`, conecta y elige la ficha de ejemplo. El worker usa su ficha de demostración y el resumen y el diagnóstico aparecen en unos segundos.
 
-> **Nota:** Sin base de datos (`FICHAITOR_DATABASE_URL` vacío y `FICHAITOR_FAKE_PLACES=true`) no hay cola ni worker. En ese modo, con `FICHAITOR_FAKE_GOOGLE=true`, la API escribe ella misma el resumen de demostración en memoria.
+> **Nota:** Sin base de datos (`FICHAITOR_DATABASE_URL` vacío y `FICHAITOR_FAKE_PLACES=true`) no hay cola ni worker. En ese modo, con `FICHAITOR_FAKE_GOOGLE=true`, la API escribe ella misma el resumen y los hechos de demostración en memoria.
 
 Falta en estos bloques: borrar la cuenta desde el panel, la limpieza periódica de sesiones caducadas y las pruebas automáticas contra Google real.
 

@@ -3,7 +3,8 @@
 The API role can only INSERT contacts, events and Google connections. On accounts,
 profiles and sessions it can read, insert and update a few columns; it never deletes.
 Every statement on profiles is filtered by account_id: the isolation between accounts.
-Of the worker's tables it can only INSERT jobs and SELECT profile summaries.
+Of the worker's tables it can only INSERT jobs and SELECT profile summaries
+(figures and facts).
 """
 
 import json
@@ -14,6 +15,7 @@ import asyncpg
 
 from app.adapters.job_queue.postgres import PostgresJobQueue
 from app.domain.jobs import DEFAULT_MAX_ATTEMPTS
+from app.domain.profile_summary import ProfileFacts, facts_from_json
 from app.ports.google_oauth import ProfileLocation
 from app.ports.store import (
     Account,
@@ -229,7 +231,8 @@ class PostgresStore:
         # its own selected profile, so no identifier from outside takes part in the lookup.
         row = await self._require_pool().fetchrow(
             """
-            SELECT a.google_sub, l.gbp_location,
+            SELECT a.google_sub, l.gbp_location, l.title, l.place_id,
+                   p.facts::text AS facts,
                    p.status, p.status_at, p.synced_at, p.review_count, p.average_rating,
                    p.unanswered_count, p.unanswered_low_count, p.last_review_at,
                    p.has_regular_hours, p.upcoming_special_hours, p.google_changed,
@@ -261,5 +264,17 @@ class PostgresStore:
                 upcoming_special_hours=row["upcoming_special_hours"],
                 google_changed=row["google_changed"],
                 google_changed_fields=tuple(row["google_changed_fields"] or ()),
+                facts=_facts(row["facts"]),
             )
-        return SelectedProfile(row["google_sub"], row["gbp_location"], summary)
+        return SelectedProfile(
+            row["google_sub"], row["gbp_location"], summary, row["title"], row["place_id"]
+        )
+
+
+def _facts(raw: str | None) -> ProfileFacts | None:
+    if raw is None:
+        return None
+    try:
+        return facts_from_json(json.loads(raw))
+    except ValueError:
+        return None

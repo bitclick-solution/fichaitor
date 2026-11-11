@@ -685,3 +685,69 @@ def test_the_decrypted_token_is_stored_nowhere(kind, sub, failure):
     assert stored  # there is something to inspect
     for secret in (REFRESH, ACCESS, PRIVATE):
         assert secret not in stored
+
+
+def test_sync_profile_stores_the_facts_and_a_failed_sync_keeps_them(kind, sub):
+    import json
+
+    from app.domain.profile_summary import MediaSummary, ProfileDetails, facts_from_json
+
+    today = datetime.now(UTC).date()
+    photo = datetime(2026, 6, 15, 9, 30, tzinfo=UTC)
+    details = ProfileDetails(
+        hours=ProfileHours(True, (today + timedelta(days=30), date(2020, 1, 1))),
+        title="Bar pytest",
+        address="Calle Elvira 1, 18010 Granada",
+        category="Bar",
+        additional_categories=2,
+        description_length=120,
+        has_phone=True,
+        has_website=False,
+        service_count=4,
+        place_id="place-pytest-1",
+        maps_url="https://maps.google.com/?cid=42",
+    )
+    google = FakeGoogleProfile(
+        reviews=reviews_fixture(),
+        details=details,
+        media=MediaSummary(7, photo),
+        attributes=5,
+        access_token=ACCESS,
+    )
+
+    async def scenario():
+        await add_connection(sub)
+        await run_sync(kind, sub, google)
+        first = await owner(
+            "SELECT facts::text AS facts, jsonb_typeof(facts) AS kind FROM profile_summary"
+            " WHERE google_sub = $1",
+            sub,
+        )
+        google.refresh_error = ReconnectRequired("permiso caducado")
+        await run_sync(kind, sub, google)
+        second = await owner(
+            "SELECT status, facts::text AS facts FROM profile_summary WHERE google_sub = $1", sub
+        )
+        return first[0], second[0]
+
+    first, second = run(scenario())
+    assert first["kind"] == "object"
+    facts = facts_from_json(json.loads(first["facts"]))
+    assert (facts.title, facts.address, facts.category) == (
+        "Bar pytest",
+        "Calle Elvira 1, 18010 Granada",
+        "Bar",
+    )
+    assert (facts.additional_categories, facts.description_length, facts.service_count) == (
+        2,
+        120,
+        4,
+    )
+    assert (facts.has_phone, facts.has_website, facts.is_open) == (True, False, True)
+    assert (facts.place_id, facts.maps_url) == ("place-pytest-1", "https://maps.google.com/?cid=42")
+    assert facts.special_dates == (today + timedelta(days=30),)
+    assert (facts.photo_count, facts.latest_photo_at, facts.attribute_count) == (7, photo, 5)
+    assert ACCESS not in first["facts"] and REFRESH not in first["facts"]
+
+    assert second["status"] == "needs_reconnect"
+    assert json.loads(second["facts"]) == json.loads(first["facts"])

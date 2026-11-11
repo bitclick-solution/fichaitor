@@ -1,7 +1,8 @@
-"""Use case: run a diagnosis, with per-client rate limiting.
+"""Use case: run a public diagnosis, with per-client rate limiting.
 
-Public diagnoses search by free text; the diagnosis of an owner's profile looks the
-place up by its identifier. Both ask Google for the content of the place every time.
+Public diagnoses search by free text and ask Google for the content of the place
+every time. The diagnosis of an owner's connected profile does not come through here:
+it is computed from what the worker read (app/domain/profile_diagnosis.py).
 
 What is kept between requests is only what Google's terms allow: the search text and
 the place identifier it led to. Name, address, figures and the diagnosis built from
@@ -87,14 +88,4 @@ class DiagnosisService:
     async def run(self, query: str, client: str) -> Diagnosis | None:
         self._check_rate(client)
         place = await self._place_by_text(query)
-        return diagnose(place) if place else None
-
-    async def run_for_profile(
-        self, place_id: str | None, title: str, client: str
-    ) -> Diagnosis | None:
-        """Diagnose an owner's profile: by place identifier, else by its title."""
-        self._check_rate(client)
-        place = await self._places.get(place_id) if place_id else None
-        if place is None and title.strip():
-            place = await self._place_by_text(title)
         return diagnose(place) if place else None

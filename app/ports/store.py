@@ -3,6 +3,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import Protocol
 
+from app.domain.profile_summary import ProfileFacts
 from app.ports.google_oauth import ProfileLocation
 
 
@@ -58,6 +59,8 @@ class StoredSummary:
     upcoming_special_hours: int | None
     google_changed: bool | None
     google_changed_fields: tuple[str, ...] = ()
+    # What the diagnosis is computed from. None until a sync has stored them.
+    facts: ProfileFacts | None = None
 
 
 @dataclass(frozen=True)
@@ -67,6 +70,8 @@ class SelectedProfile:
     google_sub: str
     location: str  # "locations/123"
     summary: StoredSummary | None
+    title: str = ""
+    place_id: str | None = None
 
 
 class Store(Protocol):

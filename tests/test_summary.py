@@ -15,6 +15,7 @@ from app.api.main import create_app
 from app.api.summary_out import field_label
 from app.application.profile_sync import SYNC_PROFILE_KIND, reconnect_key, sync_key
 from app.config import Settings
+from app.domain.profile_summary import ProfileFacts
 from app.ports.google_oauth import Identity, ProfileLocation
 from app.ports.store import StoredSummary
 from app.worker import sync_profile
@@ -68,6 +69,7 @@ def stored(status="ok", synced_ago=timedelta(minutes=5), status_ago=None, **chan
         "upcoming_special_hours": 0,
         "google_changed": True,
         "google_changed_fields": ("specialHours",),
+        "facts": ProfileFacts(),
     }
     return StoredSummary(**{**values, **changes})
 
@@ -497,3 +499,16 @@ def test_fake_google_without_database_shows_the_whole_journey_with_demo_figures(
     assert body["google_changed"] is False
     assert body["google_changed_labels"] == []
     assert body["stale"] is False
+
+
+def test_a_fresh_summary_without_facts_asks_for_a_sync_to_get_them():
+    """Rows written before the facts existed: the diagnosis needs a new sync."""
+    world = World()
+    client = world.owner_with_profile()
+    world.clock.now += HOUR  # out of the window of the choice
+    world.store.put_summary(SUB, "locations/1", stored(synced_ago=timedelta(hours=-1), facts=None))
+    body = client.get(SUMMARY).json()
+    assert body["status"] == "ok" and body["stale"] is False  # the figures are still good
+    assert len(world.sync_jobs()) == 2
+    client.get(SUMMARY)
+    assert len(world.sync_jobs()) == 2  # once per window

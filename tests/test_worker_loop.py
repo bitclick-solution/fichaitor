@@ -13,7 +13,13 @@ from app.adapters.google_profile.fake import FakeGoogleProfile
 from app.adapters.job_queue.memory import MemoryJobQueue
 from app.adapters.worker_store.memory import MemoryWorkerStore
 from app.domain.jobs import DONE, FAILED, PENDING, RUNNING, JobError, PermanentJobError
-from app.domain.profile_summary import ProfileHours, Review, ReviewSet
+from app.domain.profile_summary import (
+    MediaSummary,
+    ProfileDetails,
+    ProfileHours,
+    Review,
+    ReviewSet,
+)
 from app.ports.google_profile import GoogleProfileError, GoogleRejected, ReconnectRequired
 from app.ports.worker_store import ConnectedLocation, StoredConnection
 from app.worker import log
@@ -379,7 +385,13 @@ def test_sync_profile_decrypts_the_token_reads_google_and_stores_the_summary():
     run(go())
     assert only_job(queue).state == DONE
     assert google.refreshed_with == [REFRESH]  # decrypted with the private key
-    assert [what for what, _ in google.reads] == ["reviews", "hours", "google_updated"]
+    assert [what for what, _ in google.reads] == [
+        "reviews",
+        "details",
+        "google_updated",
+        "attributes",
+        "media",
+    ]
     stored = store.summaries[(SUB, LOCATION)]
     assert stored.status == "ok" and stored.synced_at == NOW
     s = stored.summary
@@ -389,6 +401,86 @@ def test_sync_profile_decrypts_the_token_reads_google_and_stores_the_summary():
     assert s.has_regular_hours is True
     assert s.upcoming_special_hours == 1
     assert (s.google_changed, s.google_changed_fields) == (True, ("specialHours",))
+
+
+def test_sync_profile_stores_the_facts_the_diagnosis_needs():
+    details = ProfileDetails(
+        hours=ProfileHours(True, (date(2026, 12, 25), date(2026, 12, 8), date(2026, 1, 1))),
+        title="Bar La Parra",
+        address="Calle Elvira 1, 18010 Granada",
+        category="Bar",
+        additional_categories=2,
+        description_length=120,
+        has_phone=True,
+        has_website=False,
+        service_count=4,
+        is_open=True,
+        place_id="ChIJ-ficha",
+        maps_url="https://maps.google.com/?cid=42",
+    )
+    photo = datetime(2026, 6, 15, 9, 30, tzinfo=UTC)
+    google = FakeGoogleProfile(
+        reviews=reviews_fixture(), details=details, media=MediaSummary(7, photo), attributes=5
+    )
+    go, _, store, _ = make_sync(google)
+    run(go())
+    facts = store.summaries[(SUB, LOCATION)].summary.facts
+    assert (facts.title, facts.address, facts.category) == (
+        "Bar La Parra",
+        "Calle Elvira 1, 18010 Granada",
+        "Bar",
+    )
+    assert facts.additional_categories == 2 and facts.description_length == 120
+    assert (facts.has_phone, facts.has_website) == (True, False)
+    assert facts.service_count == 4 and facts.is_open is True
+    assert (facts.place_id, facts.maps_url) == ("ChIJ-ficha", "https://maps.google.com/?cid=42")
+    assert facts.special_dates == (date(2026, 12, 8), date(2026, 12, 25))  # past ones dropped
+    assert (facts.photo_count, facts.latest_photo_at, facts.attribute_count) == (7, photo, 5)
+
+
+def test_attributes_and_media_that_google_refuses_do_not_fail_the_sync(caplog):
+    caplog.set_level(logging.DEBUG)
+    google = FakeGoogleProfile(
+        reviews=reviews_fixture(), access_token=ACCESS, optional_error=GoogleRejected("estado 403")
+    )
+    go, queue, store, _ = make_sync(google)
+    run(go())
+    assert only_job(queue).state == DONE
+    stored = store.summaries[(SUB, LOCATION)]
+    assert stored.status == "ok" and stored.summary.review_count == 3
+    facts = stored.summary.facts
+    assert (facts.photo_count, facts.latest_photo_at, facts.attribute_count) == (None, None, None)
+    assert facts.description_length > 0  # the rest of the profile was read
+    rejected = [r for r in caplog.records if r.getMessage() == "optional_read_rejected"]
+    assert [r.fields["read"] for r in rejected] == ["attributes", "media"]
+    assert ACCESS not in caplog.text
+
+
+def test_a_lost_grant_or_a_temporary_failure_in_attributes_or_media_is_not_swallowed():
+    google = FakeGoogleProfile(reviews=reviews_fixture(), optional_error=ReconnectRequired("x"))
+    go, queue, store, _ = make_sync(google)
+    run(go())
+    assert only_job(queue).state == FAILED
+    assert store.summaries[(SUB, LOCATION)].status == "needs_reconnect"
+
+    google = FakeGoogleProfile(
+        reviews=reviews_fixture(), optional_error=GoogleProfileError("estado 503")
+    )
+    go, queue, store, _ = make_sync(google)
+    run(go())
+    assert only_job(queue).state == PENDING  # retried, nothing shown yet
+    assert (SUB, LOCATION) not in store.summaries
+
+
+def test_a_failed_sync_keeps_the_facts_of_the_last_good_one():
+    go, _, store, google = make_sync()
+    run(go())
+    facts = store.summaries[(SUB, LOCATION)].summary.facts
+    assert facts is not None
+    google.refresh_error = ReconnectRequired("permiso caducado")
+    run(go())
+    stored = store.summaries[(SUB, LOCATION)]
+    assert stored.status == "needs_reconnect" and stored.summary.facts == facts
 
 
 def test_sync_profile_uses_the_most_recent_connection():

@@ -264,7 +264,7 @@ def test_whole_journey_over_http_on_postgresql():
 
     from app.adapters.crypto.sealed import generate_keypair
     from app.adapters.google_oauth.fake import FakeGoogleOAuth
-    from app.adapters.places.fake import DEMO, FakePlaces
+    from app.adapters.places.fake import FakePlaces
     from app.api.main import create_app
     from app.api.session import SESSION_COOKIE
     from app.config import Settings
@@ -322,7 +322,9 @@ def test_whole_journey_over_http_on_postgresql():
             r = client.post("/api/v1/me/location", json=body, headers=header)
             assert r.status_code == 200
             assert r.json()["selected_location_id"] == location["id"]
-            assert client.get("/api/v1/me/diagnosis").json()["place_id"] == DEMO.place_id
+            # The diagnosis comes from what the worker stores: nothing yet, and no Places.
+            r = client.get("/api/v1/me/diagnosis")
+            assert (r.status_code, r.json()["status"]) == (404, "pendiente")
 
             assert client.post("/api/v1/auth/logout", headers=header).status_code == 204
             assert as_user(client, ana).get("/api/v1/me").status_code == 401

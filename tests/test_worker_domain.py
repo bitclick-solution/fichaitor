@@ -1,12 +1,18 @@
 """Pure rules of the worker: job retry policy and the profile summary."""
 
+import json
 from datetime import UTC, date, datetime
 
 from app.domain.jobs import Job, PermanentJobError, backoff_seconds, retry_delay, safe_error
 from app.domain.profile_summary import (
+    MediaSummary,
+    ProfileDetails,
     ProfileHours,
     Review,
     ReviewSet,
+    collect_facts,
+    facts_from_json,
+    facts_to_json,
     original_text,
     parse_diff_mask,
     star_rating,
@@ -143,3 +149,92 @@ def test_summary_counts_only_future_special_days_once_each():
     )
     s = summarize(ReviewSet(reviews=()), hours, (), TODAY)
     assert s.upcoming_special_hours == 3
+
+
+# --- facts of the profile -------------------------------------------------------
+
+
+def _details(**changes):
+    values = {
+        "hours": ProfileHours(True, (date(2027, 1, 1), date(2026, 12, 25), date(2026, 12, 25))),
+        "title": "Bar La Parra",
+        "address": "Calle Elvira 1, 18010 Granada",
+        "category": "Bar",
+        "additional_categories": 1,
+        "description_length": 300,
+        "has_phone": True,
+        "has_website": True,
+        "service_count": 2,
+        "is_open": True,
+        "place_id": "ChIJ-ficha",
+        "maps_url": "https://maps.google.com/?cid=42",
+    }
+    return ProfileDetails(**{**values, **changes})
+
+
+def test_facts_keep_upcoming_special_dates_sorted_and_unique():
+    hours = ProfileHours(True, (date(2027, 1, 1), TODAY, date(2020, 1, 1), date(2027, 1, 1)))
+    photo = datetime(2026, 6, 15, 9, 30, tzinfo=UTC)
+    facts = collect_facts(_details(hours=hours), MediaSummary(7, photo), 4, TODAY)
+    assert facts.special_dates == (TODAY, date(2027, 1, 1))
+    assert (facts.photo_count, facts.latest_photo_at, facts.attribute_count) == (7, photo, 4)
+    assert facts.title == "Bar La Parra" and facts.description_length == 300
+
+
+def test_facts_of_reads_google_refused_are_unknown_not_zero():
+    facts = collect_facts(_details(), None, None, TODAY)
+    assert (facts.photo_count, facts.latest_photo_at, facts.attribute_count) == (None, None, None)
+
+
+def test_facts_survive_the_trip_through_json():
+    photo = datetime(2026, 6, 15, 9, 30, tzinfo=UTC)
+    for facts in (
+        collect_facts(_details(), MediaSummary(7, photo), 4, TODAY),
+        collect_facts(_details(), None, None, TODAY),
+    ):
+        raw = json.loads(json.dumps(facts_to_json(facts)))
+        assert raw["v"] == 1
+        assert facts_from_json(raw) == facts
+
+
+def test_stored_facts_hold_no_text_of_the_description_nor_of_reviews():
+    raw = facts_to_json(collect_facts(_details(), MediaSummary(1), 0, TODAY))
+    assert set(raw) == {
+        "v",
+        "title",
+        "address",
+        "category",
+        "additional_categories",
+        "description_length",
+        "has_phone",
+        "has_website",
+        "service_count",
+        "is_open",
+        "place_id",
+        "maps_url",
+        "special_dates",
+        "photo_count",
+        "latest_photo_at",
+        "attribute_count",
+    }
+
+
+def test_missing_malformed_or_newer_facts_read_as_none():
+    good = facts_to_json(collect_facts(_details(), MediaSummary(1), 0, TODAY))
+    assert facts_from_json(good) is not None
+    for bad in (
+        None,
+        "texto",
+        [],
+        {},
+        {**good, "v": 2},
+        {k: v for k, v in good.items() if k != "has_phone"},
+        {**good, "photo_count": "muchas"},
+        {**good, "photo_count": -1},
+        {**good, "photo_count": True},
+        {**good, "has_website": 1},
+        {**good, "special_dates": ["ayer"]},
+        {**good, "special_dates": "2026-12-25"},
+        {**good, "latest_photo_at": "nunca"},
+    ):
+        assert facts_from_json(bad) is None

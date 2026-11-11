@@ -42,6 +42,10 @@ CREATE INDEX IF NOT EXISTS job_live_run_at ON job (run_at)
 -- Una fila por ficha y conexión; cada sincronización la actualiza.
 -- Sin datos personales de terceros: ni textos ni autores de reseñas, solo cifras.
 -- Las cifras son NULL si nunca hubo una sincronización correcta.
+-- facts: hechos de la ficha con los que la API calcula el diagnóstico (descripción
+-- medida en caracteres, categorías, teléfono y web como sí o no, fotos, atributos,
+-- días con horario especial). El formato lo define app/domain/profile_summary.py
+-- y lleva su versión en "v". Es NULL hasta la primera sincronización que los lee.
 CREATE TABLE IF NOT EXISTS profile_summary (
     google_sub             text NOT NULL CHECK (length(google_sub) BETWEEN 1 AND 255),
     location               text NOT NULL CHECK (length(location) BETWEEN 1 AND 200),
@@ -57,8 +61,14 @@ CREATE TABLE IF NOT EXISTS profile_summary (
     upcoming_special_hours integer CHECK (upcoming_special_hours >= 0),
     google_changed         boolean,
     google_changed_fields  text[] NOT NULL DEFAULT '{}',
+    facts                  jsonb CHECK (jsonb_typeof(facts) = 'object'),
     PRIMARY KEY (google_sub, location)
 );
+
+-- Bases creadas antes del 2026-11-11: añade la columna sin tocar las filas que haya.
+-- Su resumen sigue valiendo; los hechos llegan con la siguiente sincronización.
+ALTER TABLE profile_summary
+    ADD COLUMN IF NOT EXISTS facts jsonb CHECK (jsonb_typeof(facts) = 'object');
 
 -- Privilegios mínimos. Se retira todo y se concede lo justo en cada aplicación.
 REVOKE ALL ON job, profile_summary FROM PUBLIC, fichaitor_api, fichaitor_worker;

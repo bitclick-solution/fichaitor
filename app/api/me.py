@@ -2,15 +2,23 @@
 
 Every read and write goes through the account of the session; a location id from
 the request is only ever looked up among that account's profiles.
+
+Neither the summary nor the diagnosis talks to Google: both read what the worker stored.
 """
 
 import logging
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 
-from app.api.diagnosis_out import DiagnosisResponse, to_response
+from app.api.diagnosis_out import (
+    UNAVAILABLE_STATUS_CODE,
+    DiagnosisUnavailable,
+    ProfileDiagnosisResponse,
+    to_profile_response,
+)
 from app.api.session import (
     SESSION_COOKIE,
     account_guard,
@@ -19,10 +27,9 @@ from app.api.session import (
     utc,
 )
 from app.api.summary_out import SummaryResponse, to_summary_response
-from app.application.diagnosis_service import DiagnosisService, RateLimited
 from app.application.profile_sync import ProfileSync
+from app.domain.calendar import Holiday
 from app.domain.session import hash_token
-from app.ports.places import PlacesUnavailable
 from app.ports.store import Account, Store
 
 log = logging.getLogger("fichaitor.me")
@@ -48,8 +55,8 @@ class SelectLocationRequest(BaseModel):
 def build_router(
     *,
     store: Store,
-    diagnosis: DiagnosisService,
     sync: ProfileSync,
+    holidays: Sequence[Holiday],
     cookie_secure: bool,
     clock: Callable[[], float],
 ) -> APIRouter:
@@ -91,35 +98,24 @@ def build_router(
             Account(account.id, account.email, selected_location_id=body.location_id)
         )
 
-    @router.get("/api/v1/me/diagnosis", response_model=DiagnosisResponse)
+    @router.get(
+        "/api/v1/me/diagnosis",
+        response_model=ProfileDiagnosisResponse,
+        responses={UNAVAILABLE_STATUS_CODE: {"model": DiagnosisUnavailable}},
+    )
     async def my_diagnosis(
         account: Account = Depends(current_account),  # noqa: B008
-    ) -> DiagnosisResponse:
-        if account.selected_location_id is None:
+    ) -> ProfileDiagnosisResponse | JSONResponse:
+        # Computed here, from the facts the worker stored: no call to Google, no cost
+        # and so no rate limit. Reading it asks for a sync under the same rules as the
+        # summary (missing, old or failed some time ago).
+        view = await sync.view(account.id)
+        if view is None:
             raise HTTPException(409, "Primero elige con qué ficha quieres trabajar.")
-        locations = await store.list_locations(account.id)
-        location = next((loc for loc in locations if loc.id == account.selected_location_id), None)
-        if location is None:
-            raise HTTPException(409, "Primero elige con qué ficha quieres trabajar.")
-        try:
-            result = await diagnosis.run_for_profile(
-                location.place_id, location.title, f"account:{account.id}"
-            )
-        except RateLimited as exc:
-            raise HTTPException(
-                429, "Has hecho muchas consultas. Prueba dentro de un rato."
-            ) from exc
-        except PlacesUnavailable as exc:
-            raise HTTPException(
-                503, "Google no responde ahora mismo. Prueba en un minuto."
-            ) from exc
-        if result is None:
-            raise HTTPException(
-                404,
-                "No encontramos tu ficha en Google Maps. Puede que aún no sea pública "
-                "o que esté pendiente de verificar.",
-            )
-        return to_response(result)
+        result = to_profile_response(view, holidays, utc(clock()).date())
+        if isinstance(result, DiagnosisUnavailable):
+            return JSONResponse(result.model_dump(), status_code=UNAVAILABLE_STATUS_CODE)
+        return result
 
     @router.get("/api/v1/me/summary", response_model=SummaryResponse)
     async def my_summary(

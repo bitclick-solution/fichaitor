@@ -19,7 +19,7 @@ Las dos sesiones trabajan en la **misma carpeta y la misma rama** (`main`). Cada
 - En producción, un contenedor `web` con nginx sirve los estáticos y redirige `/api/` a la API. Mismo origen: sin CORS.
 - La interfaz entrega `web/Dockerfile` (compila las dos partes; nginx sin privilegios, escuchando en el 8080) y `web/nginx.conf` con `location /api/ { proxy_pass http://api:8000; }`. El respaldo a `index.html` se aplica **solo** a `/app`; las páginas legales y el inicio se sirven como archivos. El backend añade el servicio `web` a `docker-compose.yml`.
 - En desarrollo, el servidor de Vite redirige `/api` a `http://localhost:8000`.
-- Sin Google real: con `FICHAITOR_FAKE_GOOGLE=true` y `FICHAITOR_FAKE_PLACES=true` todo el recorrido funciona con datos de ejemplo.
+- Sin Google real: con `FICHAITOR_FAKE_GOOGLE=true` y `FICHAITOR_FAKE_PLACES=true` todo el recorrido funciona con datos de ejemplo. El diagnóstico del panel no depende de `FICHAITOR_FAKE_PLACES`: sale de la ficha de demostración que lee el worker.
 
 ## Convenciones
 
@@ -72,7 +72,7 @@ Nombre, dirección, categoría, enlace y las cifras de las mejoras (fotos, nota,
 
 - La web **muestra el texto de `attribution`** ("Google Maps") junto a esos datos, en la misma pantalla y sin que haga falta desplazarse o pulsar para verlo. Por ejemplo: "Datos de Google Maps", debajo del nombre y la dirección.
 - No lo traduzcas, no lo abrevies y no lo partas en dos líneas. Usa el texto del campo; no lo escribas a mano en la web.
-- Vale para el diagnóstico público y para `GET /api/v1/me/diagnosis`. También debe verse en las capturas y los vídeos que enseñen el diagnóstico.
+- Vale para el diagnóstico público. `GET /api/v1/me/diagnosis` ya no usa datos de Google Maps: trae su propio texto en `attribution` ("Datos de tu Perfil de Empresa de Google"), que la web muestra igual, tal cual llega. También debe verse en las capturas y los vídeos que enseñen el diagnóstico.
 
 #### Qué no puede guardar la web (cambio del 2026-11-11)
 
@@ -83,7 +83,7 @@ Los términos de Google solo permiten guardar el `place_id`. La API ya no guarda
 
 #### El límite cuenta todos los diagnósticos (cambio del 2026-11-11)
 
-Antes, repetir una búsqueda salía de una caché y no contaba. Ahora **cada diagnóstico cuenta**, también los repetidos: 10 por hora por IP en el público y 10 por hora por cuenta en `GET /api/v1/me/diagnosis`. Cada uno es una petición de pago a Google.
+Antes, repetir una búsqueda salía de una caché y no contaba. Ahora **cada diagnóstico público cuenta**, también los repetidos: 10 por hora por IP. Cada uno es una petición de pago a Google. `GET /api/v1/me/diagnosis` no tiene límite: no llama a Google.
 
 - No vuelvas a pedir el diagnóstico en cada pintado, al cambiar de pestaña o al recuperar el foco. Pídelo una vez al entrar y cuando el usuario lo pida.
 - Con un 429, muestra `detail` y conserva en pantalla el último diagnóstico si lo hay.
@@ -164,19 +164,116 @@ Errores: 401, 403 (falta la cabecera), 404 (la ficha no es de esa cuenta o no ex
 
 ### `GET /api/v1/me/diagnosis`
 
-Diagnóstico de la ficha elegida, con la misma forma que el diagnóstico público, incluido `attribution`. Aplican las mismas reglas de atribución, de no guardar la respuesta y de límite.
+> **Importante (cambio del 2026-11-11): el diagnóstico del panel sale de la ficha conectada, no de Google Maps.**
+>
+> - La API ya no consulta Google Places en esta ruta. Calcula el diagnóstico con los datos que el worker lee del Perfil de Empresa del dueño: los mismos de `GET /api/v1/me/summary`, más descripción, categorías, teléfono, web, fotos y atributos.
+> - `attribution` pasa a ser `"Datos de tu Perfil de Empresa de Google"`. Muéstralo tal cual. Ya no aplica la regla de "Datos de Google Maps" en esta ruta.
+> - `locked_checks` va siempre vacío: con la ficha conectada no hay nada bloqueado.
+> - La respuesta 200 gana tres campos: `status`, `synced_at` y `stale`.
+> - Hay un estado nuevo, "todavía no hay diagnóstico": **404 con `status` y `detail`**. Consulta [Cuando todavía no hay diagnóstico](#cuando-todavía-no-hay-diagnóstico).
+> - Desaparecen de esta ruta el 429 (ya no hay límite) y el 503 de Google. El 404 cambia de significado.
+> - Aparecen mejoras nuevas (`code`): `unanswered_reviews`, `no_holiday_hours`, `no_description`, `short_description` y `google_changed`.
 
-La API busca la ficha por su `place_id`. Si la ficha no tiene `place_id`, o Google ya no lo reconoce, la busca por su título.
+Diagnóstico de la ficha elegida. La API no llama a Google en esta ruta: lo calcula en el momento con lo que el worker guardó en la última sincronización. Responde rápido, no cuesta dinero y no tiene límite de uso.
+
+Respuesta 200:
+
+```json
+{
+  "place_id": "ChIJ...",
+  "name": "Bar La Parra",
+  "address": "Calle Elvira 1, 18010 Granada",
+  "category": "Bar",
+  "score": 69,
+  "label": "Mejorable",
+  "findings": [
+    {
+      "code": "unanswered_reviews",
+      "title": "Tienes 13 reseñas sin responder",
+      "detail": "Una es de 1 o 2 estrellas. Una crítica sin respuesta es lo que más frena a quien te compara.",
+      "impact": "alto"
+    },
+    {
+      "code": "no_holiday_hours",
+      "title": "Sin horario para el festivo del 8 de diciembre",
+      "detail": "El 8 de diciembre es festivo nacional y no has indicado si abres. Google avisa a quien te busca de que tu horario puede no ser el real.",
+      "impact": "medio"
+    }
+  ],
+  "locked_checks": [],
+  "maps_url": "https://maps.google.com/?cid=...",
+  "attribution": "Datos de tu Perfil de Empresa de Google",
+  "status": "ok",
+  "synced_at": "2026-11-11T16:58:39Z",
+  "stale": false
+}
+```
+
+Los diez primeros campos tienen la misma forma y el mismo significado que en el diagnóstico público (`label`, `impact`, hasta 5 `findings` ya ordenados). Lo que cambia:
+
+| Campo | Tipo | Qué es |
+|---|---|---|
+| `name` | texto | Nombre de la ficha |
+| `address`, `category` | texto | Dirección y categoría principal, como las tiene el dueño. Pueden ir vacíos |
+| `place_id`, `maps_url` | texto | Se rellenan si Google los da para esa ficha. Si no, texto vacío |
+| `locked_checks` | lista | Siempre vacía |
+| `attribution` | texto | Siempre `"Datos de tu Perfil de Empresa de Google"` |
+| `status` | texto | `ok`, `needs_reconnect` o `error`: cómo acabó la última sincronización. Los mismos valores y el mismo significado que en [Estados del resumen](#estados-del-resumen) |
+| `synced_at` | fecha y hora UTC | Última lectura correcta de Google. El diagnóstico es de la ficha en ese momento |
+| `stale` | booleano | `true` si los datos tienen más de 6 horas. La API ya ha pedido una actualización |
+
+Con `needs_reconnect` y `error` la API sigue sirviendo el diagnóstico de la última lectura correcta. Muéstralo con su fecha; el aviso de reconectar o de error ya lo da el resumen.
+
+Mejoras posibles (`code`). Las cinco primeras solo existen en esta ruta:
+
+| `code` | Cuándo | `impact` |
+|---|---|---|
+| `unanswered_reviews` | Hay reseñas sin responder. El título dice cuántas | `alto` si alguna es de 1 o 2 estrellas; si no, `medio` |
+| `no_holiday_hours` | Hay un festivo nacional en los próximos 30 días sin horario especial. El título o el detalle dicen cuáles | `alto` si el primero cae en 7 días o menos; si no, `medio` |
+| `no_description` | La ficha no tiene descripción | `medio` |
+| `short_description` | La descripción tiene menos de 150 caracteres | `bajo` |
+| `google_changed` | Google ha cambiado datos de la ficha. El detalle dice cuáles, con las etiquetas de `google_changed_labels` | `medio` |
+| `not_operational` | La ficha figura como cerrada | `alto` |
+| `no_hours` | No tiene horario | `alto` |
+| `no_photos`, `few_photos`, `some_photos` | El dueño ha subido 0, menos de 5 o menos de 10 fotos | `alto`, `medio`, `bajo` |
+| `low_rating` | Nota media por debajo de 4 | `alto` |
+| `few_reviews` | Menos de 10 reseñas | `medio` |
+| `no_website`, `no_phone` | Sin web o sin teléfono | `medio` |
+| `no_secondary_categories` | Una sola categoría | `medio` |
+| `no_service_attributes` | Ningún atributo marcado | `bajo` |
+
+- Los festivos son solo los nacionales: la API todavía no sabe la comunidad autónoma del negocio. Se calculan con la fecha del día de la petición, así que el diagnóstico puede cambiar de un día a otro sin una sincronización nueva.
+- Las fotos son las que ha subido el dueño. Las de clientes no cuentan.
+- Si Google no deja leer las fotos o los atributos de una ficha, esas mejoras no aparecen; el resto del diagnóstico sí.
+
+#### Cuando todavía no hay diagnóstico
+
+Si el worker aún no ha leído la ficha, la API responde **404** con este cuerpo:
+
+```json
+{ "status": "pendiente", "detail": "Estamos leyendo tu ficha. Vuelve a intentarlo en unos segundos." }
+```
+
+| `status` | Qué significa | Qué hace la web |
+|---|---|---|
+| `pendiente` | La sincronización está pedida y el worker no ha terminado. También sale con una ficha sincronizada antes de este cambio, hasta su siguiente sincronización | Muestra "Analizando tu ficha" y vuelve a preguntar, con el mismo ritmo que el resumen: cada 3 segundos, 10 veces como máximo |
+| `needs_reconnect` | Nunca se ha podido leer la ficha y Google ha retirado el permiso | Muestra `detail`. El resumen ya pide volver a conectar |
+| `error` | Nunca se ha podido leer la ficha y el último intento falló | Muestra `detail` y un botón para reintentar |
+
+- Es un 404 y no un 2xx a propósito: `detail` llega como en cualquier error, así que una web que no conozca `status` muestra el mensaje y su botón de reintentar en vez de intentar pintar un diagnóstico que no existe.
+- Distingue los casos por `status`, no por el texto de `detail`.
+- `pendiente` del diagnóstico y `pendiente` del resumen casi siempre coinciden. La excepción es la ficha sincronizada antes del 2026-11-11: el resumen ya responde `ok` y el diagnóstico sigue `pendiente` hasta la siguiente sincronización, que la API pide al momento.
+- Pedir el diagnóstico pide la sincronización con las mismas reglas que el resumen ([Cuándo se sincroniza](#cuándo-se-sincroniza)). Pedir las dos rutas a la vez no lanza dos.
+
+Qué puede guardar la web: lo mismo que con el resumen. Tenlo en memoria mientras la pantalla está abierta; no lo guardes en `localStorage` ni similares, porque caduca.
 
 Errores:
 
 | Código | Cuándo |
 |---|---|
 | 401 | Sin sesión |
-| 409 | Aún no se ha elegido ficha. Lleva a la lista de fichas |
-| 404 | No se ha encontrado la ficha en Google Maps ni por `place_id` ni por título. `detail` trae el mensaje |
-| 429 | Demasiados diagnósticos de esa cuenta en la última hora. Cuentan todos, también los repetidos |
-| 503 | Google no responde |
+| 409 | Aún no se ha elegido ficha, o Google ha dejado de listar la elegida. Lleva a la lista de fichas |
+| 404 | Todavía no hay diagnóstico. El cuerpo trae `status` y `detail` |
 
 ### `GET /api/v1/me/summary`
 
@@ -256,7 +353,7 @@ Con `needs_reconnect` y `error`, `google_changed_fields` y `google_changed_label
 
 - Al elegir ficha con `POST /api/v1/me/location`.
 - Al volver a conectar con Google (`google=ok`), si la cuenta ya tenía ficha elegida y Google ha listado las fichas. Se pide al momento, aunque no hayan pasado los 15 minutos, y como máximo una vez por minuto.
-- Al pedir el resumen, si no existe, si tiene más de 6 horas o si el último intento falló hace más de 15 minutos.
+- Al pedir el resumen o el diagnóstico, si no existe, si tiene más de 6 horas, si el último intento falló hace más de 15 minutos o si se guardó antes de que existieran los datos del diagnóstico.
 - Fuera de la reconexión, como máximo una sincronización por ficha cada 15 minutos. Pedir el resumen muchas veces no lanza más.
 
 #### Sondeo
@@ -284,9 +381,56 @@ Cada cuenta ve solo el resumen de su ficha elegida. Dos cuentas que administran 
 ## Pantallas mínimas para tener algo visible
 
 1. **Inicio** (`/`): diagnóstico público, resultado, lista de espera y botón "Conectar con Google".
-2. **App** (`/app`): lee `?google=`; sin sesión, invita a conectar; con sesión y sin ficha elegida, lista de fichas; con ficha elegida, panel con el diagnóstico y el resumen de esa ficha y botón de salir.
+2. **App** (`/app`): lee `?google=`; sin sesión, invita a conectar; con sesión y sin ficha elegida, lista de fichas; con ficha elegida, panel con el diagnóstico y el resumen de esa ficha (los dos salen de la ficha conectada) y botón de salir.
 3. **Privacidad** (`/privacidad/`) y **condiciones** (`/condiciones-de-uso/`).
 
 ## Siguiente versión del contrato
 
 El resumen de la ficha (`GET /api/v1/me/summary`) ya existe. Lo siguiente es la lista de reseñas con respuesta propuesta y las fechas clave. Se añadirán aquí antes de implementarse.
+
+## Demostración por captura de reseñas (2026-11-11)
+
+### `POST /api/v1/public/diagnosis/screenshot`
+
+Para quien aún no conecta su ficha: el dueño sube una captura de la pestaña **Reseñas** de su negocio en Google Maps y recibe cuántas de las reseñas visibles están sin contestar y una respuesta propuesta para una de ellas. No devuelve nota. Detalle de funcionamiento, límites y privacidad en `docs/pantallazo.md`.
+
+Petición `multipart/form-data` con `image` (PNG, JPEG o WebP; 6 MB como máximo) y `source` opcional. Usa `fetch` con `FormData`, sin poner `Content-Type` a mano.
+
+Respuesta 200:
+
+```json
+{
+  "business_name": "Bar La Parra",
+  "reviews_seen": 4,
+  "unanswered": 3,
+  "unanswered_low": 1,
+  "headline": "Veo 4 reseñas y 3 están sin contestar. 1 de ellas es de 1 o 2 estrellas.",
+  "suggested_reply": {
+    "stars": 1,
+    "review_excerpt": "Esperamos cuarenta minutos y la comida llegó fría.",
+    "reply": "Sentimos mucho que tu visita no fuera como esperabas. ..."
+  },
+  "locked_checks": [{ "code": "unanswered_reviews", "title": "Cuántas reseñas tienes sin responder" }],
+  "attribution": "Según la captura que has enviado"
+}
+```
+
+- `business_name` y `suggested_reply` pueden ser `null`. Con `suggested_reply: null` el resto es válido.
+- `review_excerpt` (200 caracteres como máximo) va vacío si la reseña solo tiene estrellas. `reply`: 600 como máximo.
+- La respuesta nunca incluye el nombre de quien escribió una reseña.
+- Pinta `business_name`, `review_excerpt` y `reply` como texto, nunca como HTML.
+- No guardes la respuesta ni la imagen en el navegador.
+- Puede tardar hasta 30 segundos. No reintentes sola.
+
+Errores, todos con `detail` en español listo para mostrar:
+
+| Código | Cuándo |
+|---|---|
+| 413 | La captura pesa más de 6 MB |
+| 415 | No es PNG, JPEG ni WebP (se mira el contenido) |
+| 422 | Falta la imagen; o no es una ficha de Google; o es la ficha pero no la pestaña de reseñas; o no se distingue ninguna reseña |
+| 429 | Más de 3 capturas por hora desde la misma IP |
+| 503 | El modelo no responde o se alcanzó el tope diario global |
+| 404 | La función no está configurada en ese entorno |
+
+Con `FICHAITOR_FAKE_SCREENSHOT=true` la respuesta depende del formato: PNG da el 200 de ejemplo, JPEG el 422 de "no es una ficha" y WebP el 422 de "no es la pestaña de reseñas".

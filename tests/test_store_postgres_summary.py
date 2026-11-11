@@ -328,3 +328,175 @@ def test_whole_journey_api_writes_the_job_the_worker_handles_and_the_api_reads_i
     assert body["google_changed_fields"] == ["specialHours", "campoNuevo"]
     assert body["google_changed_labels"] == ["Horarios especiales", "campoNuevo"]
     assert body["stale"] is False
+
+
+# --- facts of the profile (what the diagnosis is computed from) ---------------------
+
+
+def test_selected_profile_carries_title_and_place_id_of_the_connection():
+    async def scenario(store):
+        account_id = await _account_with(store, "pytest-ana", [SHARED, OTHER], SHARED)
+        first = await store.selected_profile(account_id)
+        rows = await _owner(
+            "SELECT id FROM location WHERE account_id = $1::uuid AND gbp_location = $2",
+            account_id,
+            OTHER.location,
+        )
+        await store.select_location(account_id, rows[0]["id"])
+        return first, await store.selected_profile(account_id)
+
+    first, second = with_store(scenario)
+    assert (first.title, first.place_id) == ("Bar compartido", "place-pytest-9")
+    assert (second.title, second.place_id) == ("Otra ficha", None)
+
+
+def test_facts_written_by_the_worker_are_read_by_the_api_role():
+    import json
+
+    from app.domain.profile_summary import ProfileFacts, facts_to_json
+
+    facts = ProfileFacts(
+        title="Bar compartido",
+        address="Calle Elvira 1, 18010 Granada",
+        category="Bar",
+        additional_categories=1,
+        description_length=300,
+        has_phone=True,
+        has_website=False,
+        service_count=2,
+        place_id="place-pytest-9",
+        special_dates=(NOW.date() + timedelta(days=3),),
+        photo_count=7,
+        latest_photo_at=NOW - timedelta(days=10),
+        attribute_count=None,
+    )
+
+    async def scenario(store):
+        account_id = await _account_with(store, "pytest-ana", [SHARED], SHARED)
+        await _write_summary("pytest-ana", SHARED.location, 13)
+        before = (await store.selected_profile(account_id)).summary
+        await _owner(
+            "UPDATE profile_summary SET facts = $1::jsonb WHERE google_sub = 'pytest-ana'",
+            json.dumps(facts_to_json(facts)),
+        )
+        return before, (await store.selected_profile(account_id)).summary
+
+    before, after = with_store(scenario)
+    assert before.facts is None and before.review_count == 13  # a row from before the facts
+    assert after.facts == facts
+    assert after.review_count == 13
+
+
+def test_facts_of_an_unknown_version_or_shape_are_read_as_missing():
+    async def scenario(store):
+        account_id = await _account_with(store, "pytest-ana", [SHARED], SHARED)
+        await _write_summary("pytest-ana", SHARED.location, 13)
+        seen = []
+        for raw in ('{"v": 99}', '{"v": 1, "title": 7}', "{}"):
+            await _owner(
+                "UPDATE profile_summary SET facts = $1::jsonb WHERE google_sub = 'pytest-ana'",
+                raw,
+            )
+            seen.append((await store.selected_profile(account_id)).summary)
+        return seen
+
+    for summary in with_store(scenario):
+        assert summary.facts is None
+        assert summary.status == "ok" and summary.review_count == 13
+
+
+def test_facts_must_be_a_json_object():
+    async def scenario(store):
+        await _write_summary("pytest-ana", SHARED.location, 13)
+        try:
+            await _owner(
+                "UPDATE profile_summary SET facts = '[1]'::jsonb WHERE google_sub = 'pytest-ana'"
+            )
+        except asyncpg.CheckViolationError:
+            return True
+        return False
+
+    assert with_store(scenario)
+
+
+def test_the_whole_diagnosis_over_http_reads_stored_facts_on_postgresql():
+    """Connect, select and diagnose with the real store; the worker's write is simulated."""
+    import json
+    from urllib.parse import parse_qs, urlparse
+
+    from fastapi.testclient import TestClient
+
+    from app.adapters.crypto.sealed import generate_keypair
+    from app.adapters.google_oauth.fake import FakeGoogleOAuth
+    from app.api.main import create_app
+    from app.config import Settings
+    from app.domain.profile_summary import ProfileFacts, facts_to_json
+    from app.ports.google_oauth import Identity
+
+    class QuietStore(PostgresStore):
+        async def record_event(self, *args, **kwargs) -> None:
+            """Funnel rows of this test could not be told apart from real ones: skip them."""
+
+        async def enqueue(self, *args, **kwargs) -> bool:
+            """No job is left in the real queue: a worker may be running against it."""
+            return True
+
+    class NoPlaces:
+        async def find_id(self, query):
+            raise AssertionError("Google Places consultado")
+
+        async def get(self, place_id):
+            raise AssertionError("Google Places consultado")
+
+    google = FakeGoogleOAuth(locations=[SHARED])
+    google.identity_value = Identity(sub="pytest-ana", email="pytest-ana@example.com")
+    settings = Settings(
+        _env_file=None,
+        oauth_state_secret="secreto-de-pruebas",
+        token_public_key=generate_keypair()[0],
+        cookie_secure=False,
+    )
+    app = create_app(settings, NoPlaces(), QuietStore(API_URL), google, holidays=())
+    facts = ProfileFacts(
+        address="Calle Elvira 1, 18010 Granada",
+        category="Bar",
+        additional_categories=1,
+        description_length=300,
+        has_phone=True,
+        has_website=True,
+        photo_count=30,
+        attribute_count=3,
+    )
+    with TestClient(app, follow_redirects=False) as client:
+        state = parse_qs(
+            urlparse(client.get("/api/v1/google/oauth/start").headers["location"]).query
+        )["state"][0]
+        client.get("/api/v1/google/oauth/callback", params={"code": "c", "state": state})
+        (location,) = client.get("/api/v1/me").json()["locations"]
+        r = client.post(
+            "/api/v1/me/location",
+            json={"location_id": location["id"]},
+            headers={"X-Requested-With": "fichaitor"},
+        )
+        assert r.status_code == 200
+        r = client.get("/api/v1/me/diagnosis")
+        assert (r.status_code, r.json()["status"]) == (404, "pendiente")
+
+        asyncio.run(_write_summary("pytest-ana", SHARED.location, 13))
+        asyncio.run(
+            _owner(
+                "UPDATE profile_summary SET facts = $1::jsonb, synced_at = now(), status_at = now()"
+                " WHERE google_sub = 'pytest-ana'",
+                json.dumps(facts_to_json(facts)),
+            )
+        )
+        r = client.get("/api/v1/me/diagnosis")
+        assert r.status_code == 200
+        body = r.json()
+        assert body["status"] == "ok"
+        assert body["name"] == "Bar compartido"
+        assert body["place_id"] == "place-pytest-9"
+        assert body["attribution"] == "Datos de tu Perfil de Empresa de Google"
+        assert [f["code"] for f in body["findings"]] == ["unanswered_reviews", "google_changed"]
+        assert body["findings"][0]["title"] == "Tienes 3 reseñas sin responder"
+        assert body["score"] == 77

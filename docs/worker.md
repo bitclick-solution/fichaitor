@@ -2,7 +2,7 @@
 
 El worker ejecuta el trabajo asíncrono de Fichaitor. Toma jobs de una cola en PostgreSQL y los ejecuta. Es el único proceso que tiene la clave privada de los tokens y las credenciales de Google.
 
-El primer job es `sync_profile`: lee una ficha en Google y guarda un resumen con lo que el panel muestra hoy como bloqueado (reseñas sin responder, horarios especiales y cambios hechos por Google).
+El primer job es `sync_profile`: lee una ficha en Google y guarda dos cosas. La primera es el resumen del panel (reseñas sin responder, horarios especiales y cambios hechos por Google). La segunda, desde el 2026-11-11, son los hechos de la ficha con los que la API calcula el diagnóstico (`GET /api/v1/me/diagnosis`), que ya no depende de Google Places.
 
 ## Cómo funciona
 
@@ -56,8 +56,23 @@ Carga: `{"google_sub": "...", "location": "locations/123"}`.
 1. Busca la conexión más reciente de ese `google_sub` en `google_connection`.
 2. Comprueba que la ficha pertenece a esa conexión. La cuenta y la ficha que se envían a Google salen de la conexión guardada, no de la carga.
 3. Descifra el token de renovación con la clave privada.
-4. Pide a Google un token de acceso y lee las reseñas (todas las páginas), los horarios y `getGoogleUpdated`.
-5. Calcula el resumen con `app/domain/profile_summary.py` y lo guarda en `profile_summary`.
+4. Pide a Google un token de acceso y hace las lecturas de la tabla siguiente, en ese orden.
+5. Calcula el resumen y reúne los hechos de la ficha con `app/domain/profile_summary.py`, y lo guarda todo en `profile_summary`.
+
+Lecturas de cada sincronización:
+
+| Lectura | Endpoint | Qué se usa | Si Google la rechaza (4xx) |
+|---|---|---|---|
+| Reseñas | My Business v4 `GET {account}/{location}/reviews`, todas las páginas | Número, nota media, sin responder, fecha de la última | La sincronización falla |
+| Ficha | Business Information `GET locations/{id}?readMask=name,title,storefrontAddress,categories,profile,phoneNumbers,websiteUri,regularHours,specialHours,serviceItems,openInfo,metadata` | Horario, días con horario especial, nombre, dirección, categoría principal y número de adicionales, longitud de la descripción, si hay teléfono y web, número de servicios, si figura cerrada, `placeId` y `mapsUri` | La sincronización falla |
+| Cambios de Google | Business Information `GET locations/{id}:getGoogleUpdated` | `diffMask` | La sincronización falla |
+| Atributos | Business Information `GET locations/{id}/attributes` | Cuántos atributos hay declarados | El dato queda sin valor y la sincronización sigue |
+| Fotos | My Business v4 `GET {account}/{location}/media?pageSize=100`, hasta 5 páginas | `totalMediaItemCount` y la fecha (`createTime`) del elemento más reciente | El dato queda sin valor y la sincronización sigue |
+
+- **Atributos y fotos son opcionales.** Si Google rechaza una de esas dos lecturas, el worker escribe el evento `optional_read_rejected` en el log y guarda el dato como desconocido. El diagnóstico no dice nada de lo que no se pudo leer. Un 401 o un fallo temporal en esas lecturas se tratan como en las demás.
+- **La fecha de la foto más reciente** solo se guarda si se han leído todos los elementos: Google no documenta en qué orden los devuelve. Con más de 500, queda sin valor.
+- **Un periodo de horario especial de varios días** (`startDate` y `endDate`) cuenta cada uno de sus días, hasta 31.
+- **El recuento de fotos** es de lo que ha subido el dueño. Las fotos de clientes están en otro endpoint y no se leen.
 
 | Qué pasa | Job | `profile_summary.status` |
 |---|---|---|
@@ -71,7 +86,7 @@ Carga: `{"google_sub": "...", "location": "locations/123"}`.
 | El worker muere durante el último intento | `failed` al caducar el bloqueo | `error`, como mucho un minuto después |
 | La carga no es válida (falta `google_sub` o `location`) | `failed`, sin reintentos | No se escribe nada: no hay ficha a la que apuntar |
 
-Cuando el estado no es `ok`, las cifras de la última lectura correcta se conservan. `synced_at` indica de cuándo son.
+Cuando el estado no es `ok`, las cifras y los hechos de la última lectura correcta se conservan. `synced_at` indica de cuándo son.
 
 Todo job con una carga válida deja un estado en `profile_summary`. La API no puede leer la cola, así que el resumen es el único sitio donde el panel ve un fallo. Sin ese estado, la API respondería `pendiente` sin fin.
 
@@ -92,11 +107,45 @@ Qué ve el usuario mientras tanto: hasta que caduca el bloqueo (`WORKER_LOCK_TIM
 
 De las reseñas con el formato `(Translated by Google) … (Original) …` se conserva solo el texto original. El resumen no guarda textos ni autores, solo cifras.
 
+### Los hechos de la ficha y el diagnóstico
+
+El worker guarda hechos; el diagnóstico lo calcula la API en cada petición con `app/domain/profile_diagnosis.py`. Motivos:
+
+- **Los festivos dependen del día.** "Hay un festivo en los próximos 30 días sin horario especial" cambia de un día a otro sin que la ficha cambie. Un diagnóstico guardado quedaría viejo; los hechos, no.
+- **Las reglas pueden cambiar sin volver a leer Google.** Un texto o un peso nuevo se aplica a todas las fichas en el siguiente despliegue de la API.
+- **El worker no necesita el calendario** ni conocer las reglas.
+
+Los hechos van en la columna `facts` (jsonb) de `profile_summary`, no en columnas sueltas:
+
+- La API los lee siempre enteros y nunca filtra ni ordena por ellos.
+- La lista va a crecer (comunidad autónoma, publicaciones, carta) y cada hecho nuevo sería una migración.
+- Llevan su versión en el campo `v`. Si la API encuentra una versión que no conoce o un formato roto, trata la ficha como "todavía sin diagnóstico" y pide una sincronización que los reescribe.
+
+Qué contiene `facts`:
+
+| Campo | Qué es |
+|---|---|
+| `v` | Versión del formato. Hoy, 1 |
+| `title`, `address`, `category` | Nombre, dirección y categoría principal de la ficha |
+| `additional_categories` | Número de categorías adicionales |
+| `description_length` | Caracteres de la descripción del dueño. El texto no se guarda |
+| `has_phone`, `has_website` | Si la ficha tiene teléfono y web. Los valores no se guardan |
+| `service_count` | Número de servicios declarados |
+| `is_open` | `false` si la ficha figura como cerrada temporal o definitivamente |
+| `place_id`, `maps_url` | Identificador y enlace de Google Maps, si Google los da |
+| `special_dates` | Días con horario especial desde el día de la sincronización (hasta 400) |
+| `photo_count`, `latest_photo_at` | Fotos subidas por el dueño y fecha de la más reciente. `null` si no se pudieron leer |
+| `attribute_count` | Atributos declarados. `null` si no se pudieron leer |
+
+Las cifras de reseñas, el horario regular y los cambios de Google no se repiten en `facts`: el diagnóstico los toma de las columnas del resumen.
+
+> **Nota:** Una fila guardada antes del 2026-11-11 tiene `facts` a `NULL`. Su resumen sigue valiendo. La API pide una sincronización en cuanto alguien abre el panel, y el diagnóstico responde `pendiente` hasta que termina. Hace falta que el worker en marcha tenga ya este código: un worker anterior sincroniza sin escribir `facts`.
+
 > **Nota:** "Horarios especiales futuros" cuenta días distintos con fecha de hoy en adelante. "Hoy" se calcula en UTC.
 
 ## Tablas
 
-Se definen en `db/schema_worker.sql`, que es idempotente y se aplica después de `db/schema.sql`.
+Se definen en `db/schema_worker.sql`, que es idempotente y se aplica después de `db/schema.sql`. Sobre una base ya creada, volver a aplicarlo añade lo que falte (por ejemplo, la columna `facts`) sin tocar las filas.
 
 ### `job`
 
@@ -124,6 +173,7 @@ Una fila por ficha y conexión (`google_sub`, `location`). Cada sincronización 
 | `last_review_at` | Fecha de la última reseña |
 | `has_regular_hours`, `upcoming_special_hours` | Si tiene horario regular y cuántos días con horario especial quedan |
 | `google_changed`, `google_changed_fields` | Si Google ha cambiado algo (`diffMask` no vacío) y qué campos |
+| `facts` | Hechos de la ficha para el diagnóstico (jsonb). Consulta [Los hechos de la ficha y el diagnóstico](#los-hechos-de-la-ficha-y-el-diagnóstico) |
 
 ### Roles
 
@@ -186,7 +236,7 @@ Todas llevan el prefijo `FICHAITOR_`. El worker las valida al arrancar y, si fal
 
 6. Para pararlo, pulsa `Ctrl+C`. El worker termina el job en curso y sale.
 
-El worker escribe una línea JSON por evento: `worker_started`, `job_started`, `job_done`, `job_retry`, `job_failed`, `job_lost`, `lost_jobs_recorded`, `lost_hook_error`, `exhausted_hook_error`, `queue_error`, `stop_requested` y `worker_stopped`. Los logs llevan el identificador, el tipo y el intento del job. No llevan cargas, tokens ni cadenas de conexión.
+El worker escribe una línea JSON por evento: `worker_started`, `job_started`, `job_done`, `job_retry`, `job_failed`, `job_lost`, `lost_jobs_recorded`, `optional_read_rejected`, `lost_hook_error`, `exhausted_hook_error`, `queue_error`, `stop_requested` y `worker_stopped`. Los logs llevan el identificador, el tipo y el intento del job. No llevan cargas, tokens ni cadenas de conexión.
 
 ### Probar un job a mano
 

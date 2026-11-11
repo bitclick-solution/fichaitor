@@ -160,4 +160,10 @@ class MemoryStore:
         if row is None:
             return None
         key = (account.google_sub, row.profile.location)
-        return SelectedProfile(account.google_sub, row.profile.location, self.summaries.get(key))
+        return SelectedProfile(
+            account.google_sub,
+            row.profile.location,
+            self.summaries.get(key),
+            row.profile.title,
+            row.profile.place_id or None,
+        )

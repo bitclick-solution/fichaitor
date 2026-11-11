@@ -28,11 +28,11 @@ class WorkerStore(Protocol):
     async def save_summary(
         self, google_sub: str, location: str, summary: ProfileSummary, at: datetime
     ) -> None:
-        """Insert or replace the summary of a profile, with status 'ok'."""
+        """Insert or replace the summary of a profile and its facts, with status 'ok'."""
         ...
 
     async def save_status(self, google_sub: str, location: str, status: str, at: datetime) -> None:
-        """Set only the status; the figures of the last good sync are kept."""
+        """Set only the status; the figures and facts of the last good sync are kept."""
         ...
 
     async def mark_lost_syncs(self, kind: str) -> int:

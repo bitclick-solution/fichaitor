@@ -1,4 +1,5 @@
-"""Job sync_profile: read a Business Profile from Google and store its summary.
+"""Job sync_profile: read a Business Profile from Google and store its summary
+and the facts the diagnosis is computed from.
 
 Payload: {"google_sub": "...", "location": "locations/123"}.
 
@@ -6,16 +7,34 @@ The refresh token is decrypted here, lives only in local variables and is never
 written anywhere: every error message leaving this module is scrubbed first.
 """
 
-from collections.abc import Callable
+import logging
+from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime
 
 from app.adapters.crypto.sealed import unseal
 from app.domain.jobs import Job, JobError, PermanentJobError, safe_error
-from app.domain.profile_summary import STATUS_ERROR, STATUS_NEEDS_RECONNECT, summarize
+from app.domain.profile_summary import (
+    STATUS_ERROR,
+    STATUS_NEEDS_RECONNECT,
+    collect_facts,
+    summarize,
+)
 from app.ports.google_profile import GoogleProfile, GoogleRejected, ReconnectRequired
 from app.ports.worker_store import WorkerStore
+from app.worker import log
 
 KIND = "sync_profile"
+
+
+async def _optional[T](what: str, read: Awaitable[T]) -> T | None:
+    """A read the diagnosis can do without: if Google refuses it (4xx), the fact is
+    left unknown instead of failing the whole sync. A lost grant or a temporary
+    failure still goes up, as in any other read."""
+    try:
+        return await read
+    except GoogleRejected:
+        log.event("optional_read_rejected", logging.WARNING, read=what)
+        return None
 
 
 class SyncProfile:
@@ -62,8 +81,14 @@ class SyncProfile:
             access_token = await self._google.refresh_access_token(refresh_token)
             secrets.append(access_token)
             reviews = await self._google.reviews(access_token, target.account, target.location)
-            hours = await self._google.hours(access_token, target.location)
+            details = await self._google.details(access_token, target.location)
             changed = await self._google.google_updated_fields(access_token, target.location)
+            attributes = await _optional(
+                "attributes", self._google.attribute_count(access_token, target.location)
+            )
+            media = await _optional(
+                "media", self._google.media(access_token, target.account, target.location)
+            )
         except ReconnectRequired:
             await self._store.save_status(
                 google_sub, location, STATUS_NEEDS_RECONNECT, self._clock()
@@ -78,7 +103,8 @@ class SyncProfile:
             raise JobError(safe_error(f"{type(exc).__name__}: {exc}", secrets)) from None
 
         now = self._clock()
-        summary = summarize(reviews, hours, changed, now.date())
+        facts = collect_facts(details, media, attributes, now.date())
+        summary = summarize(reviews, details.hours, changed, now.date(), facts)
         await self._store.save_summary(google_sub, location, summary, now)
 
     async def on_exhausted(self, job: Job) -> None:

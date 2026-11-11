@@ -6,8 +6,9 @@ class Settings(BaseSettings):
 
     places_api_key: str = ""
     fake_places: bool = False
-    # Every diagnosis is a paid request to Google and counts, repeated ones included.
-    diagnosis_rate_limit: int = 10  # per client IP, or per account behind a session
+    # Every public diagnosis is a paid request to Google and counts, repeated ones
+    # included. The diagnosis behind a session reads stored facts and has no limit.
+    diagnosis_rate_limit: int = 10  # per client IP
     diagnosis_rate_window_seconds: int = 3600
     # How long "search text -> place_id" is remembered. Only the identifier is kept:
     # Google's terms allow storing it; the content of the place is asked for every time.

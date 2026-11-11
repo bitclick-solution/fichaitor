@@ -5,26 +5,18 @@ from datetime import UTC, date, datetime
 from pydantic import BaseModel
 
 from app.application.profile_sync import SummaryView
+from app.domain.profile_summary import FIELD_LABELS, field_label
+
+__all__ = [
+    "FIELD_LABELS",
+    "STATUS_PENDING",
+    "SummaryResponse",
+    "field_label",
+    "seconds",
+    "to_summary_response",
+]
 
 STATUS_PENDING = "pendiente"
-
-# Top-level fields of a Business Profile location, as they come in Google's diffMask.
-FIELD_LABELS = {
-    "title": "Nombre",
-    "phoneNumbers": "Teléfono",
-    "websiteUri": "Web",
-    "categories": "Categorías",
-    "regularHours": "Horario",
-    "specialHours": "Horarios especiales",
-    "moreHours": "Otros horarios",
-    "storefrontAddress": "Dirección",
-    "serviceArea": "Zona de servicio",
-    "latlng": "Ubicación en el mapa",
-    "openInfo": "Abierto o cerrado",
-    "profile": "Descripción",
-    "serviceItems": "Servicios",
-    "labels": "Etiquetas",
-}
 
 
 class SummaryResponse(BaseModel):
@@ -43,13 +35,7 @@ class SummaryResponse(BaseModel):
     stale: bool
 
 
-def field_label(field: str) -> str:
-    """Spanish label of a changed field. "phoneNumbers.primaryPhone" reads as its parent;
-    an unknown field is returned as it came."""
-    return FIELD_LABELS.get(field) or FIELD_LABELS.get(field.split(".", 1)[0]) or field
-
-
-def _seconds(moment: datetime | None) -> datetime | None:
+def seconds(moment: datetime | None) -> datetime | None:
     return moment.astimezone(UTC).replace(microsecond=0) if moment else None
 
 
@@ -74,7 +60,7 @@ def to_summary_response(view: SummaryView) -> SummaryResponse:
     fields = list(s.google_changed_fields)
     return SummaryResponse(
         status=s.status,
-        synced_at=_seconds(s.synced_at),
+        synced_at=seconds(s.synced_at),
         review_count=s.review_count,
         average_rating=s.average_rating,
         unanswered_count=s.unanswered_count,

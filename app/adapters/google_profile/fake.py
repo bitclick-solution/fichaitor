@@ -2,10 +2,19 @@
 
 from datetime import UTC, date, datetime, timedelta
 
-from app.domain.profile_summary import ProfileHours, Review, ReviewSet
+from app.domain.profile_summary import (
+    MediaSummary,
+    ProfileDetails,
+    ProfileFacts,
+    ProfileHours,
+    Review,
+    ReviewSet,
+    collect_facts,
+)
 from app.ports.google_profile import GoogleProfileError
 
 FAKE_ACCESS_TOKEN = "fake-access-token"
+DEMO_ATTRIBUTES = 3
 
 
 def demo_reviews(now: datetime | None = None) -> ReviewSet:
@@ -29,25 +38,62 @@ def demo_hours(today: date | None = None) -> ProfileHours:
     return ProfileHours(has_regular_hours=True, special_dates=(today + timedelta(days=20),))
 
 
+def demo_details(today: date | None = None, hours: ProfileHours | None = None) -> ProfileDetails:
+    """A profile with room to improve: short description, no website, one category."""
+    return ProfileDetails(
+        hours=hours if hours is not None else demo_hours(today),
+        title="",  # the panel then shows the title the connection listed
+        address="Calle de ejemplo 1, 18010 Granada",
+        category="Bar",
+        additional_categories=0,
+        description_length=64,
+        has_phone=True,
+        has_website=False,
+        service_count=2,
+        is_open=True,
+        place_id="",
+        maps_url="",
+    )
+
+
+def demo_media(now: datetime | None = None) -> MediaSummary:
+    now = now or datetime.now(UTC)
+    return MediaSummary(count=4, latest_at=now - timedelta(days=200))
+
+
+def demo_facts(now: datetime | None = None) -> ProfileFacts:
+    """What a sync of the demo profile stores."""
+    now = now or datetime.now(UTC)
+    return collect_facts(demo_details(now.date()), demo_media(now), DEMO_ATTRIBUTES, now.date())
+
+
 class FakeGoogleProfile:
     def __init__(
         self,
         *,
         reviews: ReviewSet | None = None,
         hours: ProfileHours | None = None,
+        details: ProfileDetails | None = None,
+        media: MediaSummary | None = None,
+        attributes: int = DEMO_ATTRIBUTES,
         changed_fields: tuple[str, ...] = (),
         access_token: str = FAKE_ACCESS_TOKEN,
         refresh_error: Exception | None = None,
         read_error: Exception | None = None,
         read_failures: int = 0,
+        optional_error: Exception | None = None,
     ) -> None:
         self._reviews = reviews if reviews is not None else demo_reviews()
-        self._hours = hours if hours is not None else demo_hours()
+        # `hours` alone keeps the rest of the demo profile; `details` replaces it all.
+        self._details = details if details is not None else demo_details(hours=hours)
+        self._media = media if media is not None else demo_media()
+        self._attributes = attributes
         self._changed_fields = changed_fields
         self._access_token = access_token
         self.refresh_error = refresh_error
         self.read_error = read_error  # raised on every read
         self.read_failures = read_failures  # this many reads fail, then they work
+        self.optional_error = optional_error  # raised by attributes and media only
         self.refreshed_with: list[str] = []
         self.reads: list[tuple[str, str]] = []
 
@@ -69,10 +115,22 @@ class FakeGoogleProfile:
         self._read("reviews", location)
         return self._reviews
 
-    async def hours(self, access_token: str, location: str) -> ProfileHours:
-        self._read("hours", location)
-        return self._hours
+    async def details(self, access_token: str, location: str) -> ProfileDetails:
+        self._read("details", location)
+        return self._details
 
     async def google_updated_fields(self, access_token: str, location: str) -> tuple[str, ...]:
         self._read("google_updated", location)
         return self._changed_fields
+
+    async def attribute_count(self, access_token: str, location: str) -> int:
+        self._read("attributes", location)
+        if self.optional_error is not None:
+            raise self.optional_error
+        return self._attributes
+
+    async def media(self, access_token: str, account: str, location: str) -> MediaSummary:
+        self._read("media", location)
+        if self.optional_error is not None:
+            raise self.optional_error
+        return self._media
