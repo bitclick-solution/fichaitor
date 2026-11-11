@@ -63,5 +63,16 @@ services:
     stop_grace_period: 130s
     restart: on-failure:3
 
+  # Sitio público y aplicación /app. Redirige /api/ a la API: mismo origen, sin CORS.
+  web:
+    build:
+      context: .
+      dockerfile: web/Dockerfile
+    depends_on:
+      - api
+    ports:
+      - "127.0.0.1:8080:8080"
+    restart: on-failure:3
+
 volumes:
   db-data:
