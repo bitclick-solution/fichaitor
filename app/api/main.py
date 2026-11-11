@@ -94,7 +94,7 @@ def create_app(
         places,
         rate_limit=settings.diagnosis_rate_limit,
         rate_window_seconds=settings.diagnosis_rate_window_seconds,
-        cache_seconds=settings.diagnosis_cache_seconds,
+        place_id_cache_seconds=settings.place_id_cache_seconds,
     )
 
     @asynccontextmanager
@@ -111,6 +111,9 @@ def create_app(
         return _client_ip(request, settings.trust_proxy_headers)
 
     async def track(kind: str, source: str | None, place_id: str | None, score: int | None):
+        # The place_id may be stored without limit. The score is ours but derived from
+        # Google Maps content: whether it may be stored is an open question for Google
+        # (docs/fase0/places-coste.md, section 5). Kept as it is until they answer.
         try:
             await store.record_event(kind, source, place_id, score)
         except Exception as exc:  # measuring must never break the diagnosis

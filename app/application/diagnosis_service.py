@@ -1,18 +1,24 @@
-"""Use case: run a diagnosis, with caching and per-client rate limiting.
+"""Use case: run a diagnosis, with per-client rate limiting.
 
 Public diagnoses search by free text; the diagnosis of an owner's profile looks the
-place up by its identifier. Both share the cache window and the rate limit.
+place up by its identifier. Both ask Google for the content of the place every time.
 
-Cache and counters live in process memory for now. They move to PostgreSQL
-when the service runs with more than one API process.
+What is kept between requests is only what Google's terms allow: the search text and
+the place identifier it led to. Name, address, figures and the diagnosis built from
+them are never kept (docs/fase0/places-coste.md, section 5). Every diagnosis is
+therefore a paid request, and every diagnosis counts towards the client's limit.
+
+The identifiers and the counters live in process memory for now. They move to
+PostgreSQL when the service runs with more than one API process.
 """
 
 import time
-from collections.abc import Awaitable, Callable
-from datetime import date
+from collections.abc import Callable
 
 from app.domain.diagnosis import Diagnosis, PlaceSnapshot, diagnose
 from app.ports.places import PlacesGateway
+
+MAX_REMEMBERED_SEARCHES = 10_000
 
 
 class RateLimited(Exception):
@@ -26,18 +32,17 @@ class DiagnosisService:
         *,
         rate_limit: int,
         rate_window_seconds: int,
-        cache_seconds: int,
+        place_id_cache_seconds: int,
         clock: Callable[[], float] = time.time,
-        today: Callable[[], date] = date.today,
     ) -> None:
         self._places = places
         self._rate_limit = rate_limit
         self._rate_window = rate_window_seconds
-        self._cache_seconds = cache_seconds
+        self._place_id_seconds = place_id_cache_seconds
         self._clock = clock
-        self._today = today
         self._hits: dict[str, list[float]] = {}
-        self._cache: dict[tuple[str, str], tuple[float, Diagnosis | None]] = {}
+        # search text -> (when it was resolved, place identifier). Nothing else from Google.
+        self._place_ids: dict[str, tuple[float, str]] = {}
 
     def _check_rate(self, client: str) -> None:
         now = self._clock()
@@ -48,36 +53,48 @@ class DiagnosisService:
         recent.append(now)
         self._hits[client] = recent
 
-    async def _cached(
-        self,
-        key: tuple[str, str],
-        client: str,
-        fetch: Callable[[], Awaitable[PlaceSnapshot | None]],
-    ) -> Diagnosis | None:
-        now = self._clock()
-        cached = self._cache.get(key)
-        if cached and now - cached[0] < self._cache_seconds:
-            return cached[1]
-        self._check_rate(client)
-        place = await fetch()
-        result = diagnose(place, self._today()) if place else None
-        self._cache[key] = (now, result)
-        return result
+    def _remembered_id(self, text: str) -> str | None:
+        entry = self._place_ids.get(text)
+        if entry is None:
+            return None
+        if self._clock() - entry[0] >= self._place_id_seconds:
+            del self._place_ids[text]
+            return None
+        return entry[1]
+
+    def _remember_id(self, text: str, place_id: str) -> None:
+        self._place_ids.pop(text, None)
+        while len(self._place_ids) >= MAX_REMEMBERED_SEARCHES:
+            del self._place_ids[next(iter(self._place_ids))]  # the oldest one
+        self._place_ids[text] = (self._clock(), place_id)
+
+    async def _place_by_text(self, query: str) -> PlaceSnapshot | None:
+        text = " ".join(query.lower().split())
+        place_id = self._remembered_id(text)
+        if place_id is not None:
+            place = await self._places.get(place_id)
+            if place is not None:
+                return place
+            del self._place_ids[text]  # Google retired that identifier: search again
+        place_id = await self._places.find_id(text)
+        if place_id is None:
+            return None
+        place = await self._places.get(place_id)
+        if place is not None:
+            self._remember_id(text, place_id)
+        return place
 
     async def run(self, query: str, client: str) -> Diagnosis | None:
-        text = " ".join(query.lower().split())
-        return await self._cached(("text", text), client, lambda: self._places.find(text))
+        self._check_rate(client)
+        place = await self._place_by_text(query)
+        return diagnose(place) if place else None
 
     async def run_for_profile(
         self, place_id: str | None, title: str, client: str
     ) -> Diagnosis | None:
         """Diagnose an owner's profile: by place identifier, else by its title."""
-        if place_id:
-            result = await self._cached(
-                ("id", place_id), client, lambda: self._places.get(place_id)
-            )
-            if result is not None:
-                return result
-        if not title.strip():
-            return None
-        return await self.run(title, client)
+        self._check_rate(client)
+        place = await self._places.get(place_id) if place_id else None
+        if place is None and title.strip():
+            place = await self._place_by_text(title)
+        return diagnose(place) if place else None

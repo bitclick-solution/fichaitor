@@ -11,6 +11,23 @@ Investigación documental del 2026-11-11. Sin factura real todavía: las cifras 
 
 Todos los precios están en dólares (USD), como en la lista oficial. El cambio a euros de la factura está sin confirmar.
 
+## Estado (2026-11-11)
+
+Hecho en el código, con pruebas y sin llamar a Google real:
+
+| Punto | Estado |
+|---|---|
+| Opción C, búsqueda en dos pasos (sección 3) | **Hecho.** `places:searchText` solo con `places.id` y `GET /v1/places/{id}` con la máscara completa |
+| Caché solo con lo permitido (sección 5, "Qué hacer", punto 2) | **Hecho.** En memoria solo queda texto de búsqueda → `place_id`, 30 días (`FICHAITOR_PLACE_ID_CACHE_SECONDS`). Los datos de la ficha se piden en cada diagnóstico |
+| Límite por cliente | **Hecho.** Cuenta todos los diagnósticos, también los repetidos: 10 por hora por IP o por cuenta (`FICHAITOR_DIAGNOSIS_RATE_LIMIT`) |
+| Regla `stale_reviews` (sección 3) | **Retirada.** Se deja de pedir `reviews.publishTime`. La petición sigue en Enterprise + Atmosphere por los atributos de servicio |
+| Nombre en la lista de espera (punto 3) | **Hecho en la API.** Se guarda el texto que escribió el usuario (`business_query`); `business_name` se acepta y se ignora. **Pendiente en la web:** enviar el campo nuevo |
+| Atribución de Google Maps (punto 4) | **Hecho en la API** (campo `attribution`). **Pendiente en la web:** mostrarla |
+
+Sigue pendiente: la consulta por escrito a Google (usos permitidos del EEE y nota guardada), la cuota diaria en la consola, las alertas de presupuesto, la restricción de la clave y el contador diario global en la aplicación. La nota (`score`) se sigue guardando sin cambios hasta que Google conteste.
+
+Las secciones siguientes describen la situación anterior al cambio, tal como se investigó.
+
 ## 1. A qué SKU se factura la petición
 
 La petición es `POST https://places.googleapis.com/v1/places:searchText` con la máscara de `app/adapters/places/google.py`. Google factura **al SKU más alto** de los campos pedidos: "You are then billed at the highest SKU applicable to your request" ([uso y facturación de Places](https://developers.google.com/maps/documentation/places/web-service/usage-and-billing)).

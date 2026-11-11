@@ -55,14 +55,38 @@ Respuesta 200:
   "locked_checks": [
     { "code": "unanswered_reviews", "title": "Cuántas reseñas tienes sin responder" }
   ],
-  "maps_url": "https://maps.google.com/?cid=..."
+  "maps_url": "https://maps.google.com/?cid=...",
+  "attribution": "Google Maps"
 }
 ```
 
 - `label`: `Bien` (85 o más), `Mejorable` (60 a 84), `Necesita atención` (menos de 60).
 - `impact`: `alto`, `medio`, `bajo`. Hasta 5 `findings`, ya ordenados.
 - `locked_checks`: lo que solo se puede comprobar conectando la ficha. Es el gancho hacia "Conectar con Google".
+- `attribution`: origen de los datos. Consulta [Atribución de Google Maps](#atribución-de-google-maps-cambio-del-2026-11-11).
 - Errores: 404 (no encontrado), 422, 429 (límite), 503 (Google no responde).
+
+#### Atribución de Google Maps (cambio del 2026-11-11)
+
+Nombre, dirección, categoría, enlace y las cifras de las mejoras (fotos, nota, reseñas) vienen de Google Maps. Las políticas de Google exigen decirlo.
+
+- La web **muestra el texto de `attribution`** ("Google Maps") junto a esos datos, en la misma pantalla y sin que haga falta desplazarse o pulsar para verlo. Por ejemplo: "Datos de Google Maps", debajo del nombre y la dirección.
+- No lo traduzcas, no lo abrevies y no lo partas en dos líneas. Usa el texto del campo; no lo escribas a mano en la web.
+- Vale para el diagnóstico público y para `GET /api/v1/me/diagnosis`. También debe verse en las capturas y los vídeos que enseñen el diagnóstico.
+
+#### Qué no puede guardar la web (cambio del 2026-11-11)
+
+Los términos de Google solo permiten guardar el `place_id`. La API ya no guarda la respuesta del diagnóstico: pide los datos a Google cada vez.
+
+- La web tampoco guarda la respuesta: ni en `localStorage`, ni en `sessionStorage`, ni en IndexedDB, ni en una caché de un service worker. Tenerla en memoria mientras la pantalla está abierta es correcto.
+- La web no envía a la API datos del diagnóstico para que los guarde, salvo `place_id` y `score` en la lista de espera.
+
+#### El límite cuenta todos los diagnósticos (cambio del 2026-11-11)
+
+Antes, repetir una búsqueda salía de una caché y no contaba. Ahora **cada diagnóstico cuenta**, también los repetidos: 10 por hora por IP en el público y 10 por hora por cuenta en `GET /api/v1/me/diagnosis`. Cada uno es una petición de pago a Google.
+
+- No vuelvas a pedir el diagnóstico en cada pintado, al cambiar de pestaña o al recuperar el foco. Pídelo una vez al entrar y cuando el usuario lo pida.
+- Con un 429, muestra `detail` y conserva en pantalla el último diagnóstico si lo hay.
 
 ### `POST /api/v1/public/waitlist`
 
@@ -73,11 +97,18 @@ Respuesta 200:
   "consent": true,
   "consent_version": "waitlist-2026-11-11",
   "place_id": "ChIJ...",
-  "business_name": "Bar La Parra",
+  "business_query": "bar la parra granada",
   "score": 68,
   "source": "tiktok_v1"
 }
 ```
+
+> **Importante (cambio del 2026-11-11): `business_name` se sustituye por `business_query`.**
+>
+> - `business_query` es el **texto que escribió el usuario** en el buscador: el mismo valor que se envió en `query` a `POST /api/v1/public/diagnosis`. Opcional, 200 caracteres como máximo. Es lo que se guarda como nombre del negocio.
+> - **No envíes en ningún campo el `name` de la respuesta del diagnóstico.** Ese nombre es contenido de Google Maps y los términos prohíben guardarlo.
+> - `business_name` queda obsoleto. La API lo sigue aceptando para no romper a quien lo envíe, pero **lo ignora y no lo guarda**. Quien solo envíe `business_name` deja el alta sin nombre de negocio.
+> - Pendiente en la web: `web/site/app.js` envía hoy `business_name: d.name`. Cámbialo por `business_query` con el texto del buscador.
 
 `channel`: `whatsapp` o `email`. `consent` debe ser `true`. `consent_version` es el identificador del texto legal mostrado. El vigente es `waitlist-2026-11-11`; el texto y su historial están en `docs/legal/consentimiento-lista-espera.md`. Respuesta 201 `{"status": "ok"}`. Errores: 422 con mensaje, 429, 503.
 
@@ -131,7 +162,7 @@ Errores: 401, 403 (falta la cabecera), 404 (la ficha no es de esa cuenta o no ex
 
 ### `GET /api/v1/me/diagnosis`
 
-Diagnóstico de la ficha elegida, con la misma forma que el diagnóstico público.
+Diagnóstico de la ficha elegida, con la misma forma que el diagnóstico público, incluido `attribution`. Aplican las mismas reglas de atribución, de no guardar la respuesta y de límite.
 
 La API busca la ficha por su `place_id`. Si la ficha no tiene `place_id`, o Google ya no lo reconoce, la busca por su título.
 
@@ -142,7 +173,7 @@ Errores:
 | 401 | Sin sesión |
 | 409 | Aún no se ha elegido ficha. Lleva a la lista de fichas |
 | 404 | No se ha encontrado la ficha en Google Maps ni por `place_id` ni por título. `detail` trae el mensaje |
-| 429 | Demasiados diagnósticos nuevos de esa cuenta. Los repetidos salen de la caché y no cuentan |
+| 429 | Demasiados diagnósticos de esa cuenta en la última hora. Cuentan todos, también los repetidos |
 | 503 | Google no responde |
 
 ### `POST /api/v1/auth/logout`

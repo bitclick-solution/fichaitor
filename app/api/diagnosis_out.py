@@ -4,6 +4,9 @@ from pydantic import BaseModel
 
 from app.domain.diagnosis import Diagnosis
 
+# Shown by the web next to the data: Google requires its content to be attributed.
+GOOGLE_MAPS_ATTRIBUTION = "Google Maps"
+
 
 class FindingOut(BaseModel):
     code: str
@@ -27,6 +30,7 @@ class DiagnosisResponse(BaseModel):
     findings: list[FindingOut]
     locked_checks: list[LockedCheckOut]
     maps_url: str
+    attribution: str
 
 
 def to_response(result: Diagnosis) -> DiagnosisResponse:
@@ -43,4 +47,5 @@ def to_response(result: Diagnosis) -> DiagnosisResponse:
         ],
         locked_checks=[LockedCheckOut(code=c.code, title=c.title) for c in result.locked_checks],
         maps_url=result.maps_url,
+        attribution=GOOGLE_MAPS_ATTRIBUTION,
     )

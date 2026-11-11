@@ -52,14 +52,39 @@ def test_email_is_lowercased_and_validated():
 
 def test_signup_is_stored_normalized_with_consent_version():
     client, store = make()
-    body = OK | {"place_id": "p1", "business_name": "Bar", "score": 62, "source": "tiktok_v1"}
+    body = OK | {"place_id": "p1", "business_query": "Bar", "score": 62, "source": "tiktok_v1"}
     r = client.post(URL, json=body)
     assert r.status_code == 201
     assert r.json() == {"status": "ok"}
     saved = store.signups[("whatsapp", "+34600112233")]
     assert saved.consent_version == "v1"
     assert saved.score == 62
+    assert saved.place_id == "p1"
     assert ("signup", "tiktok_v1", "p1", 62) in store.events
+
+
+def test_business_name_stored_is_what_the_owner_typed_never_the_one_from_places():
+    client, store = make()
+    typed = {"business_query": "  bar la parra   granada ", "business_name": "Bar La Parra"}
+    assert client.post(URL, json=OK | typed).status_code == 201
+    assert store.signups[("whatsapp", "+34600112233")].business_name == "bar la parra granada"
+
+
+def test_old_business_name_field_is_accepted_but_not_stored():
+    client, store = make()
+    r = client.post(URL, json=OK | {"place_id": "p1", "business_name": "Bar La Parra"})
+    assert r.status_code == 201
+    saved = store.signups[("whatsapp", "+34600112233")]
+    assert saved.business_name is None
+    assert saved.place_id == "p1"
+    assert "Bar La Parra" not in repr(store.__dict__)
+
+
+def test_business_query_is_optional_and_length_limited():
+    client, store = make()
+    assert client.post(URL, json=OK | {"business_query": "x" * 201}).status_code == 422
+    assert client.post(URL, json=OK | {"business_query": "   "}).status_code == 201
+    assert store.signups[("whatsapp", "+34600112233")].business_name is None
 
 
 def test_consent_is_mandatory():

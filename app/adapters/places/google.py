@@ -1,6 +1,11 @@
-"""Google Places API (New) adapter. Read-only, public data."""
+"""Google Places API (New) adapter. Read-only, public data.
 
-from datetime import date
+A diagnosis takes two requests: Text Search asking only for the identifier (SKU
+"Essentials IDs Only", free) and Place Details with the full mask (SKU "Enterprise +
+Atmosphere"). One Text Search with the full mask costs 40 USD per 1,000; this way it
+is 25. See docs/fase0/places-coste.md.
+"""
+
 from urllib.parse import quote
 
 import httpx
@@ -34,20 +39,15 @@ FIELDS = (
     "primaryType",
     "primaryTypeDisplayName",
     "types",
-    "reviews.publishTime",
     "googleMapsUri",
     *SERVICE_FLAGS,
 )
-FIELD_MASK = ",".join(f"places.{f}" for f in FIELDS)
+# Any other field in this mask moves the search to a paid SKU.
+SEARCH_FIELD_MASK = "places.id"
 DETAILS_FIELD_MASK = ",".join(FIELDS)
 
 
 def to_snapshot(raw: dict) -> PlaceSnapshot:
-    review_dates = [
-        date.fromisoformat(r["publishTime"][:10])
-        for r in raw.get("reviews", [])
-        if r.get("publishTime")
-    ]
     return PlaceSnapshot(
         place_id=raw["id"],
         name=(raw.get("displayName") or {}).get("text", ""),
@@ -60,7 +60,6 @@ def to_snapshot(raw: dict) -> PlaceSnapshot:
         photo_count=len(raw.get("photos", [])),
         rating=raw.get("rating"),
         review_count=raw.get("userRatingCount", 0),
-        latest_review_date=max(review_dates) if review_dates else None,
         website=raw.get("websiteUri", ""),
         phone=raw.get("nationalPhoneNumber", ""),
         service_attributes=sum(1 for f in SERVICE_FLAGS if raw.get(f) is True),
@@ -73,11 +72,11 @@ class GooglePlaces:
         self._api_key = api_key
         self._client = client or httpx.AsyncClient(timeout=10)
 
-    async def find(self, query: str) -> PlaceSnapshot | None:
+    async def find_id(self, query: str) -> str | None:
         try:
             resp = await self._client.post(
                 SEARCH_URL,
-                headers={"X-Goog-Api-Key": self._api_key, "X-Goog-FieldMask": FIELD_MASK},
+                headers={"X-Goog-Api-Key": self._api_key, "X-Goog-FieldMask": SEARCH_FIELD_MASK},
                 json={
                     "textQuery": query,
                     "languageCode": "es",
@@ -90,7 +89,7 @@ class GooglePlaces:
         if resp.status_code != 200:
             raise PlacesUnavailable(f"Places respondió {resp.status_code}")
         places = resp.json().get("places", [])
-        return to_snapshot(places[0]) if places else None
+        return (places[0].get("id") or None) if places else None
 
     async def get(self, place_id: str) -> PlaceSnapshot | None:
         try:

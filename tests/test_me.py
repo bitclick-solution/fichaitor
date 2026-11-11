@@ -313,13 +313,16 @@ def test_diagnosis_uses_the_place_id_and_has_the_public_shape():
     r = client.get(DIAGNOSIS)
     assert r.status_code == 200
     body = r.json()
-    public = world.browser().post("/api/v1/public/diagnosis", json={"query": "demo bar"}).json()
-    assert body == public
     assert body["place_id"] == DEMO.place_id
+    assert body["attribution"] == "Google Maps"
     assert world.places.id_calls == [DEMO.place_id]
+    assert world.places.calls == 0  # the profile has its identifier: no text search
 
     client.get(DIAGNOSIS)
-    assert world.places.id_calls == [DEMO.place_id]  # cached
+    assert world.places.id_calls == [DEMO.place_id] * 2  # asked again: content is not kept
+
+    public = world.browser().post("/api/v1/public/diagnosis", json={"query": "demo bar"}).json()
+    assert body == public
 
 
 def test_diagnosis_falls_back_to_the_title_when_there_is_no_place_id():
@@ -329,7 +332,7 @@ def test_diagnosis_falls_back_to_the_title_when_there_is_no_place_id():
     r = client.get(DIAGNOSIS)
     assert r.status_code == 200
     assert r.json()["place_id"] == DEMO.place_id
-    assert world.places.id_calls == []
+    assert world.places.id_calls == [DEMO.place_id]
     assert world.places.calls == 1
 
 
@@ -339,7 +342,8 @@ def test_diagnosis_falls_back_to_the_title_when_google_does_not_know_the_place_i
     client, _ = world.connect()
     select(client)
     assert client.get(DIAGNOSIS).status_code == 200
-    assert world.places.id_calls == ["id-antiguo"]
+    assert world.places.id_calls == ["id-antiguo", DEMO.place_id]
+    assert world.places.calls == 1
 
 
 def test_diagnosis_of_a_location_that_cannot_be_found_is_404_with_a_message():
@@ -358,17 +362,28 @@ def test_diagnosis_provider_failure_is_503_without_details():
     assert "fallo simulado" not in r.text
 
 
-def test_diagnosis_rate_limit_is_per_account_and_spares_cached_results():
-    world = World(locations=[LA_PARRA, NO_PLACE, UNKNOWN], diagnosis_rate_limit=2)
+def test_diagnosis_rate_limit_is_per_account_and_counts_repeated_ones():
+    world = World(diagnosis_rate_limit=2)
+    ana = world.connect_as("sub-ana", "ana@example.com", [LA_PARRA])
+    luis = world.connect_as("sub-luis", "luis@example.com", [LA_PARRA])
+    select(ana)
+    select(luis)
+    assert ana.get(DIAGNOSIS).status_code == 200
+    assert ana.get(DIAGNOSIS).status_code == 200
+    r = ana.get(DIAGNOSIS)
+    assert r.status_code == 429
+    assert isinstance(r.json()["detail"], str)
+    assert len(world.places.id_calls) == 2  # the third never reached Google
+    assert luis.get(DIAGNOSIS).status_code == 200  # another account, its own limit
+
+
+def test_diagnosis_that_falls_back_to_the_title_counts_once():
+    stale = ProfileLocation("accounts/1", "locations/9", "Demo movido", "id-antiguo", True)
+    world = World(locations=[stale], diagnosis_rate_limit=1)
     client, _ = world.connect()
-    select(client, 0)
+    select(client)
     assert client.get(DIAGNOSIS).status_code == 200
-    select(client, 1)
-    assert client.get(DIAGNOSIS).status_code == 200
-    select(client, 2)
     assert client.get(DIAGNOSIS).status_code == 429
-    select(client, 0)
-    assert client.get(DIAGNOSIS).status_code == 200
 
 
 # --- POST /auth/logout ------------------------------------------------------

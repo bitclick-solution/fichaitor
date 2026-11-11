@@ -1,10 +1,7 @@
 from dataclasses import replace
-from datetime import date
 
 from app.adapters.places.google import to_snapshot
 from app.domain.diagnosis import Impact, PlaceSnapshot, diagnose
-
-TODAY = date(2026, 11, 11)
 
 COMPLETE = PlaceSnapshot(
     place_id="p1",
@@ -16,7 +13,6 @@ COMPLETE = PlaceSnapshot(
     photo_count=10,
     rating=4.6,
     review_count=120,
-    latest_review_date=date(2026, 11, 1),
     website="https://ejemplo.es",
     phone="958 00 00 00",
     service_attributes=3,
@@ -24,18 +20,18 @@ COMPLETE = PlaceSnapshot(
 
 
 def codes(place: PlaceSnapshot) -> list[str]:
-    return [f.code for f in diagnose(place, TODAY).findings]
+    return [f.code for f in diagnose(place).findings]
 
 
 def test_complete_profile_scores_100_with_no_findings():
-    d = diagnose(COMPLETE, TODAY)
+    d = diagnose(COMPLETE)
     assert d.score == 100
     assert d.label == "Bien"
     assert d.findings == ()
 
 
 def test_locked_checks_are_always_listed_and_never_scored():
-    d = diagnose(COMPLETE, TODAY)
+    d = diagnose(COMPLETE)
     assert {c.code for c in d.locked_checks} == {
         "unanswered_reviews",
         "holiday_hours",
@@ -46,7 +42,7 @@ def test_locked_checks_are_always_listed_and_never_scored():
 
 
 def test_missing_hours_is_high_impact_and_costs_20():
-    d = diagnose(replace(COMPLETE, has_regular_hours=False), TODAY)
+    d = diagnose(replace(COMPLETE, has_regular_hours=False))
     assert d.score == 80
     assert d.findings[0].code == "no_hours"
     assert d.findings[0].impact is Impact.HIGH
@@ -60,7 +56,7 @@ def test_photo_tiers():
 
 
 def test_low_rating_uses_spanish_decimal_comma():
-    d = diagnose(replace(COMPLETE, rating=3.7), TODAY)
+    d = diagnose(replace(COMPLETE, rating=3.7))
     finding = next(f for f in d.findings if f.code == "low_rating")
     assert "3,7" in finding.title
 
@@ -70,12 +66,15 @@ def test_no_rating_finding_without_reviews():
     assert "few_reviews" in codes(replace(COMPLETE, rating=None, review_count=0))
 
 
-def test_stale_reviews_only_when_there_are_enough_reviews():
-    old = date(2026, 1, 1)
-    assert "stale_reviews" in codes(replace(COMPLETE, latest_review_date=old))
-    few = replace(COMPLETE, review_count=4, latest_review_date=old)
-    assert "few_reviews" in codes(few)
-    assert "stale_reviews" not in codes(few)
+def test_review_dates_are_never_judged():
+    # Google returns at most 5 reviews, by relevance: their dates say nothing reliable
+    # about the last review, so no finding may claim how old it is.
+    assert not hasattr(COMPLETE, "latest_review_date")
+    for count in (0, 3, 5, 6, 48, 500):
+        found = diagnose(replace(COMPLETE, review_count=count)).findings
+        assert "stale_reviews" not in [f.code for f in found]
+        assert not any("última reseña" in f.title for f in found)
+    assert diagnose(replace(COMPLETE, review_count=500)).score == 100
 
 
 def test_generic_types_do_not_count_as_secondary_categories():
@@ -107,7 +106,7 @@ def test_at_most_five_findings_sorted_by_impact_and_score_never_negative():
         rating=3.0,
         review_count=5,
     )
-    d = diagnose(empty, TODAY)
+    d = diagnose(empty)
     assert d.score == 0  # penalties add up to 112; the score is clamped
     assert d.label == "Necesita atención"
     assert len(d.findings) == 5
@@ -117,10 +116,10 @@ def test_at_most_five_findings_sorted_by_impact_and_score_never_negative():
 
 
 def test_labels_by_threshold():
-    assert diagnose(replace(COMPLETE, photo_count=3), TODAY).label == "Bien"  # 90
-    assert diagnose(replace(COMPLETE, has_regular_hours=False), TODAY).label == "Mejorable"  # 80
+    assert diagnose(replace(COMPLETE, photo_count=3)).label == "Bien"  # 90
+    assert diagnose(replace(COMPLETE, has_regular_hours=False)).label == "Mejorable"  # 80
     worst = replace(COMPLETE, has_regular_hours=False, photo_count=0, website="", phone="")
-    assert diagnose(worst, TODAY).label == "Necesita atención"  # 49
+    assert diagnose(worst).label == "Necesita atención"  # 49
 
 
 def test_google_payload_maps_to_snapshot():
@@ -137,10 +136,7 @@ def test_google_payload_maps_to_snapshot():
         "primaryType": "bar",
         "primaryTypeDisplayName": {"text": "Bar"},
         "types": ["bar", "establishment"],
-        "reviews": [
-            {"publishTime": "2026-05-01T10:00:00Z"},
-            {"publishTime": "2026-09-20T08:00:00Z"},
-        ],
+        "reviews": [{"publishTime": "2026-05-01T10:00:00Z"}],  # ignored if it ever comes
         "outdoorSeating": True,
         "delivery": False,
         "googleMapsUri": "https://maps.google.com/?cid=1",
@@ -149,7 +145,6 @@ def test_google_payload_maps_to_snapshot():
     assert s.name == "Bar Ejemplo"
     assert s.has_regular_hours is True
     assert s.photo_count == 2
-    assert s.latest_review_date == date(2026, 9, 20)
     assert s.service_attributes == 1
     assert s.phone == ""
 

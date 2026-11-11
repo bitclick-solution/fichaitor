@@ -6,9 +6,12 @@ class Settings(BaseSettings):
 
     places_api_key: str = ""
     fake_places: bool = False
-    diagnosis_rate_limit: int = 10  # per client IP
+    # Every diagnosis is a paid request to Google and counts, repeated ones included.
+    diagnosis_rate_limit: int = 10  # per client IP, or per account behind a session
     diagnosis_rate_window_seconds: int = 3600
-    diagnosis_cache_seconds: int = 86400
+    # How long "search text -> place_id" is remembered. Only the identifier is kept:
+    # Google's terms allow storing it; the content of the place is asked for every time.
+    place_id_cache_seconds: int = 30 * 86400
     trust_proxy_headers: bool = False
     database_url: str = ""
     waitlist_rate_limit: int = 5  # per client IP

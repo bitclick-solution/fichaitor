@@ -6,13 +6,11 @@ is reported as a locked check, never guessed.
 """
 
 from dataclasses import dataclass, field
-from datetime import date
 from enum import StrEnum
 
 GENERIC_TYPES = frozenset({"point_of_interest", "establishment", "food", "store"})
 FOOD_TYPES = frozenset({"restaurant", "bar", "cafe", "bakery", "meal_takeaway", "meal_delivery"})
 PHOTOS_VISIBLE_CAP = 10  # Google returns at most 10 photos per place
-STALE_REVIEW_DAYS = 180
 FEW_REVIEWS = 10
 LOW_RATING = 4.0
 MAX_FINDINGS = 5
@@ -40,7 +38,6 @@ class PlaceSnapshot:
     photo_count: int = 0
     rating: float | None = None
     review_count: int = 0
-    latest_review_date: date | None = None
     website: str = ""
     phone: str = ""
     service_attributes: int = 0  # how many service flags (delivery, terrace...) are declared
@@ -91,7 +88,7 @@ def _label(score: int) -> str:
     return "Necesita atención"
 
 
-def _collect(p: PlaceSnapshot, today: date) -> list[Finding]:
+def _collect(p: PlaceSnapshot) -> list[Finding]:
     out: list[Finding] = []
 
     if not p.operational:
@@ -172,17 +169,9 @@ def _collect(p: PlaceSnapshot, today: date) -> list[Finding]:
                 10,
             )
         )
-    elif p.latest_review_date and (today - p.latest_review_date).days > STALE_REVIEW_DAYS:
-        meses = (today - p.latest_review_date).days // 30
-        out.append(
-            Finding(
-                "stale_reviews",
-                f"Tu última reseña es de hace {meses} meses",
-                "Las reseñas recientes pesan más que las antiguas.",
-                Impact.MEDIUM,
-                8,
-            )
-        )
+    # No "stale reviews" rule: Google returns at most 5 reviews sorted by relevance, not
+    # by date, so the newest of them is not the last review the business received. The
+    # only reliable case (5 reviews or fewer) is already covered by few_reviews.
 
     if not p.website:
         out.append(
@@ -232,8 +221,8 @@ def _collect(p: PlaceSnapshot, today: date) -> list[Finding]:
     return out
 
 
-def diagnose(place: PlaceSnapshot, today: date) -> Diagnosis:
-    found = _collect(place, today)
+def diagnose(place: PlaceSnapshot) -> Diagnosis:
+    found = _collect(place)
     score = max(0, 100 - sum(f.penalty for f in found))
     ranked = sorted(found, key=lambda f: (_IMPACT_ORDER[f.impact], -f.penalty))
     return Diagnosis(
