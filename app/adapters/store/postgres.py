@@ -3,6 +3,7 @@
 The API role can only INSERT contacts, events and Google connections. On accounts,
 profiles and sessions it can read, insert and update a few columns; it never deletes.
 Every statement on profiles is filtered by account_id: the isolation between accounts.
+Of the worker's tables it can only INSERT jobs and SELECT profile summaries.
 """
 
 import json
@@ -11,8 +12,17 @@ from datetime import datetime
 
 import asyncpg
 
+from app.adapters.job_queue.postgres import PostgresJobQueue
+from app.domain.jobs import DEFAULT_MAX_ATTEMPTS
 from app.ports.google_oauth import ProfileLocation
-from app.ports.store import Account, GoogleConnection, Location, WaitlistSignup
+from app.ports.store import (
+    Account,
+    GoogleConnection,
+    Location,
+    SelectedProfile,
+    StoredSummary,
+    WaitlistSignup,
+)
 
 
 class PostgresStore:
@@ -199,3 +209,57 @@ class PostgresStore:
             location_id,
         )
         return status == "UPDATE 1"
+
+    async def enqueue(
+        self,
+        kind: str,
+        payload: dict,
+        *,
+        idempotency_key: str | None = None,
+        run_at: datetime | None = None,
+        max_attempts: int = DEFAULT_MAX_ATTEMPTS,
+    ) -> bool:
+        """JobEnqueuer on the API's own pool, which only exists once connected."""
+        return await PostgresJobQueue(self._require_pool()).enqueue(
+            kind, payload, idempotency_key=idempotency_key, run_at=run_at, max_attempts=max_attempts
+        )
+
+    async def selected_profile(self, account_id: str) -> SelectedProfile | None:
+        # One statement: the summary is joined through the account's own google_sub and
+        # its own selected profile, so no identifier from outside takes part in the lookup.
+        row = await self._require_pool().fetchrow(
+            """
+            SELECT a.google_sub, l.gbp_location,
+                   p.status, p.status_at, p.synced_at, p.review_count, p.average_rating,
+                   p.unanswered_count, p.unanswered_low_count, p.last_review_at,
+                   p.has_regular_hours, p.upcoming_special_hours, p.google_changed,
+                   p.google_changed_fields
+            FROM account a
+            JOIN location l
+              ON l.id = a.selected_location_id AND l.account_id = a.id AND l.removed_at IS NULL
+            LEFT JOIN profile_summary p
+              ON p.google_sub = a.google_sub AND p.location = l.gbp_location
+            WHERE a.id = $1::uuid
+            """,
+            account_id,
+        )
+        if row is None:
+            return None
+        summary = None
+        if row["status"] is not None:
+            rating = row["average_rating"]
+            summary = StoredSummary(
+                status=row["status"],
+                status_at=row["status_at"],
+                synced_at=row["synced_at"],
+                review_count=row["review_count"],
+                average_rating=float(rating) if rating is not None else None,
+                unanswered_count=row["unanswered_count"],
+                unanswered_low_count=row["unanswered_low_count"],
+                last_review_at=row["last_review_at"],
+                has_regular_hours=row["has_regular_hours"],
+                upcoming_special_hours=row["upcoming_special_hours"],
+                google_changed=row["google_changed"],
+                google_changed_fields=tuple(row["google_changed_fields"] or ()),
+            )
+        return SelectedProfile(row["google_sub"], row["gbp_location"], summary)

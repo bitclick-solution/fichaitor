@@ -8,6 +8,8 @@ from pydantic import BaseModel, Field
 
 from app.adapters.google_oauth.fake import FakeGoogleOAuth
 from app.adapters.google_oauth.real import RealGoogleOAuth
+from app.adapters.job_queue.demo import DemoSyncQueue
+from app.adapters.job_queue.memory import MemoryJobQueue
 from app.adapters.places.fake import FakePlaces
 from app.adapters.places.google import GooglePlaces
 from app.adapters.store.memory import MemoryStore
@@ -17,9 +19,11 @@ from app.api.google_oauth import build_router as build_google_router
 from app.api.me import build_router as build_me_router
 from app.api.waitlist import SOURCE_PATTERN, build_router
 from app.application.diagnosis_service import DiagnosisService, RateLimited
+from app.application.profile_sync import ProfileSync
 from app.application.rate_limit import SlidingWindowLimiter
 from app.config import Settings
 from app.ports.google_oauth import GoogleOAuth
+from app.ports.job_queue import JobEnqueuer
 from app.ports.places import PlacesGateway, PlacesUnavailable
 from app.ports.store import Store
 
@@ -45,6 +49,7 @@ def create_app(
     store: Store | None = None,
     google: GoogleOAuth | None = None,
     clock: Callable[[], float] = time.time,
+    jobs: JobEnqueuer | None = None,
 ) -> FastAPI:
     settings = settings or Settings()
     if google is None:
@@ -81,6 +86,20 @@ def create_app(
             store = MemoryStore()
         else:
             raise RuntimeError("Falta FICHAITOR_DATABASE_URL")
+    if jobs is None:
+        if isinstance(store, PostgresStore):
+            jobs = store  # enqueues on the API's own pool; the worker process does the job
+        elif isinstance(store, MemoryStore) and settings.fake_google:
+            jobs = DemoSyncQueue(store, clock)  # no database, no worker: demo figures
+        else:
+            jobs = MemoryJobQueue()
+    sync = ProfileSync(
+        store,
+        jobs,
+        window_seconds=settings.sync_window_seconds,
+        stale_after_seconds=settings.summary_stale_hours * 3600,
+        clock=clock,
+    )
     if places is None:
         if settings.fake_places:
             places = FakePlaces()
@@ -148,7 +167,11 @@ def create_app(
     # Always present: without a session they answer 401, which the web reads as "connect".
     app.include_router(
         build_me_router(
-            store=store, diagnosis=service, cookie_secure=settings.cookie_secure, clock=clock
+            store=store,
+            diagnosis=service,
+            sync=sync,
+            cookie_secure=settings.cookie_secure,
+            clock=clock,
         )
     )
 

@@ -43,6 +43,7 @@ Cuarto bloque: **cuentas y sesiones**. La cuenta es la identidad de Google: no h
 | `GET /api/v1/me` | Correo, fichas de la cuenta y ficha elegida |
 | `POST /api/v1/me/location` | Elige una ficha. 404 si no es de esa cuenta |
 | `GET /api/v1/me/diagnosis` | Diagnóstico de la ficha elegida, buscada por su `place_id` |
+| `GET /api/v1/me/summary` | Resumen de la ficha elegida, leído de lo que guarda el worker |
 | `POST /api/v1/auth/logout` | Cierra la sesión y borra la cookie |
 
 - Sin sesión, o con la sesión caducada o cerrada, responden 401.
@@ -60,10 +61,35 @@ docker compose exec -T db psql -q -U fichaitor -d fichaitor -v ON_ERROR_STOP=1 <
 Pruebas de integración contra PostgreSQL (sin estas variables se omiten):
 
 ```bash
-FICHAITOR_TEST_DATABASE_URL=postgresql://fichaitor_api_dev:dev@127.0.0.1:5433/fichaitor FICHAITOR_TEST_OWNER_URL=postgresql://fichaitor:dev@127.0.0.1:5433/fichaitor uv run pytest -q
+FICHAITOR_TEST_DATABASE_URL=postgresql://fichaitor_api_dev:dev@127.0.0.1:5433/fichaitor FICHAITOR_TEST_OWNER_URL=postgresql://fichaitor:dev@127.0.0.1:5433/fichaitor FICHAITOR_TEST_WORKER_URL=postgresql://fichaitor_worker_dev:dev@127.0.0.1:5433/fichaitor uv run pytest -q
 ```
 
-Falta: el worker, borrar la cuenta desde el panel, la limpieza periódica de sesiones caducadas y las pruebas contra Google real.
+Quinto bloque: el **worker** y el **resumen de la ficha**. El worker toma jobs de una cola en PostgreSQL; el job `sync_profile` lee la ficha en Google y guarda sus cifras en `profile_summary`. Está documentado en [docs/worker.md](docs/worker.md).
+
+La API conecta el panel con esos datos:
+
+- **Encola la sincronización** cuando el dueño elige ficha y cuando pide el resumen y este no existe, tiene más de `FICHAITOR_SUMMARY_STALE_HOURS` horas (6 por defecto) o su último intento falló.
+- **Una sincronización por ficha y ventana** de `FICHAITOR_SYNC_WINDOW_SECONDS` (15 minutos por defecto). La ventana va en la clave de idempotencia del job.
+- **`GET /api/v1/me/summary`** devuelve las cifras, o `status: "pendiente"` mientras el worker no ha terminado la primera lectura. La web sondea cada 3 segundos.
+- Si encolar falla, la ruta del usuario responde igual y el fallo queda en el log, sin identificadores.
+- El resumen se busca por la identidad de Google de la cuenta de la sesión y su ficha elegida. Una cuenta no lee el resumen de otra, aunque administren la misma ficha.
+- La API sigue sin poder leer la cola ni escribir resúmenes: solo inserta jobs y lee `profile_summary`.
+
+Para ver el recorrido completo sin Google (conectar, elegir ficha y ver el resumen):
+
+1. Pon `FICHAITOR_FAKE_GOOGLE=true` y `FICHAITOR_FAKE_PLACES=true` en `.env`, junto con `FICHAITOR_OAUTH_STATE_SECRET` y `FICHAITOR_TOKEN_PUBLIC_KEY`.
+2. Comprueba que el worker recibe la clave privada pareja de esa clave pública. En local llega desde `../fichaitor-secretos/worker.env`.
+3. Levanta todo:
+
+   ```bash
+   docker compose up -d --build
+   ```
+
+4. Abre `http://127.0.0.1:8080/app`, conecta y elige la ficha de ejemplo. El worker usa su ficha de demostración y el resumen aparece en unos segundos.
+
+> **Nota:** Sin base de datos (`FICHAITOR_DATABASE_URL` vacío y `FICHAITOR_FAKE_PLACES=true`) no hay cola ni worker. En ese modo, con `FICHAITOR_FAKE_GOOGLE=true`, la API escribe ella misma el resumen de demostración en memoria.
+
+Falta: borrar la cuenta desde el panel, la limpieza periódica de sesiones caducadas y las pruebas contra Google real.
 
 ### Ejecutarlo
 

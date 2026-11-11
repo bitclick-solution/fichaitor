@@ -18,7 +18,9 @@ from app.api.session import (
     require_csrf_header,
     utc,
 )
+from app.api.summary_out import SummaryResponse, to_summary_response
 from app.application.diagnosis_service import DiagnosisService, RateLimited
+from app.application.profile_sync import ProfileSync
 from app.domain.session import hash_token
 from app.ports.places import PlacesUnavailable
 from app.ports.store import Account, Store
@@ -47,6 +49,7 @@ def build_router(
     *,
     store: Store,
     diagnosis: DiagnosisService,
+    sync: ProfileSync,
     cookie_secure: bool,
     clock: Callable[[], float],
 ) -> APIRouter:
@@ -82,6 +85,8 @@ def build_router(
         # Same answer for a profile of another account and for one that does not exist.
         if not await store.select_location(account.id, body.location_id):
             raise HTTPException(404, "Esa ficha no está en tu cuenta.")
+        # So that the panel finds its figures ready. Never fails the choice itself.
+        await sync.request_for_account(account.id)
         return await me_of(
             Account(account.id, account.email, selected_location_id=body.location_id)
         )
@@ -115,6 +120,16 @@ def build_router(
                 "o que esté pendiente de verificar.",
             )
         return to_response(result)
+
+    @router.get("/api/v1/me/summary", response_model=SummaryResponse)
+    async def my_summary(
+        account: Account = Depends(current_account),  # noqa: B008
+    ) -> SummaryResponse:
+        # Looked up by the account of the session only: nothing in the request chooses it.
+        view = await sync.view(account.id)
+        if view is None:
+            raise HTTPException(409, "Primero elige con qué ficha quieres trabajar.")
+        return to_summary_response(view)
 
     @router.post(
         "/api/v1/auth/logout", status_code=204, dependencies=[Depends(require_csrf_header)]

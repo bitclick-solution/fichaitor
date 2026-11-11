@@ -28,3 +28,9 @@ class Settings(BaseSettings):
     post_connect_url: str = "/app"
     cookie_secure: bool = True
     oauth_start_rate_limit: int = 20  # per client IP and hour
+
+    # Panel summary. The worker writes it; the API only asks for a new sync.
+    # A summary older than this is served with stale=true and a sync is enqueued.
+    summary_stale_hours: float = 6
+    # At most one sync per profile in each window of this many seconds.
+    sync_window_seconds: int = 900

@@ -42,6 +42,33 @@ class Location:
     verified: bool
 
 
+@dataclass(frozen=True)
+class StoredSummary:
+    """A row of profile_summary as the API reads it. Figures are None until a first good sync."""
+
+    status: str  # ok, needs_reconnect or error
+    status_at: datetime  # last attempt
+    synced_at: datetime | None  # last good read
+    review_count: int | None
+    average_rating: float | None
+    unanswered_count: int | None
+    unanswered_low_count: int | None
+    last_review_at: datetime | None
+    has_regular_hours: bool | None
+    upcoming_special_hours: int | None
+    google_changed: bool | None
+    google_changed_fields: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True)
+class SelectedProfile:
+    """The selected profile of an account, as Google names it, and its summary if any."""
+
+    google_sub: str
+    location: str  # "locations/123"
+    summary: StoredSummary | None
+
+
 class Store(Protocol):
     async def add_signup(self, signup: WaitlistSignup) -> None:
         """Save a signup. Saving the same contact twice is not an error."""
@@ -89,4 +116,13 @@ class Store(Protocol):
 
     async def select_location(self, account_id: str, location_id: str) -> bool:
         """Select a profile. False, and nothing changes, if it is not of that account."""
+        ...
+
+    async def selected_profile(self, account_id: str) -> SelectedProfile | None:
+        """The selected profile of that account and its summary. None if nothing is selected.
+
+        The summary is looked up by the Google identity of that very account and its own
+        selected profile: an account never reads the summary written for another one,
+        not even when both manage the same Google profile.
+        """
         ...

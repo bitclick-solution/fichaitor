@@ -7,7 +7,14 @@ from dataclasses import dataclass
 from datetime import datetime
 
 from app.ports.google_oauth import ProfileLocation
-from app.ports.store import Account, GoogleConnection, Location, WaitlistSignup
+from app.ports.store import (
+    Account,
+    GoogleConnection,
+    Location,
+    SelectedProfile,
+    StoredSummary,
+    WaitlistSignup,
+)
 
 
 @dataclass
@@ -41,6 +48,8 @@ class MemoryStore:
         self.accounts: dict[str, AccountRow] = {}  # by google_sub
         self.locations: list[LocationRow] = []
         self.sessions: dict[str, SessionRow] = {}  # by token hash, never the token
+        # What the worker would write, by (google_sub, Google location name).
+        self.summaries: dict[tuple[str, str], StoredSummary] = {}
         self._fail = fail
 
     def _check(self) -> None:
@@ -130,3 +139,25 @@ class MemoryStore:
         if owned:
             self._account(account_id).selected_location_id = location_id
         return owned
+
+    def put_summary(self, google_sub: str, location: str, summary: StoredSummary) -> None:
+        """Stand-in for the worker: the API itself never writes a summary."""
+        self.summaries[(google_sub, location)] = summary
+
+    async def selected_profile(self, account_id: str) -> SelectedProfile | None:
+        self._check()
+        account = self._account(account_id)
+        row = next(
+            (
+                r
+                for r in self.locations
+                if r.id == account.selected_location_id
+                and r.account_id == account_id
+                and not r.removed
+            ),
+            None,
+        )
+        if row is None:
+            return None
+        key = (account.google_sub, row.profile.location)
+        return SelectedProfile(account.google_sub, row.profile.location, self.summaries.get(key))
