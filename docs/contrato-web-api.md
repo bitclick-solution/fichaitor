@@ -243,18 +243,21 @@ Un subcampo, como `phoneNumbers.primaryPhone`, lleva la etiqueta de su campo. Un
 
 | `status` | Qué significa | Qué hace la web |
 |---|---|---|
-| `pendiente` | Todavía no hay resumen: la sincronización se acaba de pedir. Todos los demás campos van a `null` y `stale` a `false` | Muestra las tarjetas cargando y vuelve a preguntar |
+| `pendiente` | Todavía no hay resumen: la sincronización se ha pedido y el worker no ha terminado. Todos los demás campos van a `null` y `stale` a `false` | Muestra las tarjetas cargando y vuelve a preguntar |
 | `ok` | Cifras de la última sincronización | Muestra las tarjetas |
-| `needs_reconnect` | Google ha retirado el permiso. Las cifras son las de la última lectura correcta, o `null` si nunca la hubo | Pide volver a conectar con Google. Si hay cifras, muéstralas con su fecha |
-| `error` | La última sincronización falló. Las cifras son las de la última lectura correcta, o `null` si nunca la hubo | Si hay cifras, muéstralas con su fecha. Si no, "No hemos podido leer tu ficha. Prueba más tarde" |
+| `needs_reconnect` | Google ha retirado el permiso, o no hay ninguna conexión guardada para esa cuenta. Las cifras son las de la última lectura correcta, o `null` si nunca la hubo | Pide volver a conectar con Google. Si hay cifras, muéstralas con su fecha |
+| `error` | La última sincronización falló: Google no respondió o rechazó la lectura, o la ficha ya no está en la conexión más reciente. Las cifras son las de la última lectura correcta, o `null` si nunca la hubo | Si hay cifras, muéstralas con su fecha. Si no, "No hemos podido leer tu ficha. Prueba más tarde" |
 
 Con `needs_reconnect` y `error`, `google_changed_fields` y `google_changed_labels` son listas, vacías si nunca hubo una lectura correcta.
+
+`pendiente` no es un estado en el que una ficha se quede: toda sincronización que falla deja `needs_reconnect` o `error`. Si el worker está parado, `pendiente` dura hasta que vuelve a arrancar.
 
 #### Cuándo se sincroniza
 
 - Al elegir ficha con `POST /api/v1/me/location`.
+- Al volver a conectar con Google (`google=ok`), si la cuenta ya tenía ficha elegida y Google ha listado las fichas. Se pide al momento, aunque no hayan pasado los 15 minutos, y como máximo una vez por minuto.
 - Al pedir el resumen, si no existe, si tiene más de 6 horas o si el último intento falló hace más de 15 minutos.
-- Como máximo, una sincronización por ficha cada 15 minutos. Pedir el resumen muchas veces no lanza más.
+- Fuera de la reconexión, como máximo una sincronización por ficha cada 15 minutos. Pedir el resumen muchas veces no lanza más.
 
 #### Sondeo
 
@@ -262,6 +265,7 @@ Con `needs_reconnect` y `error`, `google_changed_fields` y `google_changed_label
 - Si tras 10 intentos sigue en `pendiente`, deja de preguntar y muestra "Estamos leyendo tu ficha. Vuelve en unos minutos", con un botón para reintentar.
 - Con `stale: true`, muestra las cifras que hay. Para refrescarlas sin que el usuario recargue, vuelve a pedir el resumen una sola vez pasados 10 segundos.
 - Con `ok`, `needs_reconnect` y `error` no sondees.
+- Excepción: al volver de conectar con `google=ok`, el resumen puede seguir unos segundos en `needs_reconnect` o `error`, hasta que el worker termina la sincronización que se acaba de pedir. Vuelve a pedirlo una sola vez pasados 10 segundos.
 - Puedes tener la respuesta en memoria mientras la pantalla está abierta. No la guardes en `localStorage` ni similares: caduca.
 
 Errores:

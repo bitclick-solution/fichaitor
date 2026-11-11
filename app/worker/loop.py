@@ -2,6 +2,7 @@
 
 import asyncio
 import logging
+import time
 import traceback
 
 from app.domain.jobs import Job, JobError, PermanentJobError, retry_delay, safe_error
@@ -22,6 +23,7 @@ class Worker:
         poll_interval: float = 2.0,
         job_timeout: float = 120.0,
         lock_timeout: float = 300.0,
+        recover_interval: float = 60.0,
     ) -> None:
         self._queue = queue
         self._registry = registry
@@ -29,6 +31,8 @@ class Worker:
         self._poll_interval = poll_interval
         self._job_timeout = job_timeout
         self._lock_timeout = lock_timeout
+        self._recover_interval = recover_interval
+        self._next_recovery = 0.0  # monotonic clock: the first round always looks
 
     async def run(self, stop: asyncio.Event) -> None:
         """Run jobs until stop is set. The job in progress is always finished first."""
@@ -46,6 +50,8 @@ class Worker:
     async def run_once(self) -> bool:
         """Take and run one job. False if there was nothing to do."""
         job = await self._queue.claim(self._worker_id, self._registry.kinds, self._lock_timeout)
+        # After claim(), which is what closes the jobs abandoned on their last attempt.
+        await self._record_lost()
         if job is None:
             return False
         fields = {"job_id": job.id, "kind": job.kind, "attempt": job.attempts}
@@ -73,6 +79,26 @@ class Worker:
             event("job_failed", logging.ERROR, error=error, **fields)
         else:
             event("job_retry", logging.WARNING, error=error, retry_in=delay, **fields)
+
+    async def _record_lost(self) -> None:
+        """Let each handler record the jobs of its kind that died with their worker.
+        At most once per recover_interval; a failure here never stops the jobs."""
+        now = time.monotonic()
+        if now < self._next_recovery:
+            return
+        self._next_recovery = now + self._recover_interval
+        for kind in self._registry.kinds:
+            hook = getattr(self._registry.get(kind), "on_lost", None)
+            if hook is None:
+                continue
+            try:
+                async with asyncio.timeout(self._job_timeout):
+                    count = await hook(kind)
+            except Exception as exc:
+                event("lost_hook_error", logging.ERROR, error=type(exc).__name__, kind=kind)
+            else:
+                if count:
+                    event("lost_jobs_recorded", logging.WARNING, kind=kind, count=count)
 
     async def _notify_exhausted(self, job: Job, fields: dict) -> None:
         hook = getattr(self._registry.get(job.kind), "on_exhausted", None)

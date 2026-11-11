@@ -161,6 +161,7 @@ def create_app(
                 limiter=SlidingWindowLimiter(settings.oauth_start_rate_limit, 3600),
                 client_ip=client_ip,
                 clock=clock,
+                sync=sync,
             )
         )
 

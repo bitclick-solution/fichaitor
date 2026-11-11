@@ -19,14 +19,29 @@ log = logging.getLogger("fichaitor.profile_sync")
 SYNC_PROFILE_KIND = "sync_profile"  # same value as app.worker.sync_profile.KIND
 
 
+def _profile_hash(google_sub: str, location: str) -> str:
+    return hashlib.sha256(f"{google_sub}\n{location}".encode()).hexdigest()[:32]
+
+
 def sync_key(google_sub: str, location: str, now: float, window_seconds: int) -> str:
     """One key per profile and time window: an idempotency key is unique forever, so the
     window is what lets the same profile be synced again later.
 
     The profile is hashed: the key has a length limit and needs no identifiers in clear.
     """
-    profile = hashlib.sha256(f"{google_sub}\n{location}".encode()).hexdigest()[:32]
-    return f"{SYNC_PROFILE_KIND}:{profile}:{int(now // window_seconds)}"
+    return f"{SYNC_PROFILE_KIND}:{_profile_hash(google_sub, location)}:{int(now // window_seconds)}"
+
+
+# A reconnection asks for a sync at once, whatever the window says. Its key has its own
+# prefix, so it never meets the key of a window, and its own short period, so connecting
+# again and again cannot enqueue more than one job per profile and minute.
+RECONNECT_WINDOW_SECONDS = 60
+
+
+def reconnect_key(google_sub: str, location: str, now: float) -> str:
+    """Key of the sync asked for when the owner connects with Google again."""
+    profile = _profile_hash(google_sub, location)
+    return f"{SYNC_PROFILE_KIND}:reconnect:{profile}:{int(now // RECONNECT_WINDOW_SECONDS)}"
 
 
 @dataclass(frozen=True)
@@ -51,26 +66,34 @@ class ProfileSync:
         self._stale_after = timedelta(seconds=stale_after_seconds)
         self._clock = clock
 
-    async def _enqueue(self, google_sub: str, location: str) -> None:
+    async def _enqueue(self, google_sub: str, location: str, *, reconnected: bool = False) -> None:
         """Ask for a sync. Never raises: the route of the user must not fail because of it."""
         try:
+            if reconnected:
+                key = reconnect_key(google_sub, location, self._clock())
+            else:
+                key = sync_key(google_sub, location, self._clock(), self._window)
             await self._jobs.enqueue(
                 SYNC_PROFILE_KIND,
                 {"google_sub": google_sub, "location": location},
-                idempotency_key=sync_key(google_sub, location, self._clock(), self._window),
+                idempotency_key=key,
             )
         except Exception as exc:  # identifiers and connection strings stay out of the logs
             log.warning("sincronización de la ficha no encolada: %s", type(exc).__name__)
 
-    async def request_for_account(self, account_id: str) -> None:
-        """Sync the selected profile of that account. Never raises."""
+    async def request_for_account(self, account_id: str, *, reconnected: bool = False) -> None:
+        """Sync the selected profile of that account, if it has one. Never raises.
+
+        reconnected: the owner has just connected with Google again, so the sync is
+        asked for at once instead of once per window.
+        """
         try:
             profile = await self._store.selected_profile(account_id)
         except Exception as exc:
             log.warning("sincronización de la ficha no encolada: %s", type(exc).__name__)
             return
         if profile is not None:
-            await self._enqueue(profile.google_sub, profile.location)
+            await self._enqueue(profile.google_sub, profile.location, reconnected=reconnected)
 
     async def view(self, account_id: str) -> SummaryView | None:
         """The summary of the selected profile of that account. None if none is selected."""

@@ -9,6 +9,7 @@ from fastapi.responses import RedirectResponse
 
 from app.adapters.crypto.sealed import seal
 from app.api.session import SESSION_COOKIE, set_session_cookie, utc
+from app.application.profile_sync import ProfileSync
 from app.application.rate_limit import SlidingWindowLimiter
 from app.domain.oauth_state import InvalidState, make_state, verify_state
 from app.domain.session import SESSION_TTL_SECONDS, hash_token, new_token
@@ -34,6 +35,7 @@ def build_router(
     limiter: SlidingWindowLimiter,
     client_ip: Callable[[Request], str],
     clock: Callable[[], float] = time.time,
+    sync: ProfileSync | None = None,
 ) -> APIRouter:
     router = APIRouter()
 
@@ -126,6 +128,14 @@ def build_router(
         except Exception as exc:  # tokens and emails must never reach the logs
             log.error("no se pudo abrir la sesión: %s", type(exc).__name__)
             return back("error")
+        # A reconnection with a profile already chosen: its figures are read again now,
+        # without waiting for the sync window. Never fails the connection. Skipped when
+        # the profiles could not be listed: that connection has none the worker can read.
+        if sync is not None and locations is not None:
+            try:
+                await sync.request_for_account(account_id, reconnected=True)
+            except Exception as exc:  # identifiers must never reach the logs
+                log.warning("sincronización tras conectar no encolada: %s", type(exc).__name__)
         try:
             await store.record_event("connected")
         except Exception as exc:

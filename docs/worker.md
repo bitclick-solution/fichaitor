@@ -17,7 +17,7 @@ Reglas de la cola:
 - **Reintentos.** Un fallo temporal reprograma el job con espera creciente: 30 s, 60 s, 120 s… hasta 1 hora.
 - **Límite de intentos.** Al agotar `max_attempts` (5 por defecto), el job queda `failed` con su error en `last_error`.
 - **Errores definitivos.** Un manejador lanza `PermanentJobError` cuando reintentar no sirve. El job queda `failed` en el primer intento.
-- **Worker caído.** Un job `running` con un bloqueo más antiguo que `WORKER_LOCK_TIMEOUT_SECONDS` lo recupera otro worker. Si ya no le quedan intentos, queda `failed`.
+- **Worker caído.** Un job `running` con un bloqueo más antiguo que `WORKER_LOCK_TIMEOUT_SECONDS` lo recupera otro worker. Si ya no le quedan intentos, queda `failed` y el manejador puede dejar constancia con `on_lost`. Consulta [Worker caído en el último intento](#worker-caído-en-el-último-intento).
 - **Tiempo máximo.** Cada ejecución se corta a los `WORKER_JOB_TIMEOUT_SECONDS`, siempre antes de que caduque el bloqueo.
 - **Idempotencia.** Encolar dos veces con la misma `idempotency_key` no crea un segundo job.
 - **Tipos conocidos.** Un worker solo toma los `kind` para los que tiene manejador.
@@ -40,6 +40,15 @@ created = await PostgresJobQueue(pool).enqueue(
 
 `enqueue` devuelve `True` si creó el job y `False` si la clave ya existía. No devuelve el identificador: la API no puede leer la cola.
 
+La API usa dos claves para `sync_profile` (`app/application/profile_sync.py`). Las dos llevan un hash de la ficha, no sus identificadores:
+
+| Cuándo | Clave | Límite |
+|---|---|---|
+| Al elegir ficha y al pedir el resumen | `sync_profile:<hash>:<ventana>` | Una por ficha y ventana de `FICHAITOR_SYNC_WINDOW_SECONDS` (15 minutos) |
+| Al volver a conectar con Google, si ya hay ficha elegida | `sync_profile:reconnect:<hash>:<minuto>` | Una por ficha y minuto |
+
+La clave de reconexión no depende de la ventana: la sincronización se encola aunque la ventana siga abierta. El prefijo `reconnect` impide que coincida con una clave de ventana, y el minuto impide encolar en bucle conectando una y otra vez. Si la reconexión no pudo listar las fichas (`fichas=pendiente`), no se encola nada: esa conexión no tiene ninguna ficha que el worker pueda leer.
+
 ## El job `sync_profile`
 
 Carga: `{"google_sub": "...", "location": "locations/123"}`.
@@ -57,9 +66,29 @@ Carga: `{"google_sub": "...", "location": "locations/123"}`.
 | Google rechaza el token de renovación (`invalid_grant` o 401) | `failed`, sin reintentos | `needs_reconnect` |
 | Google rechaza la lectura (4xx) | `failed`, sin reintentos | `error` |
 | El token no se puede descifrar | `failed`, sin reintentos | `error` |
-| No hay conexión o la ficha no es de esa conexión | `failed`, sin reintentos | No se escribe nada |
+| No hay ninguna conexión guardada para ese `google_sub` | `failed`, sin reintentos y sin llamar a Google | `needs_reconnect` |
+| La ficha no está en la conexión más reciente | `failed`, sin reintentos y sin llamar a Google | `error` |
+| El worker muere durante el último intento | `failed` al caducar el bloqueo | `error`, como mucho un minuto después |
+| La carga no es válida (falta `google_sub` o `location`) | `failed`, sin reintentos | No se escribe nada: no hay ficha a la que apuntar |
 
 Cuando el estado no es `ok`, las cifras de la última lectura correcta se conservan. `synced_at` indica de cuándo son.
+
+Todo job con una carga válida deja un estado en `profile_summary`. La API no puede leer la cola, así que el resumen es el único sitio donde el panel ve un fallo. Sin ese estado, la API respondería `pendiente` sin fin.
+
+### Worker caído en el último intento
+
+Si un worker muere mientras ejecuta el último intento de un job, nadie llama a `on_exhausted`. La cola cierra el job como `failed` cuando caduca su bloqueo, con el error "el worker que lo ejecutaba dejó de responder".
+
+Para que el resumen no se quede sin estado, cada worker busca esos jobs después de consultar la cola, como mucho una vez por minuto, y llama al método `on_lost` de cada manejador. El de `sync_profile` pone en `error` el resumen de las fichas afectadas (`PostgresWorkerStore.mark_lost_syncs`):
+
+- El estado lleva la fecha en que se cerró el job y solo se escribe sobre un estado más antiguo. Una sincronización posterior nunca queda tapada.
+- Repetirlo no cambia nada. Varios workers pueden hacerlo a la vez.
+- Solo mira los jobs cerrados en las últimas 24 horas.
+- No llama a Google ni toca la cola.
+
+Qué ve el usuario mientras tanto: hasta que caduca el bloqueo (`WORKER_LOCK_TIMEOUT_SECONDS`, 5 minutos) el resumen sigue como estaba, es decir, `pendiente` o las cifras anteriores. Después pasa a `error` y la API vuelve a pedir la sincronización cuando se cumple la ventana.
+
+> **Nota:** Hace falta al menos un worker en marcha para que esto ocurra. Sin ninguno, los jobs no se cierran y el resumen no cambia.
 
 De las reseñas con el formato `(Translated by Google) … (Original) …` se conserva solo el texto original. El resumen no guarda textos ni autores, solo cifras.
 
@@ -157,7 +186,7 @@ Todas llevan el prefijo `FICHAITOR_`. El worker las valida al arrancar y, si fal
 
 6. Para pararlo, pulsa `Ctrl+C`. El worker termina el job en curso y sale.
 
-El worker escribe una línea JSON por evento: `worker_started`, `job_started`, `job_done`, `job_retry`, `job_failed`, `job_lost`, `queue_error`, `stop_requested` y `worker_stopped`. Los logs llevan el identificador, el tipo y el intento del job. No llevan cargas, tokens ni cadenas de conexión.
+El worker escribe una línea JSON por evento: `worker_started`, `job_started`, `job_done`, `job_retry`, `job_failed`, `job_lost`, `lost_jobs_recorded`, `lost_hook_error`, `exhausted_hook_error`, `queue_error`, `stop_requested` y `worker_stopped`. Los logs llevan el identificador, el tipo y el intento del job. No llevan cargas, tokens ni cadenas de conexión.
 
 ### Probar un job a mano
 
@@ -232,4 +261,5 @@ Y monta el esquema del worker en el servicio `db`, hasta que se fusione en `sche
 1. Escribe el manejador en `app/worker/`: una función o un objeto asíncrono que recibe un `Job`.
 2. Lanza `PermanentJobError` si reintentar no sirve y `JobError` con un mensaje sin datos sensibles si el fallo es temporal. De cualquier otra excepción solo se guarda el tipo.
 3. Si necesitas actuar cuando el job agota sus intentos, añade el método `on_exhausted(job)`.
-4. Regístralo en `build_registry` (`app/worker/__main__.py`).
+4. Si el job deja un estado que alguien lee fuera de la cola, añade el método `on_lost(kind)`. Se llama cada minuto para los jobs que murieron con su worker en el último intento. Debe poder repetirse sin efectos y devuelve cuántos ha anotado.
+5. Regístralo en `build_registry` (`app/worker/__main__.py`).

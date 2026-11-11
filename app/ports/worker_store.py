@@ -34,3 +34,9 @@ class WorkerStore(Protocol):
     async def save_status(self, google_sub: str, location: str, status: str, at: datetime) -> None:
         """Set only the status; the figures of the last good sync are kept."""
         ...
+
+    async def mark_lost_syncs(self, kind: str) -> int:
+        """Set status 'error' on the profiles whose sync job of that kind was closed
+        as failed because its worker died during the last attempt, unless the summary
+        already has a later status. Safe to repeat. Returns how many were set."""
+        ...

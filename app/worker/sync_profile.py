@@ -34,13 +34,19 @@ class SyncProfile:
     async def __call__(self, job: Job) -> None:
         google_sub, location = _target(job)
 
+        # Every way out of here leaves a status in the summary: the API cannot read
+        # the queue, so the summary is the only place where the panel sees a failure.
         connection = await self._store.latest_connection(google_sub)
         if connection is None:
+            await self._store.save_status(
+                google_sub, location, STATUS_NEEDS_RECONNECT, self._clock()
+            )
             raise PermanentJobError("no hay conexión con Google para ese usuario")
         # The account and location sent to Google come from the stored connection;
         # the payload only chooses among them.
         target = next((loc for loc in connection.locations if loc.location == location), None)
         if target is None:
+            await self._store.save_status(google_sub, location, STATUS_ERROR, self._clock())
             raise PermanentJobError("la ficha no pertenece a la conexión actual")
 
         try:
@@ -82,6 +88,11 @@ class SyncProfile:
         except PermanentJobError:
             return
         await self._store.save_status(google_sub, location, STATUS_ERROR, self._clock())
+
+    async def on_lost(self, kind: str) -> int:
+        """Jobs closed as failed because their worker died during the last attempt:
+        nobody ran on_exhausted for them, so their summaries are set to error here."""
+        return await self._store.mark_lost_syncs(kind)
 
 
 def _target(job: Job) -> tuple[str, str]:

@@ -16,6 +16,15 @@ class ExhaustedHook(Protocol):
         ...
 
 
+class LostHook(Protocol):
+    async def on_lost(self, kind: str) -> int:
+        """Optional method of a handler: called now and then so that it can record
+        the jobs of its kind that the queue closed as failed because their worker
+        died during the last attempt. No handler ran for them, so on_exhausted was
+        never called. Must be safe to repeat. Returns how many it recorded."""
+        ...
+
+
 class HandlerRegistry:
     def __init__(self) -> None:
         self._handlers: dict[str, Handler] = {}

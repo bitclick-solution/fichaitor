@@ -5,7 +5,8 @@ from datetime import datetime
 
 import asyncpg
 
-from app.domain.profile_summary import STATUS_OK, ProfileSummary
+from app.adapters.job_queue.postgres import LOST_WORKER_ERROR
+from app.domain.profile_summary import STATUS_ERROR, STATUS_OK, ProfileSummary
 from app.ports.worker_store import ConnectedLocation, StoredConnection
 
 
@@ -93,3 +94,32 @@ class PostgresWorkerStore:
             status,
             at,
         )
+
+    async def mark_lost_syncs(self, kind: str) -> int:
+        # The status takes the time the job was closed and is written only over an
+        # older one: a later sync is never hidden and repeating this changes nothing.
+        # One day back is plenty (it runs every minute) and keeps old jobs out.
+        status = await self._pool.execute(
+            """
+            INSERT INTO profile_summary (google_sub, location, status, status_at)
+            SELECT DISTINCT ON (google_sub, location) google_sub, location, $3, finished_at
+            FROM (
+                SELECT payload->>'google_sub' AS google_sub, payload->>'location' AS location,
+                       finished_at
+                FROM job
+                WHERE kind = $1 AND state = 'failed' AND last_error = $2
+                  AND finished_at > now() - interval '1 day'
+                  AND jsonb_typeof(payload->'google_sub') = 'string'
+                  AND jsonb_typeof(payload->'location') = 'string'
+            ) AS lost
+            WHERE length(google_sub) BETWEEN 1 AND 255 AND length(location) BETWEEN 1 AND 200
+            ORDER BY google_sub, location, finished_at DESC
+            ON CONFLICT (google_sub, location) DO UPDATE SET
+                status = EXCLUDED.status, status_at = EXCLUDED.status_at
+            WHERE profile_summary.status_at < EXCLUDED.status_at
+            """,
+            kind,
+            LOST_WORKER_ERROR,
+            STATUS_ERROR,
+        )
+        return int(status.rsplit(" ", 1)[-1])

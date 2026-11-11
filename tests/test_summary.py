@@ -13,7 +13,7 @@ from app.adapters.places.fake import DEMO, FakePlaces
 from app.adapters.store.memory import MemoryStore
 from app.api.main import create_app
 from app.api.summary_out import field_label
-from app.application.profile_sync import SYNC_PROFILE_KIND, sync_key
+from app.application.profile_sync import SYNC_PROFILE_KIND, reconnect_key, sync_key
 from app.config import Settings
 from app.ports.google_oauth import Identity, ProfileLocation
 from app.ports.store import StoredSummary
@@ -191,6 +191,103 @@ def test_a_failed_enqueue_never_fails_the_route_and_logs_no_identifiers(caplog):
     assert "RuntimeError" in caplog.text
     assert SUB not in caplog.text
     assert "locations/1" not in caplog.text
+
+
+# --- reconnecting -----------------------------------------------------------
+
+
+def test_reconnecting_enqueues_a_sync_of_the_selected_profile_without_waiting_for_the_window():
+    world = World()
+    client = world.owner_with_profile()
+    world.clock.now += 2 * MINUTE
+    lost_at = datetime.fromtimestamp(world.clock.now, UTC)
+    world.store.put_summary(SUB, "locations/1", stored(status="needs_reconnect", status_at=lost_at))
+    assert client.get(SUMMARY).json()["status"] == "needs_reconnect"
+    assert len(world.sync_jobs()) == 1  # the window of the choice is still open
+
+    world.clock.now += MINUTE
+    client = world.connect_as()  # the owner connects with Google again
+    first, second = world.sync_jobs()
+    assert second.payload == {"google_sub": SUB, "location": "locations/1"}
+    assert second.idempotency_key == reconnect_key(SUB, "locations/1", world.clock.now)
+    assert second.idempotency_key != first.idempotency_key
+    assert second.idempotency_key != sync_key(SUB, "locations/1", world.clock.now, 900)
+    assert SUB not in second.idempotency_key
+
+    # Asking for the summary inside the window still adds nothing.
+    assert client.get(SUMMARY).json()["status"] == "needs_reconnect"
+    assert len(world.sync_jobs()) == 2
+
+
+def test_reconnecting_again_and_again_enqueues_one_sync_per_minute():
+    world = World()
+    world.owner_with_profile()
+    world.clock.now += 5 * MINUTE
+    for _ in range(4):
+        world.connect_as()
+        world.clock.now += 10
+    assert len(world.sync_jobs()) == 2  # the choice and one reconnection
+    world.clock.now += MINUTE
+    world.connect_as()
+    assert len(world.sync_jobs()) == 3
+
+
+def test_reconnect_key_changes_with_profile_and_minute_and_hides_identifiers():
+    key = reconnect_key(SUB, "locations/1", T0)
+    assert key == reconnect_key(SUB, "locations/1", T0 + 59)
+    assert key != reconnect_key(SUB, "locations/1", T0 + 60)
+    assert key != reconnect_key(SUB, "locations/2", T0)
+    assert key != reconnect_key("otro-sub", "locations/1", T0)
+    assert key != sync_key(SUB, "locations/1", T0, 60)  # never the key of a window
+    assert SUB not in key
+    assert len(reconnect_key("s" * 255, "l" * 255, T0)) <= 200
+
+
+def test_connecting_without_a_selected_profile_enqueues_nothing():
+    world = World(locations=[BAR, SHOP])
+    world.connect_as()
+    world.connect_as()  # still nothing chosen
+    assert world.sync_jobs() == []
+
+
+def test_reconnecting_without_the_list_of_profiles_enqueues_nothing():
+    # The new connection has no profiles in it: the worker could not sync any.
+    world = World()
+    world.owner_with_profile()
+    world.clock.now += 5 * MINUTE
+    world.google.fail_locations = True
+    world.connect_as()
+    assert len(world.sync_jobs()) == 1  # only the one of the choice
+
+
+def test_reconnecting_one_account_does_not_sync_the_profile_of_another():
+    world = World()
+    world.owner_with_profile()
+    world.clock.now += 5 * MINUTE
+    world.connect_as(sub="google-sub-2", email="otra@example.com")
+    assert len(world.sync_jobs()) == 1
+
+
+def test_a_failed_enqueue_never_fails_the_reconnection_and_logs_no_identifiers(caplog):
+    world = World()
+    world.owner_with_profile()
+    world.clock.now += 5 * MINUTE
+
+    async def broken(kind, payload, **_):
+        raise RuntimeError(f"cola caída para {payload['google_sub']}")
+
+    world.jobs.enqueue = broken
+    client = TestClient(world.app, follow_redirects=False)
+    state = parse_qs(urlparse(client.get(START).headers["location"]).query)["state"][0]
+    with caplog.at_level(logging.DEBUG):
+        r = client.get(CALLBACK, params={"code": "c", "state": state})
+    assert r.status_code == 303
+    assert parse_qs(urlparse(r.headers["location"]).query)["google"] == ["ok"]
+    assert client.get(ME).status_code == 200  # the session was opened all the same
+    assert "RuntimeError" in caplog.text
+    assert SUB not in caplog.text
+    assert "locations/1" not in caplog.text
+    assert "dueno@example.com" not in caplog.text
 
 
 # --- the summary ------------------------------------------------------------

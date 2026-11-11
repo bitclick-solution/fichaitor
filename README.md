@@ -4,7 +4,31 @@ Nombre comercial decidido el 2026-11-11. Dominio: `fichaitor.es` (registrar tamb
 
 Agente conversacional que gestiona la ficha de Google Business Profile de un negocio desde WhatsApp. Es experto en la ficha y en SEO local, se adelanta a las fechas clave y nunca cambia nada sin la confirmación del dueño.
 
-Estado: **fase de diseño**. No hay código. Fecha: 2026-11-11.
+Estado: **en construcción**. La API, el worker, la base de datos y la web funcionan en local con Docker Compose. Todavía no hay agente conversacional ni WhatsApp. Fecha: 2026-11-11.
+
+## Estado
+
+| Pieza | Estado |
+|---|---|
+| API (`app/api`, FastAPI) | Funciona: diagnóstico público, lista de espera, conexión con Google, cuentas y sesiones, y resumen de la ficha |
+| Worker (`app/worker`) | Funciona: cola de jobs en PostgreSQL y job `sync_profile`, que lee la ficha en Google y guarda sus cifras |
+| Base de datos (PostgreSQL 16) | Funciona: `db/schema.sql` y `db/schema_worker.sql`, idempotentes, con un rol de mínimo privilegio para la API y otro para el worker |
+| Web (`web/`) | Funciona: sitio público con el diagnóstico y panel en `/app` (React + Vite), servidos por nginx en `http://127.0.0.1:8080` |
+| Calendario de fechas clave | Datos y reglas listos ([docs/calendario.md](docs/calendario.md)). Ningún servicio los usa todavía |
+| Integración continua | Formato, análisis estático y pruebas contra PostgreSQL en cada push ([docs/ci.md](docs/ci.md)) |
+
+Lo que funciona hoy de principio a fin: un negocio consulta el diagnóstico público de su ficha, se apunta a la lista de espera, conecta su cuenta de Google, elige ficha y ve en el panel las reseñas sin responder, los horarios y los cambios hechos por Google. Sin credenciales de Google, todo el recorrido funciona con datos de ejemplo.
+
+Lo que falta del MVP ([docs/05-roadmap.md](docs/05-roadmap.md), fase 3):
+
+- La vinculación de WhatsApp y el agente conversacional (motor de propuestas, confirmación y ejecutor).
+- Las reseñas con respuesta propuesta y aprobación.
+- Las fechas clave y "hoy cierro" dentro del producto.
+- La facturación.
+- En el panel: borrar la cuenta. En la base: la limpieza periódica de sesiones caducadas.
+- El diagnóstico por pantallazo, que está en construcción.
+
+Nada escribe todavía en Google: la API y el worker solo leen.
 
 ## Qué hay construido
 
@@ -69,8 +93,10 @@ Quinto bloque: el **worker** y el **resumen de la ficha**. El worker toma jobs d
 La API conecta el panel con esos datos:
 
 - **Encola la sincronización** cuando el dueño elige ficha y cuando pide el resumen y este no existe, tiene más de `FICHAITOR_SUMMARY_STALE_HOURS` horas (6 por defecto) o su último intento falló.
+- **Al volver a conectar con Google**, si la cuenta ya tenía ficha elegida, encola su sincronización al momento, sin esperar a la ventana. Como máximo, una por ficha y minuto.
 - **Una sincronización por ficha y ventana** de `FICHAITOR_SYNC_WINDOW_SECONDS` (15 minutos por defecto). La ventana va en la clave de idempotencia del job.
 - **`GET /api/v1/me/summary`** devuelve las cifras, o `status: "pendiente"` mientras el worker no ha terminado la primera lectura. La web sondea cada 3 segundos.
+- **Todo fallo de la sincronización deja un estado** en el resumen (`needs_reconnect` o `error`), también cuando no hay conexión guardada o la ficha ya no está en ella. `pendiente` solo dura lo que tarda el worker en tomar el job.
 - Si encolar falla, la ruta del usuario responde igual y el fallo queda en el log, sin identificadores.
 - El resumen se busca por la identidad de Google de la cuenta de la sesión y su ficha elegida. Una cuenta no lee el resumen de otra, aunque administren la misma ficha.
 - La API sigue sin poder leer la cola ni escribir resúmenes: solo inserta jobs y lee `profile_summary`.
@@ -89,7 +115,7 @@ Para ver el recorrido completo sin Google (conectar, elegir ficha y ver el resum
 
 > **Nota:** Sin base de datos (`FICHAITOR_DATABASE_URL` vacío y `FICHAITOR_FAKE_PLACES=true`) no hay cola ni worker. En ese modo, con `FICHAITOR_FAKE_GOOGLE=true`, la API escribe ella misma el resumen de demostración en memoria.
 
-Falta: borrar la cuenta desde el panel, la limpieza periódica de sesiones caducadas y las pruebas contra Google real.
+Falta en estos bloques: borrar la cuenta desde el panel, la limpieza periódica de sesiones caducadas y las pruebas automáticas contra Google real.
 
 ### Ejecutarlo
 

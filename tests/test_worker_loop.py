@@ -470,17 +470,156 @@ def test_a_request_google_rejects_is_not_retried_and_is_an_error():
         {"google_sub": SUB},
         {"google_sub": "", "location": LOCATION},
         {"google_sub": SUB, "location": 7},
-        {"google_sub": "pytest-desconocido", "location": LOCATION},  # no connection
-        {"google_sub": SUB, "location": "locations/999"},  # someone else's profile
     ],
 )
-def test_bad_or_foreign_targets_fail_for_good_without_calling_google(payload):
+def test_a_bad_payload_fails_for_good_without_calling_google(payload):
     go, queue, store, google = make_sync()
     run(go(payload))
     job = only_job(queue)
     assert (job.state, job.attempts) == (FAILED, 1)
     assert google.refreshed_with == [] and google.reads == []
-    assert store.summaries == {}
+    assert store.summaries == {}  # no profile to tell about
+
+
+def test_no_connection_shows_as_needs_reconnect_without_calling_google():
+    go, queue, store, google = make_sync()
+    run(go({"google_sub": "pytest-desconocido", "location": LOCATION}))
+    job = only_job(queue)
+    assert (job.state, job.attempts) == (FAILED, 1)
+    assert google.refreshed_with == [] and google.reads == []
+    stored = store.summaries[("pytest-desconocido", LOCATION)]
+    assert (stored.status, stored.status_at) == ("needs_reconnect", NOW)
+    assert (stored.summary, stored.synced_at) == (None, None)
+
+
+def test_a_profile_that_is_not_of_the_connection_shows_as_error_without_calling_google():
+    go, queue, store, google = make_sync()
+    run(go({"google_sub": SUB, "location": "locations/999"}))
+    job = only_job(queue)
+    assert (job.state, job.attempts) == (FAILED, 1)
+    assert google.refreshed_with == [] and google.reads == []
+    stored = store.summaries[(SUB, "locations/999")]
+    assert (stored.status, stored.summary, stored.synced_at) == ("error", None, None)
+    assert (SUB, LOCATION) not in store.summaries  # the real profile is not touched
+
+
+def test_a_profile_dropped_by_a_reconnection_keeps_its_last_figures():
+    go, _, store, _ = make_sync()
+    run(go())  # a first good sync
+    store.add_connection(SUB, connection(locations=(("accounts/111", "locations/333"),)))
+    run(go())
+    stored = store.summaries[(SUB, LOCATION)]
+    assert stored.status == "error"
+    assert stored.summary.review_count == 3 and stored.synced_at == NOW
+    assert stored.status_at > NOW
+
+
+# --- a worker that died during the last attempt -------------------------------------
+
+
+def lost_world(*, max_attempts=1):
+    """A sync job taken by a worker that never came back, and a live worker next to it."""
+    clock = Clock()
+    queue = MemoryJobQueue(clock)
+    store = MemoryWorkerStore(queue)
+    store.add_connection(SUB, connection())
+    google = FakeGoogleProfile(reviews=reviews_fixture(), access_token=ACCESS)
+    handler = SyncProfile(store, google, PRIVATE, clock)
+    registry = HandlerRegistry()
+    registry.register(KIND, handler)
+    worker = Worker(queue, registry, worker_id="vivo", recover_interval=0)
+
+    async def abandon():
+        await queue.enqueue(
+            KIND, {"google_sub": SUB, "location": LOCATION}, max_attempts=max_attempts
+        )
+        await queue.claim("muerto", [KIND], 300)
+
+    return abandon, worker, queue, store, clock, google
+
+
+def test_a_sync_abandoned_on_its_last_attempt_leaves_the_summary_in_error():
+    abandon, worker, queue, store, clock, google = lost_world()
+
+    async def scenario():
+        await abandon()
+        assert await worker.run_once() is False  # the lock is still fresh
+        assert store.summaries == {}
+        clock.advance(301)
+        assert await worker.run_once() is False  # nothing to run: the job is over
+
+    run(scenario())
+    job = only_job(queue)
+    assert job.state == FAILED and "dejó de responder" in job.last_error
+    stored = store.summaries[(SUB, LOCATION)]
+    assert (stored.status, stored.synced_at) == ("error", None)
+    assert stored.status_at == job.finished_at
+    assert google.refreshed_with == []  # nobody called Google for it
+
+
+def test_a_lost_sync_does_not_hide_a_later_good_one_and_is_recorded_once():
+    abandon, worker, queue, store, clock, _ = lost_world()
+
+    async def scenario():
+        await abandon()
+        clock.advance(301)
+        await worker.run_once()
+        assert store.summaries[(SUB, LOCATION)].status == "error"
+        clock.advance(60)
+        await queue.enqueue(KIND, {"google_sub": SUB, "location": LOCATION})
+        assert await worker.run_once() is True  # a later sync works
+        good_at = store.summaries[(SUB, LOCATION)].status_at
+        clock.advance(3600)
+        await worker.run_once()
+        return good_at
+
+    good_at = run(scenario())
+    stored = store.summaries[(SUB, LOCATION)]
+    assert (stored.status, stored.status_at) == ("ok", good_at)  # the old loss is not replayed
+
+
+def test_a_sync_abandoned_with_attempts_left_is_retried_not_marked():
+    abandon, worker, queue, store, clock, _ = lost_world(max_attempts=2)
+
+    async def scenario():
+        await abandon()
+        clock.advance(301)
+        assert await worker.run_once() is True
+
+    run(scenario())
+    assert only_job(queue).state == DONE
+    assert store.summaries[(SUB, LOCATION)].status == "ok"
+
+
+def test_lost_jobs_are_looked_for_once_per_interval_and_a_failing_hook_stops_nothing(caplog):
+    caplog.set_level(logging.DEBUG)
+    calls, seen = [], []
+
+    class Handler:
+        async def __call__(self, job):
+            seen.append(job.payload)
+
+        async def on_lost(self, kind):
+            calls.append(kind)
+            raise RuntimeError(f"base caída para {SUB}")
+
+    async def scenario():
+        queue = MemoryJobQueue()
+        registry = HandlerRegistry()
+        registry.register("k", Handler())
+        worker = Worker(queue, registry, worker_id="w1", recover_interval=0.05)
+        await queue.enqueue("k", {"n": 1})
+        assert await worker.run_once() is True  # the job runs although the hook failed
+        assert await worker.run_once() is False
+        await asyncio.sleep(0.06)
+        await worker.run_once()
+
+    run(scenario())
+    assert seen == [{"n": 1}]
+    assert calls == ["k", "k"]  # not on the second, immediate, round
+    fields = [r.__dict__.get("fields", {}) for r in caplog.records]
+    assert {"error": "RuntimeError", "kind": "k"} in fields
+    assert SUB not in caplog.text + json.dumps(fields)
 
 
 def test_a_token_that_cannot_be_decrypted_fails_for_good():

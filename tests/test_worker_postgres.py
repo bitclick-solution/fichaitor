@@ -93,7 +93,9 @@ async def job_rows(kind: str):
     )
 
 
-async def add_connection(sub: str, *, token: str = REFRESH, age_minutes: int = 0) -> None:
+async def add_connection(
+    sub: str, *, token: str = REFRESH, age_minutes: int = 0, location: str = LOCATION
+) -> None:
     await owner(
         """
         INSERT INTO google_connection
@@ -107,7 +109,7 @@ async def add_connection(sub: str, *, token: str = REFRESH, age_minutes: int = 0
             [
                 {
                     "account": "accounts/pytest-111",
-                    "location": LOCATION,
+                    "location": location,
                     "title": "Bar de pruebas",
                     "place_id": "p-test",
                     "verified": True,
@@ -543,6 +545,117 @@ def test_running_out_of_attempts_leaves_the_summary_in_error(kind, sub):
     assert (row["state"], row["attempts"]) == ("failed", 2)
     summary = run(summary_row(sub))
     assert summary["status"] == "error" and summary["synced_at"] is None
+
+
+def test_no_connection_shows_as_needs_reconnect_without_calling_google(kind, sub):
+    google = FakeGoogleProfile(reviews=reviews_fixture())
+
+    async def scenario():
+        await run_sync(kind, sub, google, rounds=2)  # nobody ever connected as that user
+
+    run(scenario())
+    (row,) = run(job_rows(kind))
+    assert (row["state"], row["attempts"]) == ("failed", 1)
+    assert google.refreshed_with == [] and google.reads == []
+    summary = run(summary_row(sub))
+    assert summary["status"] == "needs_reconnect"
+    assert (summary["synced_at"], summary["review_count"]) == (None, None)
+
+
+def test_a_profile_that_is_not_of_the_latest_connection_shows_as_error(kind, sub):
+    google = FakeGoogleProfile(reviews=reviews_fixture(), access_token=ACCESS)
+
+    async def scenario():
+        await add_connection(sub, age_minutes=60)
+        await run_sync(kind, sub, google)  # a first good sync
+        await add_connection(sub, location="locations/pytest-333")  # reconnected without it
+        await run_sync(kind, sub, google, rounds=2)
+
+    run(scenario())
+    rows = run(job_rows(kind))
+    assert [(r["state"], r["attempts"]) for r in rows] == [("done", 1), ("failed", 1)]
+    assert len(google.refreshed_with) == 1  # the second job never reached Google
+    summary = run(summary_row(sub))
+    assert summary["status"] == "error"
+    assert summary["review_count"] == 13  # last good figures kept
+    assert summary["status_at"] > summary["synced_at"]
+
+
+def test_a_sync_abandoned_on_its_last_attempt_leaves_the_summary_in_error(kind, sub):
+    google = FakeGoogleProfile(reviews=reviews_fixture(), access_token=ACCESS)
+
+    async def scenario():
+        await add_connection(sub)
+        pool = await asyncpg.create_pool(WORKER_URL, min_size=1, max_size=2)
+        try:
+            queue, store = PostgresJobQueue(pool), PostgresWorkerStore(pool)
+            registry = HandlerRegistry()
+            registry.register(kind, SyncProfile(store, google, PRIVATE))
+            worker = Worker(queue, registry, worker_id="pytest-vivo", recover_interval=0)
+            payload = {"google_sub": sub, "location": LOCATION}
+
+            await queue.enqueue(kind, payload, max_attempts=1)
+            await queue.claim("pytest-muerto", [kind], LOCK_TIMEOUT)  # and it never comes back
+            assert await worker.run_once() is False  # the lock is still fresh
+            fresh = await summary_row(sub)
+            await owner(
+                "UPDATE job SET locked_at = now() - interval '10 minutes' WHERE kind = $1", kind
+            )
+            assert await worker.run_once() is False  # the job is closed, not run
+            lost = await summary_row(sub)
+            (job,) = await job_rows(kind)
+
+            assert await store.mark_lost_syncs(kind) == 0  # recorded once
+
+            await queue.enqueue(kind, payload)  # a later sync works
+            assert await worker.run_once() is True
+            good = await summary_row(sub)
+            assert await worker.run_once() is False
+            assert await store.mark_lost_syncs(kind) == 0  # the old loss is not replayed
+            return fresh, lost, job, good, await summary_row(sub)
+        finally:
+            await pool.close()
+
+    fresh, lost, job, good, final = run(scenario())
+    assert fresh is None
+    assert job["state"] == "failed" and "dejó de responder" in job["last_error"]
+    assert (lost["status"], lost["synced_at"]) == ("error", None)
+    assert lost["status_at"] == job["finished_at"]
+    assert good["status"] == "ok"
+    assert final == good
+    assert google.refreshed_with == [REFRESH]  # only the later job reached Google
+
+
+def test_lost_jobs_with_a_bad_payload_or_of_another_kind_write_no_summary(kind, sub):
+    other_kind = f"pytest-{uuid.uuid4().hex}"
+
+    async def scenario():
+        for job_kind, payload in [
+            (kind, {}),
+            (kind, {"google_sub": sub}),
+            (kind, {"google_sub": sub, "location": ""}),
+            (kind, {"google_sub": sub, "location": 7}),
+            (other_kind, {"google_sub": sub, "location": LOCATION}),
+        ]:
+            await owner(
+                "INSERT INTO job (kind, payload, state, attempts, max_attempts, locked_by,"
+                " locked_at) VALUES ($1, $2::jsonb, 'running', 1, 1, 'pytest-muerto',"
+                " now() - interval '10 minutes')",
+                job_kind,
+                json.dumps(payload),
+            )
+        pool = await asyncpg.create_pool(WORKER_URL, min_size=1, max_size=2)
+        try:
+            queue = PostgresJobQueue(pool)
+            assert await queue.claim("pytest-vivo", [kind, other_kind], LOCK_TIMEOUT) is None
+            return await PostgresWorkerStore(pool).mark_lost_syncs(kind)
+        finally:
+            await pool.close()
+
+    assert run(scenario()) == 0
+    assert {r["state"] for r in run(job_rows(kind))} == {"failed"}
+    assert {r["state"] for r in run(job_rows(other_kind))} == {"failed"}
+    assert run(owner("SELECT 1 FROM profile_summary WHERE google_sub = $1", sub)) == []
 
 
 @pytest.mark.parametrize(
