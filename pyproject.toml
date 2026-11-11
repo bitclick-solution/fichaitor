@@ -26,6 +26,8 @@ pythonpath = ["."]
 [tool.ruff]
 line-length = 100
 target-version = "py312"
+# web/ y brand/ son de la sesión de interfaz: aquí no se formatean ni se revisan.
+extend-exclude = ["web", "brand"]
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "B", "UP"]

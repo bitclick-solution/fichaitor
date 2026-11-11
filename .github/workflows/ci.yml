@@ -1,0 +1,171 @@
+# Integración continua de Fichaitor. Se explica en docs/ci.md.
+#
+# Las acciones van fijadas por el commit de la versión indicada en el comentario;
+# Dependabot (.github/dependabot.yml) propone las actualizaciones.
+name: CI
+
+on:
+  push:
+  pull_request:
+
+# Permisos mínimos: ningún trabajo escribe en el repositorio.
+permissions:
+  contents: read
+
+# Un push nuevo a la misma rama cancela la ejecución anterior.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  # La misma versión de uv que usa el Dockerfile.
+  UV_VERSION: "0.8.13"
+  UV_PYTHON: "3.12"
+
+jobs:
+  calidad:
+    name: Calidad
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
+        with:
+          version: ${{ env.UV_VERSION }}
+          enable-cache: true
+          cache-dependency-glob: uv.lock
+      - name: Instalar dependencias
+        run: uv sync --frozen
+      - name: Formato
+        run: uv run ruff format --check .
+      - name: Análisis estático
+        run: uv run ruff check .
+
+  pruebas:
+    name: Pruebas
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    services:
+      db:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: fichaitor
+          # Contraseña de una base de datos efímera de pruebas: no es un secreto.
+          POSTGRES_PASSWORD: dev
+          POSTGRES_DB: fichaitor
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U fichaitor -d fichaitor"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 10
+    env:
+      FICHAITOR_TEST_DATABASE_URL: postgresql://fichaitor_api_dev:dev@127.0.0.1:5432/fichaitor
+      FICHAITOR_TEST_OWNER_URL: postgresql://fichaitor:dev@127.0.0.1:5432/fichaitor
+      FICHAITOR_TEST_WORKER_URL: postgresql://fichaitor_worker_dev:dev@127.0.0.1:5432/fichaitor
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
+        with:
+          version: ${{ env.UV_VERSION }}
+          enable-cache: true
+          cache-dependency-glob: uv.lock
+      - name: Instalar dependencias
+        run: uv sync --frozen
+      - name: Aplicar el esquema dos veces (idempotencia) y crear los usuarios de desarrollo
+        run: bash scripts/ci/aplicar_esquema.sh
+      - name: Pruebas unitarias y de integración
+        run: uv run pytest -q
+
+  imagen:
+    name: Imagen
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Construir la imagen, arrancarla en modo de ejemplo y comprobar /healthz
+        run: bash scripts/ci/humo_imagen.sh
+
+  seguridad:
+    name: Seguridad
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # gitleaks revisa todo el historial, no solo el último commit.
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Búsqueda de secretos (gitleaks)
+        run: bash scripts/ci/buscar_secretos.sh
+      - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
+        with:
+          version: ${{ env.UV_VERSION }}
+          enable-cache: true
+          cache-dependency-glob: uv.lock
+      - name: Auditoría de dependencias de Python (pip-audit)
+        # Se auditan las versiones exactas de uv.lock, incluidas las de desarrollo.
+        run: |
+          uv export --frozen --no-emit-project --format requirements-txt --output-file "${RUNNER_TEMP}/requirements.txt" --quiet
+          uvx pip-audit@2.10.1 --strict --require-hashes --disable-pip --requirement "${RUNNER_TEMP}/requirements.txt"
+
+  # hashFiles() no está disponible en el "if" de un trabajo, así que un trabajo
+  # mínimo mira si la web tiene ya un package.json.
+  detectar:
+    name: Detectar web
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    outputs:
+      web: ${{ steps.web.outputs.existe }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - id: web
+        name: ¿Existe web/package.json?
+        run: |
+          if [[ -f web/package.json ]]; then
+            echo "existe=true" >>"${GITHUB_OUTPUT}"
+          else
+            echo "existe=false" >>"${GITHUB_OUTPUT}"
+            echo "web/package.json no existe todavía: el trabajo Web se omite."
+          fi
+
+  web:
+    name: Web
+    needs: detectar
+    if: needs.detectar.outputs.web == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    defaults:
+      run:
+        working-directory: web
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: "24"
+      - name: Instalar dependencias
+        # Con package-lock.json la instalación es reproducible; sin él, npm install.
+        run: |
+          if [[ -f package-lock.json ]]; then
+            npm ci
+          else
+            npm install
+          fi
+      # --if-present: un script que aún no exista en package.json no rompe la CI.
+      - name: Comprobar tipos
+        run: npm run typecheck --if-present
+      - name: Lint
+        run: npm run lint --if-present
+      - name: Compilar
+        run: npm run build --if-present

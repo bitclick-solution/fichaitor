@@ -1,0 +1,92 @@
+"""Job sync_profile: read a Business Profile from Google and store its summary.
+
+Payload: {"google_sub": "...", "location": "locations/123"}.
+
+The refresh token is decrypted here, lives only in local variables and is never
+written anywhere: every error message leaving this module is scrubbed first.
+"""
+
+from collections.abc import Callable
+from datetime import UTC, datetime
+
+from app.adapters.crypto.sealed import unseal
+from app.domain.jobs import Job, JobError, PermanentJobError, safe_error
+from app.domain.profile_summary import STATUS_ERROR, STATUS_NEEDS_RECONNECT, summarize
+from app.ports.google_profile import GoogleProfile, GoogleRejected, ReconnectRequired
+from app.ports.worker_store import WorkerStore
+
+KIND = "sync_profile"
+
+
+class SyncProfile:
+    def __init__(
+        self,
+        store: WorkerStore,
+        google: GoogleProfile,
+        private_key: str,
+        clock: Callable[[], datetime] = lambda: datetime.now(UTC),
+    ) -> None:
+        self._store = store
+        self._google = google
+        self._private_key = private_key
+        self._clock = clock
+
+    async def __call__(self, job: Job) -> None:
+        google_sub, location = _target(job)
+
+        connection = await self._store.latest_connection(google_sub)
+        if connection is None:
+            raise PermanentJobError("no hay conexión con Google para ese usuario")
+        # The account and location sent to Google come from the stored connection;
+        # the payload only chooses among them.
+        target = next((loc for loc in connection.locations if loc.location == location), None)
+        if target is None:
+            raise PermanentJobError("la ficha no pertenece a la conexión actual")
+
+        try:
+            refresh_token = unseal(self._private_key, connection.refresh_token_enc)
+        except Exception:
+            await self._store.save_status(google_sub, location, STATUS_ERROR, self._clock())
+            raise PermanentJobError(
+                f"no se pudo descifrar el token (versión de clave {connection.key_version})"
+            ) from None
+
+        secrets = [refresh_token]
+        try:
+            access_token = await self._google.refresh_access_token(refresh_token)
+            secrets.append(access_token)
+            reviews = await self._google.reviews(access_token, target.account, target.location)
+            hours = await self._google.hours(access_token, target.location)
+            changed = await self._google.google_updated_fields(access_token, target.location)
+        except ReconnectRequired:
+            await self._store.save_status(
+                google_sub, location, STATUS_NEEDS_RECONNECT, self._clock()
+            )
+            raise PermanentJobError("el dueño tiene que volver a conectar con Google") from None
+        except GoogleRejected as exc:
+            await self._store.save_status(google_sub, location, STATUS_ERROR, self._clock())
+            raise PermanentJobError(safe_error(str(exc), secrets)) from None
+        except Exception as exc:
+            # Temporary (5xx, network) or unexpected: the queue retries it.
+            # `from None` drops the original exception, which may quote a token.
+            raise JobError(safe_error(f"{type(exc).__name__}: {exc}", secrets)) from None
+
+        now = self._clock()
+        summary = summarize(reviews, hours, changed, now.date())
+        await self._store.save_summary(google_sub, location, summary, now)
+
+    async def on_exhausted(self, job: Job) -> None:
+        """Out of attempts: say so in the summary, keeping the last good figures."""
+        try:
+            google_sub, location = _target(job)
+        except PermanentJobError:
+            return
+        await self._store.save_status(google_sub, location, STATUS_ERROR, self._clock())
+
+
+def _target(job: Job) -> tuple[str, str]:
+    google_sub = job.payload.get("google_sub")
+    location = job.payload.get("location")
+    if not (isinstance(google_sub, str) and google_sub and isinstance(location, str) and location):
+        raise PermanentJobError("payload no válido: faltan google_sub o location")
+    return google_sub, location

@@ -1,0 +1,109 @@
+"""The worker loop: take a job, run its handler, record the outcome."""
+
+import asyncio
+import logging
+import traceback
+
+from app.domain.jobs import Job, JobError, PermanentJobError, retry_delay, safe_error
+from app.ports.job_queue import JobQueue
+from app.worker.log import event
+from app.worker.registry import HandlerRegistry
+
+TIMEOUT_ERROR = "tiempo máximo de ejecución superado"
+
+
+class Worker:
+    def __init__(
+        self,
+        queue: JobQueue,
+        registry: HandlerRegistry,
+        *,
+        worker_id: str,
+        poll_interval: float = 2.0,
+        job_timeout: float = 120.0,
+        lock_timeout: float = 300.0,
+    ) -> None:
+        self._queue = queue
+        self._registry = registry
+        self._worker_id = worker_id
+        self._poll_interval = poll_interval
+        self._job_timeout = job_timeout
+        self._lock_timeout = lock_timeout
+
+    async def run(self, stop: asyncio.Event) -> None:
+        """Run jobs until stop is set. The job in progress is always finished first."""
+        event("worker_started", worker_id=self._worker_id, kinds=list(self._registry.kinds))
+        while not stop.is_set():
+            try:
+                worked = await self.run_once()
+            except Exception as exc:  # the database is down, most likely: keep trying
+                event("queue_error", logging.ERROR, error=type(exc).__name__)
+                worked = False
+            if not worked:
+                await _sleep_until_stop(stop, self._poll_interval)
+        event("worker_stopped", worker_id=self._worker_id)
+
+    async def run_once(self) -> bool:
+        """Take and run one job. False if there was nothing to do."""
+        job = await self._queue.claim(self._worker_id, self._registry.kinds, self._lock_timeout)
+        if job is None:
+            return False
+        fields = {"job_id": job.id, "kind": job.kind, "attempt": job.attempts}
+        event("job_started", **fields)
+
+        try:
+            async with asyncio.timeout(self._job_timeout):
+                await self._registry.get(job.kind)(job)
+        except Exception as exc:
+            await self._failed(job, exc, fields)
+        else:
+            held = await self._queue.complete(job, self._worker_id)
+            event("job_done" if held else "job_lost", **fields)
+        return True
+
+    async def _failed(self, job: Job, exc: Exception, fields: dict) -> None:
+        error = _describe(exc)
+        delay = retry_delay(job, exc)
+        if delay is None and not isinstance(exc, PermanentJobError):
+            await self._notify_exhausted(job, fields)
+        held = await self._queue.fail(job, self._worker_id, error, delay)
+        if not held:
+            event("job_lost", logging.WARNING, **fields)
+        elif delay is None:
+            event("job_failed", logging.ERROR, error=error, **fields)
+        else:
+            event("job_retry", logging.WARNING, error=error, retry_in=delay, **fields)
+
+    async def _notify_exhausted(self, job: Job, fields: dict) -> None:
+        hook = getattr(self._registry.get(job.kind), "on_exhausted", None)
+        if hook is None:
+            return
+        try:
+            async with asyncio.timeout(self._job_timeout):
+                await hook(job)
+        except Exception as exc:
+            event("exhausted_hook_error", logging.ERROR, error=type(exc).__name__, **fields)
+
+
+def _describe(exc: Exception) -> str:
+    """What is stored in job.last_error and logged.
+
+    A JobError carries a message written by a handler that knows it is safe.
+    Anything else may quote data we do not control (a URL, an SQL value, a
+    token), so only its type and the place where it was raised are kept.
+    """
+    if isinstance(exc, JobError):
+        return safe_error(str(exc))
+    if isinstance(exc, TimeoutError):
+        return TIMEOUT_ERROR
+    frames = traceback.extract_tb(exc.__traceback__)
+    where = f" en {frames[-1].name}:{frames[-1].lineno}" if frames else ""
+    return safe_error(f"error inesperado: {type(exc).__name__}{where}")
+
+
+async def _sleep_until_stop(stop: asyncio.Event, seconds: float) -> None:
+    try:
+        async with asyncio.timeout(seconds):
+            await stop.wait()
+    except TimeoutError:
+        pass

@@ -10,6 +10,7 @@ services:
       # Solo se ejecutan al crear el volumen. Para reaplicar el esquema:
       #   docker compose exec -T db psql -U fichaitor -d fichaitor < db/schema.sql
       - ./db/schema.sql:/docker-entrypoint-initdb.d/10-schema.sql:ro
+      - ./db/schema_worker.sql:/docker-entrypoint-initdb.d/15-schema-worker.sql:ro
       - ./db/dev-init.sql:/docker-entrypoint-initdb.d/20-dev-init.sql:ro
     ports:
       - "127.0.0.1:5433:5432"
@@ -37,6 +38,29 @@ services:
     tmpfs:
       - /tmp
     # Un error de configuración no debe dejar el contenedor reiniciándose sin fin.
+    restart: on-failure:3
+
+  worker:
+    build: .
+    command: ["python", "-m", "app.worker"]
+    env_file:
+      - path: .env
+        required: false
+      # La clave privada de los tokens vive fuera del repositorio y solo la recibe el worker.
+      - path: ../fichaitor-secretos/worker.env
+        required: false
+    environment:
+      FICHAITOR_WORKER_DATABASE_URL: ${FICHAITOR_WORKER_DATABASE_URL:-postgresql://fichaitor_worker_dev:dev@db:5432/fichaitor}
+    depends_on:
+      db:
+        condition: service_healthy
+    # La imagen trae la comprobación HTTP de la API; el worker no escucha en ningún puerto.
+    healthcheck:
+      disable: true
+    read_only: true
+    tmpfs:
+      - /tmp
+    stop_grace_period: 130s
     restart: on-failure:3
 
 volumes:

@@ -8,6 +8,7 @@ COPY pyproject.toml uv.lock ./
 RUN uv sync --frozen --no-dev --no-install-project
 
 COPY app ./app
+COPY data ./data
 
 RUN useradd --system --uid 10001 fichaitor
 USER fichaitor
