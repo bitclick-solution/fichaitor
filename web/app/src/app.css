@@ -312,9 +312,13 @@ html.lenis, html.lenis body { height: auto; }
 .tour { position: fixed; inset: 0; z-index: 60; pointer-events: none; }
 .tour-foco { position: fixed; border: 2px solid var(--rojo); box-shadow: 0 0 0 9999px rgba(11, 11, 11, 0.62); transition: top 0.35s var(--curva), left 0.35s var(--curva), width 0.35s var(--curva), height 0.35s var(--curva); }
 .tour-tarjeta { position: fixed; pointer-events: auto; width: min(420px, calc(100vw - 32px)); display: grid; gap: 10px; padding: 22px 24px; background: var(--papel); color: var(--tinta); border: 2px solid var(--tinta); box-shadow: 8px 8px 0 var(--rojo); outline: none; animation: entra 0.35s var(--curva) both; }
-.tour-tarjeta .acciones { margin-top: 6px; align-items: center; }
+.tour-tarjeta .acciones { margin-top: 6px; align-items: center; gap: 14px; }
+/* Botones más pequeños que los del panel: la tarjeta tiene que dejar ver lo que señala */
+.tour-tarjeta .btn { padding: 12px 18px; font-size: 1rem; box-shadow: 4px 4px 0 var(--rojo); }
+.tour-tarjeta .btn.sec { box-shadow: 4px 4px 0 var(--tinta); }
+.tour-cab { display: flex; justify-content: space-between; align-items: baseline; gap: 16px; }
 @media (max-width: 760px) {
-  .tour-tarjeta { left: 16px; right: 16px; bottom: 16px; width: auto; }
+  .tour-tarjeta { left: 16px; right: 16px; bottom: 16px; width: auto; padding: 16px 18px; gap: 6px; }
 }
 @media (prefers-reduced-motion: reduce) {
   .tour-foco { transition: none; }

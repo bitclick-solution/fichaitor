@@ -19,11 +19,35 @@ export function iniciarScrollSuave(): void {
 }
 
 /** Desplaza hasta una sección, dejando sitio a la barra fija. */
-export function irA(id: string): void {
+/** Distancia entre el borde superior de la ventana y el de una sección tras ir a ella (la cabecera fija). */
+export const ALTO_CABECERA = 76;
+
+/**
+ * Salto sin animación. Lenis ignora un scrollTo cuyo destino coincide con el del desplazamiento en curso,
+ * aunque no haya llegado, y puede tener una idea vieja de dónde está la página. Parar y arrancar lo
+ * resincroniza con la posición real (y cancela lo pendiente); después, el salto.
+ */
+function saltar(y: number): void {
+  if (!lenis) {
+    scrollTo({ top: y, behavior: "auto" });
+    return;
+  }
+  const estabaParado = lenis.isStopped;
+  // La altura de la página puede haber cambiado (secciones que terminan de cargar): sin esto,
+  // Lenis recortaría el salto a la altura que conocía.
+  lenis.resize();
+  lenis.stop();
+  lenis.start();
+  lenis.scrollTo(y, { immediate: true, force: true });
+  if (estabaParado) lenis.stop();
+}
+
+export function irA(id: string, inmediato = false): void {
   const destino = document.getElementById(id);
   if (!destino) return;
-  const y = destino.getBoundingClientRect().top + scrollY - 76;
-  if (lenis) lenis.scrollTo(y, { duration: 1.1 });
+  const y = destino.getBoundingClientRect().top + scrollY - ALTO_CABECERA;
+  if (inmediato) saltar(y);
+  else if (lenis) lenis.scrollTo(y, { duration: 1.1 });
   else scrollTo({ top: y, behavior: REDUCIDO ? "auto" : "smooth" });
 }
 
@@ -39,8 +63,9 @@ export function pausarScroll(): () => void {
 }
 
 /** Sube al principio de la página: el nombre del negocio y su nota. */
-export function irArriba(): void {
-  if (lenis) lenis.scrollTo(0, { duration: 1.1 });
+export function irArriba(inmediato = false): void {
+  if (inmediato) saltar(0);
+  else if (lenis) lenis.scrollTo(0, { duration: 1.1 });
   else scrollTo({ top: 0, behavior: REDUCIDO ? "auto" : "smooth" });
 }
 

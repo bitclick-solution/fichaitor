@@ -1,8 +1,8 @@
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
-import { irA, irArriba, pausarScroll, REDUCIDO } from "./movimiento";
+import { ALTO_CABECERA, irA, irArriba, pausarScroll, REDUCIDO } from "./movimiento";
 
-// Recorrido de la primera visita: cinco paradas que señalan las partes del panel.
+// Recorrido de la primera visita: una parada por cada parte del panel.
 // Se muestra una vez por navegador (una marca en localStorage, sin datos personales) y se puede
 // repetir desde Ajustes. Solo se detiene en las secciones que existen.
 
@@ -39,6 +39,12 @@ const PARADAS: Parada[] = [
     ir: "resenas",
     titulo: "Responde en un minuto",
     texto: "Fichaitor te redacta la respuesta. La lees, la cambias si quieres y la publicas tú.",
+  },
+  {
+    donde: "#festivos",
+    ir: "festivos",
+    titulo: "Tus festivos, a tiempo",
+    texto: "Antes de cada festivo te preguntamos si abres. Lo confirmas y lo ponemos en tu ficha de Google.",
   },
   {
     donde: "#avisos",
@@ -136,6 +142,7 @@ function Foco({
   onSaltar: () => void;
 }) {
   const [rect, setRect] = useState<DOMRect | null>(null);
+  const [alto, setAlto] = useState(220);
   const tarjeta = useRef<HTMLDivElement>(null);
   const ultima = n === total;
 
@@ -147,12 +154,31 @@ function Foco({
     const medir = () => {
       const el = document.querySelector(parada.donde);
       if (el) setRect(el.getBoundingClientRect());
+      const h = tarjeta.current?.offsetHeight;
+      if (h) setAlto((antes) => (antes === h ? antes : h));
       cuadro = requestAnimationFrame(medir);
     };
     cuadro = requestAnimationFrame(medir);
-    // Tras el desplazamiento se bloquea el scroll para que el foco no se pierda.
+    // Tras el desplazamiento se comprueba que el objetivo ha llegado y se bloquea el scroll para que el
+    // foco no se pierda. El destino se calcula al empezar: si mientras tanto cambia la altura de lo de
+    // arriba (secciones que terminan de cargar o de entrar) o el desplazamiento se corta, no llega.
+    // En ese caso se lleva de golpe.
     let reanudar: (() => void) | null = null;
-    const bloqueo = setTimeout(() => (reanudar = pausarScroll()), REDUCIDO ? 0 : 1150);
+    const bloqueo = setTimeout(
+      () => {
+        const el = document.querySelector(parada.donde);
+        if (el) {
+          const fuera =
+            parada.ir === "arriba" ? scrollY > 4 : Math.abs(el.getBoundingClientRect().top - ALTO_CABECERA) > 24;
+          if (fuera) {
+            if (parada.ir === "arriba") irArriba(true);
+            else irA(parada.ir, true);
+          }
+        }
+        reanudar = pausarScroll();
+      },
+      REDUCIDO ? 0 : 1150,
+    );
     return () => {
       cancelAnimationFrame(cuadro);
       clearTimeout(bloqueo);
@@ -174,14 +200,34 @@ function Foco({
     return () => removeEventListener("keydown", tecla);
   }, [onSiguiente, onAnterior, onSaltar]);
 
-  // El foco recorta la sección (limitado a la ventana); la tarjeta va debajo si cabe, si no encima.
+  // Colocación: la tarjeta nunca tapa lo que se señala.
+  //  - Escritorio: debajo de la sección si cabe; si no, encima. Si la sección es más alta que la
+  //    ventana, se señala solo su principio (el título y lo primero) y la tarjeta va debajo de ese trozo.
+  //  - Móvil: la tarjeta va fija abajo (CSS) y el foco se recorta para acabar encima de ella.
   const margen = 10;
-  const arriba = rect ? Math.max(8, rect.top - margen) : 0;
-  const abajo = rect ? Math.min(innerHeight - 8, rect.bottom + margen) : 0;
-  const hueco = rect
-    ? { top: arriba, left: Math.max(8, rect.left - margen), width: Math.min(innerWidth - 16, rect.width + 2 * margen), height: Math.max(0, abajo - arriba) }
-    : null;
-  const debajo = hueco ? innerHeight - (hueco.top + hueco.height) > 230 : true;
+  const separacion = 16;
+  const borde = 8;
+  const movil = innerWidth <= 760;
+  let hueco: { top: number; left: number; width: number; height: number } | null = null;
+  let posicion: { top: number; left: number } | undefined;
+  if (rect) {
+    const arriba = Math.max(borde, rect.top - margen);
+    let abajo = Math.min(innerHeight - borde, rect.bottom + margen);
+    const left = Math.max(borde, rect.left - margen);
+    const izquierda = Math.max(16, Math.min(left, innerWidth - 436));
+    if (movil) {
+      abajo = Math.min(abajo, innerHeight - 16 - alto - 12);
+    } else if (innerHeight - abajo - separacion - 16 >= alto) {
+      posicion = { top: abajo + separacion, left: izquierda };
+    } else if (arriba - separacion - 16 >= alto) {
+      posicion = { top: arriba - separacion - alto, left: izquierda };
+    } else {
+      const top = innerHeight - 16 - alto;
+      abajo = Math.min(abajo, top - separacion);
+      posicion = { top, left: izquierda };
+    }
+    hueco = { top: arriba, left, width: Math.min(innerWidth - 2 * borde, rect.width + 2 * margen), height: Math.max(0, abajo - arriba) };
+  }
 
   return createPortal(
     <div className="tour" aria-live="polite">
@@ -195,17 +241,18 @@ function Foco({
         tabIndex={-1}
         ref={tarjeta}
         data-lenis-prevent
-        style={
-          hueco && innerWidth > 760
-            ? debajo
-              ? { top: hueco.top + hueco.height + 16, left: Math.min(hueco.left, innerWidth - 436) }
-              : { top: Math.max(16, hueco.top - 16 - 220), left: Math.min(hueco.left, innerWidth - 436) }
-            : undefined
-        }
+        style={posicion}
       >
-        <p className="sec">
-          {n} de {total}
-        </p>
+        <div className="tour-cab">
+          <p className="sec">
+            {n} de {total}
+          </p>
+          {!ultima && (
+            <button className="enlace" type="button" onClick={onSaltar}>
+              Saltar
+            </button>
+          )}
+        </div>
         <h2 className="rotulo" id="tour-titulo">
           {parada.titulo}
         </h2>
@@ -217,11 +264,6 @@ function Foco({
           {onAnterior && (
             <button className="btn sec" type="button" onClick={onAnterior}>
               Anterior
-            </button>
-          )}
-          {!ultima && (
-            <button className="enlace" type="button" onClick={onSaltar}>
-              Saltar el recorrido
             </button>
           )}
         </div>

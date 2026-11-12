@@ -99,6 +99,7 @@ const json = (status: number, cuerpo: unknown) =>
   new Response(JSON.stringify(cuerpo), { status, headers: { "content-type": "application/json" } });
 
 let llamadasResumen = 0;
+let consultasCodigoBaja = 0;
 let llamadasDiagnostico = 0;
 
 const yo = (e: Estado) => {
@@ -227,8 +228,11 @@ export async function mockFetch(method: string, path: string, body: unknown): Pr
   }
 
   // ── Baja con código de un solo uso (propuesta de contrato). Código válido en el simulador: 123456
-  if (method === "GET" && path === "/api/v1/me/offboarding/code") return json(200, { status: escenario() === "sin-correo" ? "fallido" : "enviado" });
+  // Como el backend: el correo sale después de responder al POST; las dos primeras consultas lo ven «pendiente».
+  if (method === "GET" && path === "/api/v1/me/offboarding/code")
+    return json(200, { status: escenario() === "sin-correo" ? "fallido" : ++consultasCodigoBaja <= 2 ? "pendiente" : "enviado" });
   if (method === "POST" && path === "/api/v1/me/offboarding/code") {
+    consultasCodigoBaja = 0;
     await new Promise((ok) => setTimeout(ok, 500));
     return json(202, { sent_to: "d***o@example.com", expires_in: 600 });
   }

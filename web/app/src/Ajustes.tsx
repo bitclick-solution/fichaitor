@@ -304,7 +304,10 @@ function ModalBaja({
           {envio === "pendiente" && (
             <p className="cargando" role="status" aria-live="polite">
               <span className="ojo" aria-hidden="true" />
-              Enviando el código a <strong>{paso.destino}</strong>…
+              {/* Un solo elemento: dentro del flex de .cargando, el <strong> suelto iría en otra columna */}
+              <span>
+                Enviando el código a <strong>{paso.destino}</strong>…
+              </span>
             </p>
           )}
           {envio === "enviado" && (
