@@ -317,11 +317,22 @@ class Store(Protocol):
         """
         ...
 
-    async def restore_offboarding(self, account_id: str, now: datetime) -> bool:
-        """Cancel the scheduled leave of that account. False if it has none."""
+    async def restore_offboarding(self, account_id: str, now: datetime, *, mail: dict) -> bool:
+        """Cancel the scheduled leave of that account. False if it has none.
+
+        In the same write, all or nothing, the email that tells the owner is enqueued:
+        `mail` is the payload of that job, to which `to` (the address the account has at
+        this moment) and `scope` (of the leave) are added. If the account has no
+        address left, the leave is restored and no email is enqueued.
+        """
         ...
 
-    async def restore_offboarding_by_token(self, token_hash: str, now: datetime) -> str | None:
+    async def restore_offboarding_by_token(
+        self, token_hash: str, now: datetime, *, mail: dict
+    ) -> str | None:
         """Cancel the scheduled leave that restore token belongs to and return its
-        account. None if the token is unknown, used, or its leave is past its date."""
+        account. None if the token is unknown, used, or its leave is past its date.
+
+        The email is enqueued as in restore_offboarding. The token is spent by the very
+        write that restores: if anything fails, it is still valid."""
         ...

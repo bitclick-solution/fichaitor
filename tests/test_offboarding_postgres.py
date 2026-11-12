@@ -60,6 +60,7 @@ SHARED = ProfileLocation(
 POLICY = RetentionPolicy()
 DENIED = asyncpg.InsufficientPrivilegeError
 SECRET = "secreto-de-pruebas"
+RESTORED = {"template": "offboarding_restored"}
 
 REVIEWS = ReviewSet(
     (
@@ -464,7 +465,7 @@ def test_a_scheduled_leave_closes_the_data_at_once_touches_nothing_and_can_be_re
         s.now = delete_at - timedelta(minutes=1)
         await s.apply_leave(ana)
         still = (await s.stored(ANA, ana), list(s.google.revoked))
-        restored = await s.store.restore_offboarding(ana, s.now)
+        restored = await s.store.restore_offboarding(ana, s.now, mail=RESTORED)
         back = await s.reads(ana)
         # A restored leave is never applied, not even past its date.
         s.now = delete_at + DAY
@@ -530,6 +531,94 @@ def test_the_restore_link_works_once_until_the_date_and_says_nothing_otherwise()
     assert good == ana and pending is None
 
 
+async def restored_payloads(s: "Scene") -> list[dict]:
+    return [p for p in await s.mail_payloads() if p.get("template") == "offboarding_restored"]
+
+
+@pytest.mark.parametrize("scope", ["ficha", "cuenta"])
+def test_restoring_enqueues_the_restored_email_in_the_same_write(scope):
+    async def scenario(s: Scene):
+        ana, session = await s.furnished(ANA)
+        await s.leave(session, scope)
+        token = await s.restore_token()
+        by_link = await s.offboarding.restore_by_token(token)
+        first = await restored_payloads(s)
+        # Again, from the session this time (it signs in again after "cuenta").
+        s.now += timedelta(minutes=5)  # a later code than the first one
+        await s.leave(session if scope == "ficha" else await s.session(ana), scope)
+        back = await s.session(ana)
+        by_session = await s.offboarding.restore(await s.me(back))
+        return ana, by_link, first, by_session, await restored_payloads(s)
+
+    ana, by_link, first, by_session, both = scene(scenario)
+    mail = {"template": "offboarding_restored", "to": f"{ANA}@example.com", "scope": scope}
+    assert by_link == ana and first == [mail]
+    assert by_session is True and both == [mail, mail]
+
+
+def test_the_restored_email_is_sent_by_the_worker_and_its_payload_emptied():
+    async def scenario(s: Scene):
+        _, session = await s.furnished(ANA)
+        await s.leave(session)
+        await s.offboarding.restore_by_token(await s.restore_token())
+        (job,) = await owner(
+            "SELECT id::text AS id, payload::text AS payload FROM job"
+            " WHERE kind = $1 AND payload->>'template' = 'offboarding_restored'",
+            s.mail_kind,
+        )
+        await s.send_mail(Job(job["id"], s.mail_kind, json.loads(job["payload"])))
+        left = await owner("SELECT payload::text AS p FROM job WHERE id = $1::uuid", job["id"])
+        return s.mailer.sent[-1], left[0]["p"]
+
+    mail, left = scene(scenario)
+    assert mail.subject == "Has restaurado Fichaitor" and mail.to == f"{ANA}@example.com"
+    assert left == "{}"
+
+
+def test_without_an_address_left_the_leave_is_restored_and_no_email_is_enqueued():
+    async def scenario(s: Scene):
+        ana, session = await s.furnished(ANA)
+        await s.leave(session, "cuenta")
+        token = await s.restore_token()
+        await owner("UPDATE account SET email = '' WHERE id = $1::uuid", ana)
+        return ana, await s.offboarding.restore_by_token(token), await restored_payloads(s)
+
+    ana, restored, mails = scene(scenario)
+    assert restored == ana and mails == []
+
+
+def test_a_server_error_in_the_middle_of_a_restore_spends_nothing():
+    async def scenario(s: Scene):
+        ana, session = await s.furnished(ANA)
+        await s.leave(session)
+        token = await s.restore_token()
+        # The same database, but the email job cannot be written (its kind is too long
+        # for the table): the restore fails after the leave was already updated.
+        broken = PostgresStore(API_URL, mail_job_kind="x" * 61)
+        await broken.connect()
+        try:
+            failing = Offboarding(
+                broken, secret=SECRET, mail_available=True, clock=lambda: s.now.timestamp()
+            )
+            with pytest.raises(asyncpg.CheckViolationError):
+                await failing.restore_by_token(token)
+            with pytest.raises(asyncpg.CheckViolationError):
+                await failing.restore(await s.me(session))
+        finally:
+            await broken.close()
+        pending = (await s.me(session)).pending_deletion
+        leave = (await owner("SELECT * FROM offboarding WHERE account_id = $1::uuid", ana))[0]
+        mails = await restored_payloads(s)
+        again = await s.offboarding.restore_by_token(token)
+        return ana, pending, leave, mails, again, await restored_payloads(s)
+
+    ana, pending, leave, mails, again, after = scene(scenario)
+    assert pending is not None and pending.scope == "ficha"
+    assert leave["restored_at"] is None and leave["restore_token_hash"] is not None
+    assert mails == []
+    assert again == ana and len(after) == 1
+
+
 def test_a_code_is_single_use_and_bound_to_its_session_in_the_database():
     async def scenario(s: Scene):
         ana, session = await s.furnished(ANA)
@@ -544,7 +633,7 @@ def test_a_code_is_single_use_and_bound_to_its_session_in_the_database():
             except Exception as exc:
                 outcomes.append(type(exc).__name__)
         await s.offboarding.confirm(await s.me(session), "ficha", code)
-        await s.store.restore_offboarding(ana, s.now)
+        await s.store.restore_offboarding(ana, s.now, mail=RESTORED)
         with pytest.raises(CodeGone):
             await s.offboarding.confirm(await s.me(session), "ficha", code)
         return outcomes, (await owner("SELECT attempts FROM offboarding_code"))[0]["attempts"]
@@ -576,7 +665,7 @@ def test_at_48_hours_every_token_is_revoked_and_deleted_and_the_account_is_left_
             leave,
             me,
             await s.store.list_locations(ana),
-            await s.store.restore_offboarding(ana, s.now),
+            await s.store.restore_offboarding(ana, s.now, mail=RESTORED),
             await s.offboarding.restore_by_token(await s.restore_token()),
             delete_at,
         )

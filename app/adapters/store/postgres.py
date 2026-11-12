@@ -16,9 +16,12 @@ from datetime import datetime
 
 import asyncpg
 
+from app.adapters.conversation_store.postgres import insert_link_code
 from app.adapters.job_queue.postgres import PostgresJobQueue
 from app.domain.actions import EVENT_CONFIRMED, REPLY_REVIEW
+from app.domain.conversation import ChannelIdentity
 from app.domain.jobs import DEFAULT_MAX_ATTEMPTS
+from app.domain.link_codes import LinkCode
 from app.domain.offboarding import (
     APPLY_KIND,
     APPLY_MAX_ATTEMPTS,
@@ -36,6 +39,7 @@ from app.domain.offboarding import (
 from app.domain.profile_summary import ProfileFacts, facts_from_json
 from app.domain.quota import window
 from app.domain.sentiment import Analysis, Figures, TopicCount, first_history_month
+from app.ports.channel_links import LinkCodeTaken
 from app.ports.google_oauth import ProfileLocation
 from app.ports.quota import QuotaUnavailable
 from app.ports.store import (
@@ -765,6 +769,10 @@ class PostgresStore:
                     account_id,
                     now,
                 )
+                # The messaging channels too, at once: nothing more is sent to them and
+                # what they send is not attended (docs/canales.md). Their rows go when
+                # the leave becomes effective.
+                await self._unlink_channels(conn, account_id, now)
             await conn.execute(
                 "INSERT INTO job (kind, payload, max_attempts) VALUES ($1, $2::jsonb, $3)",
                 self._mail_job_kind,
@@ -786,28 +794,119 @@ class PostgresStore:
             )
         return CodeCheck(CODE_OK, delete_at=delete_at)
 
-    async def restore_offboarding(self, account_id: str, now: datetime) -> bool:
+    async def restore_offboarding(self, account_id: str, now: datetime, *, mail: dict) -> bool:
+        async with self._require_pool().acquire() as conn, conn.transaction():
+            row = await conn.fetchrow(
+                """
+                UPDATE offboarding SET restored_at = $2, restore_token_hash = NULL
+                WHERE account_id = $1::uuid AND restored_at IS NULL AND effective_at IS NULL
+                RETURNING account_id::text, scope
+                """,
+                account_id,
+                now,
+            )
+            if row is None:
+                return False
+            await self._enqueue_restored_mail(conn, row["account_id"], row["scope"], mail)
+        return True
+
+    async def restore_offboarding_by_token(
+        self, token_hash: str, now: datetime, *, mail: dict
+    ) -> str | None:
+        # One transaction: the token is spent by the same write that restores and
+        # enqueues the email. Any error rolls the three back and the link still works.
+        async with self._require_pool().acquire() as conn, conn.transaction():
+            row = await conn.fetchrow(
+                """
+                UPDATE offboarding SET restored_at = $2, restore_token_hash = NULL
+                WHERE restore_token_hash = $1 AND restored_at IS NULL AND effective_at IS NULL
+                  AND delete_at > $2
+                RETURNING account_id::text, scope
+                """,
+                token_hash,
+                now,
+            )
+            if row is None:
+                return None
+            await self._enqueue_restored_mail(conn, row["account_id"], row["scope"], mail)
+        return row["account_id"]
+
+    # --- messaging channels (app/ports/channel_links.py, docs/canales.md) -------------
+
+    async def save_link_code(self, code: LinkCode) -> None:
+        async with self._require_pool().acquire() as conn:
+            try:
+                await insert_link_code(conn, code)
+            except asyncpg.UniqueViolationError:
+                raise LinkCodeTaken from None
+
+    async def list_channels(self, account_id: str) -> list[ChannelIdentity]:
+        rows = await self._require_pool().fetch(
+            """
+            SELECT id, account_id::text AS account_id, channel, address, verified_at,
+                   last_inbound_at
+            FROM channel_identity
+            WHERE account_id = $1::uuid AND unlinked_at IS NULL
+            ORDER BY verified_at, id
+            """,
+            account_id,
+        )
+        return [
+            ChannelIdentity(
+                r["id"],
+                r["account_id"],
+                r["channel"],
+                r["address"],
+                r["verified_at"],
+                r["last_inbound_at"],
+            )
+            for r in rows
+        ]
+
+    async def unlink_channel(self, account_id: str, identity_id: str, now: datetime) -> bool:
         status = await self._require_pool().execute(
             """
-            UPDATE offboarding SET restored_at = $2, restore_token_hash = NULL
-            WHERE account_id = $1::uuid AND restored_at IS NULL AND effective_at IS NULL
+            UPDATE channel_identity SET unlinked_at = $3
+            WHERE id = $2 AND account_id = $1::uuid AND unlinked_at IS NULL
+            """,
+            account_id,
+            identity_id,
+            now,
+        )
+        return status == "UPDATE 1"
+
+    @staticmethod
+    async def _unlink_channels(conn: asyncpg.Connection, account_id: str, now: datetime) -> None:
+        await conn.execute(
+            """
+            UPDATE channel_identity SET unlinked_at = $2
+            WHERE account_id = $1::uuid AND unlinked_at IS NULL
             """,
             account_id,
             now,
         )
-        return status.endswith(" 1")
-
-    async def restore_offboarding_by_token(self, token_hash: str, now: datetime) -> str | None:
-        # One statement: the token is spent by the same write that restores.
-        return await self._require_pool().fetchval(
-            """
-            UPDATE offboarding SET restored_at = $2, restore_token_hash = NULL
-            WHERE restore_token_hash = $1 AND restored_at IS NULL AND effective_at IS NULL
-              AND delete_at > $2
-            RETURNING account_id::text
-            """,
-            token_hash,
+        await conn.execute(
+            "UPDATE link_code SET used_at = $2 WHERE account_id = $1::uuid AND used_at IS NULL",
+            account_id,
             now,
+        )
+
+    async def _enqueue_restored_mail(
+        self, conn: asyncpg.Connection, account_id: str, scope: str, mail: dict
+    ) -> None:
+        # The address is read now, in the transaction: the one the account has today
+        # (signing in again may have changed it), and none if it was already emptied.
+        to = await conn.fetchval(
+            "SELECT email FROM account WHERE id = $1::uuid AND deleted_at IS NULL",
+            account_id,
+        )
+        if not to:
+            return
+        await conn.execute(
+            "INSERT INTO job (kind, payload, max_attempts) VALUES ($1, $2::jsonb, $3)",
+            self._mail_job_kind,
+            json.dumps({**mail, "to": to, "scope": scope}),
+            MAIL_MAX_ATTEMPTS,
         )
 
 

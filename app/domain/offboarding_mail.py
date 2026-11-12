@@ -1,6 +1,13 @@
-"""The emails of a leave, in Spanish: plain text and a simple HTML version. No I/O.
+"""The emails of a leave, in Spanish, with the brand templates: plain text and HTML.
 
-They carry nothing obtained from Google: no review, no figure, no name of a business.
+Texts, order of the blocks and rules: brand/correo/LEEME.md. The templates come from
+app/mail_templates (read once, at import); filling them is pure.
+
+- Every value is escaped with html.escape before it goes into a template, except
+  ${contenido}, which is the HTML of blocks already filled and escaped. The plain text
+  is not escaped.
+- The code is never in the subject nor in the preheader: both show up in notifications.
+- They carry nothing obtained from Google: no review, no figure, no name of a business.
 """
 
 from datetime import UTC, datetime
@@ -9,6 +16,7 @@ from urllib.parse import quote
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from app.domain.offboarding import SCOPE_ACCOUNT
+from app.mail_templates import BASE, BLOCKS
 from app.ports.mailer import Email
 
 _MONTHS = (
@@ -16,10 +24,20 @@ _MONTHS = (
 ).split()
 RESTORE_PARAM = "restaurar"
 
+# The same at the end of every plain text email.
+_PLAIN_FOOTER = (
+    "--\n"
+    "¿Dudas? Escríbenos a soporte@fichaitor.es.\n"
+    "Fichaitor es un producto de Bitclick Solutions S.L.U. · C/ Cuenca nº 17, 18230 Atarfe "
+    "(Granada), España.\n"
+)
+
 
 def restore_url(public_base_url: str, token: str) -> str:
-    """The link of the email. The token goes in the fragment, which browsers never
-    send to a server: it cannot end up in the access log of a proxy."""
+    """The link of the email: absolute, made only from the public URL of the
+    configuration (never from the request) and the token. The token goes in the
+    fragment, which browsers never send to a server: it cannot end up in the access
+    log of a proxy nor in a Referer."""
     return f"{public_base_url.rstrip('/')}/app#{RESTORE_PARAM}={quote(token, safe='')}"
 
 
@@ -39,68 +57,123 @@ def _what(scope: str) -> str:
     return "borrar tu cuenta de Fichaitor" if scope == SCOPE_ACCOUNT else "desconectar tu ficha"
 
 
-def _html(paragraphs: list[str]) -> str:
-    body = "".join(f"<p>{p}</p>" for p in paragraphs)
-    return (
-        '<!doctype html><html lang="es"><body style="font-family:sans-serif;'
-        f'line-height:1.5;color:#111">{body}</body></html>'
+def _block(name: str, **values: str) -> str:
+    """One block of the body, every value escaped (quotes too: links go in href)."""
+    return BLOCKS[name].substitute({key: escape(value) for key, value in values.items()})
+
+
+def _email(
+    to: str,
+    *,
+    subject: str,
+    preheader: str,
+    headline: str,
+    blocks: list[str],
+    plain: list[str],
+    reason: str,
+) -> Email:
+    html = BASE.substitute(
+        asunto=escape(subject),
+        preencabezado=escape(preheader),
+        titular=escape(headline),
+        contenido="\n".join(blocks),  # already escaped, block by block
+        motivo=escape(reason),
     )
+    text = "\n\n".join([headline.upper(), *plain, reason]) + "\n\n" + _PLAIN_FOOTER
+    return Email(to, subject, text, html)
 
 
 def code_email(to: str, scope: str, code: str, minutes: int) -> Email:
+    """1. The code that confirms a leave."""
     what = _what(scope)
-    text = (
-        f"Hola:\n\nTu código para {what} es:\n\n    {code}\n\n"
-        f"Caduca en {minutes} minutos y solo sirve una vez.\n\n"
-        "Si no lo has pedido tú, ignora este correo: no se hará ningún cambio.\n\n"
-        "Fichaitor\n"
+    asked = f"Has pedido {what}. Escribe este código en Fichaitor para confirmarlo:"
+    expires = f"Caduca en {minutes} minutos y solo sirve una vez."
+    not_you = (
+        "Si no lo has pedido tú, no se hará ningún cambio, pero alguien tiene abierta tu "
+        "sesión: escríbenos a soporte@fichaitor.es."
     )
-    html = _html(
-        [
-            "Hola:",
-            f"Tu código para {escape(what)} es:",
-            f'<strong style="font-size:1.6em;letter-spacing:0.15em">{escape(code)}</strong>',
-            f"Caduca en {minutes} minutos y solo sirve una vez.",
-            "Si no lo has pedido tú, ignora este correo: no se hará ningún cambio.",
-            "Fichaitor",
-        ]
+    return _email(
+        to,
+        subject="Tu código de confirmación de Fichaitor",
+        preheader=f"Lo necesitas para {what}. Caduca en {minutes} minutos.",
+        headline="Tu código",
+        blocks=[
+            _block("parrafo", texto=asked),
+            _block("codigo", codigo=code),
+            _block("parrafo", texto=expires),
+            _block("aviso", texto=not_you),
+        ],
+        plain=[asked, f"    {code}", expires, not_you],
+        reason=(
+            f"Te llega este correo porque alguien ha pedido {what} desde tu cuenta de Fichaitor."
+        ),
     )
-    # The code is not in the subject: subjects show up in notifications and lists.
-    return Email(to, "Tu código de confirmación de Fichaitor", text, html)
 
 
 def scheduled_email(to: str, scope: str, delete_at: datetime, url: str) -> Email:
+    """2. The leave is scheduled: the date and the restore link."""
     when = spanish_date(delete_at)
+    terms = (
+        "Lo obtenido de Google se borra en un máximo de 30 días, y el registro de las "
+        "respuestas que publicaste, a los 12 meses."
+    )
     if scope == SCOPE_ACCOUNT:
-        subject = "Tu cuenta de Fichaitor se borrará pronto"
-        first = f"Has pedido borrar tu cuenta de Fichaitor. La baja se hará efectiva el {when}."
-        then = (
-            "Ese día revocaremos el acceso a tu cuenta de Google y cerraremos tu cuenta. "
-            "Lo obtenido de Google se borra en un máximo de 30 días, y el registro de las "
-            "respuestas que publicaste, a los 12 meses."
+        subject, headline = "Tu cuenta de Fichaitor se borrará pronto", "Baja en marcha"
+        first = (
+            "Has pedido borrar tu cuenta de Fichaitor. Desde ahora no leemos tus fichas ni te "
+            "enviamos avisos, y hemos cerrado tu sesión en todos los dispositivos."
+        )
+        last = (
+            f"Si no haces nada, el {when} retiraremos el acceso a tu cuenta de Google y "
+            f"cerraremos tu cuenta. {terms}"
         )
     else:
-        subject = "Tu ficha se desconectará de Fichaitor pronto"
-        first = f"Has pedido desconectar tu ficha de Fichaitor. Se hará efectivo el {when}."
-        then = (
-            "Ese día revocaremos el acceso a tu cuenta de Google. Lo obtenido de Google se "
-            "borra en un máximo de 30 días, y el registro de las respuestas que publicaste, "
-            "a los 12 meses. Tu cuenta sigue existiendo y podrás volver a conectar."
+        subject, headline = "Tu ficha se desconectará de Fichaitor pronto", "Desconexión en marcha"
+        first = (
+            "Has pedido desconectar tu ficha de Fichaitor. Desde ahora no la leemos ni te "
+            "enviamos avisos."
         )
-    meanwhile = "Desde ahora no leemos tu ficha ni te enviamos avisos."
-    undo = "Si cambias de idea, puedes restaurarla hasta entonces con este enlace:"
-    not_you = "Si no lo has pedido tú, usa ese enlace para cancelarla."
-    text = f"Hola:\n\n{first}\n\n{meanwhile} {then}\n\n{undo}\n\n{url}\n\n{not_you}\n\nFichaitor\n"
-    link = f'<a href="{escape(url, quote=True)}">Restaurar</a>'
-    html = _html(
-        [
-            "Hola:",
-            escape(first),
-            f"{escape(meanwhile)} {escape(then)}",
-            escape(undo),
-            link,
-            escape(not_you),
-            "Fichaitor",
-        ]
+        last = (
+            f"Si no haces nada, el {when} retiraremos el acceso a tu cuenta de Google. {terms} "
+            "Tu cuenta sigue existiendo y podrás volver a conectar."
+        )
+    return _email(
+        to,
+        subject=subject,
+        preheader=f"Puedes restaurarla hasta el {when}.",
+        headline=headline,
+        blocks=[
+            _block("parrafo", texto=first),
+            _block("boton", etiqueta="Restaurar", enlace=url),
+            _block("aviso", texto="Si no has sido tú, pulsa Restaurar. No se ha borrado nada."),
+            _block("parrafo", texto=last),
+        ],
+        plain=[
+            first,
+            f"Restaurar: {url}",
+            "Si no has sido tú, abre el enlace. No se ha borrado nada.",
+            last,
+        ],
+        reason=(
+            "Te llega este correo porque se ha confirmado una baja con un código enviado a "
+            "esta dirección."
+        ),
     )
-    return Email(to, subject, text, html)
+
+
+def restored_email(to: str, scope: str) -> Email:
+    """3. The leave is cancelled, from the session or from the link. The same for both
+    scopes."""
+    paragraphs = [
+        "La baja está cancelada. Todo sigue como estaba y no se ha borrado nada.",
+        "Fichaitor vuelve a leer tu ficha y a avisarte cuando haya algo que decidir.",
+    ]
+    return _email(
+        to,
+        subject="Has restaurado Fichaitor",
+        preheader="Todo sigue como estaba.",
+        headline="Restaurada",
+        blocks=[_block("parrafo", texto=p) for p in paragraphs],
+        plain=paragraphs,
+        reason="Te llega este correo porque se ha cancelado una baja de tu cuenta de Fichaitor.",
+    )

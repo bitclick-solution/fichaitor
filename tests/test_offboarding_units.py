@@ -113,13 +113,14 @@ def test_the_restore_link_carries_the_token_in_the_fragment_never_in_the_query()
     assert "?" not in url
 
 
-def test_the_code_email_says_what_for_when_it_expires_and_to_ignore_it():
+def test_the_code_email_says_what_for_when_it_expires_and_what_if_it_was_not_you():
+    # The exact texts are checked in test_offboarding_mail.py.
     mail = code_email(ADDRESS, "cuenta", "042137", 10)
     assert mail.to == ADDRESS
     assert "042137" in mail.text and "042137" in mail.html
     assert "042137" not in mail.subject
     assert "borrar tu cuenta" in mail.text and "10 minutos" in mail.text
-    assert "Si no lo has pedido tú, ignora este correo" in mail.text
+    assert "Si no lo has pedido tú, no se hará ningún cambio" in mail.text
     assert "desconectar tu ficha" in code_email(ADDRESS, "ficha", "042137", 10).text
 
 

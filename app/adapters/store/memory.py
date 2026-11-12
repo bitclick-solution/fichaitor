@@ -9,6 +9,8 @@ from datetime import UTC, datetime
 from app.adapters.memory_tables import ActionRow, MemoryTables, ReviewRow
 from app.adapters.quota.memory import MemoryQuota
 from app.domain.actions import REPLY_REVIEW
+from app.domain.conversation import ChannelIdentity
+from app.domain.link_codes import LinkCode
 from app.domain.offboarding import (
     APPLY_KIND,
     APPLY_MAX_ATTEMPTS,
@@ -24,6 +26,7 @@ from app.domain.offboarding import (
     PendingDeletion,
     same_hash,
 )
+from app.ports.channel_links import LinkCodeTaken
 from app.ports.google_oauth import ProfileLocation
 from app.ports.job_queue import JobEnqueuer
 from app.ports.store import (
@@ -120,6 +123,9 @@ class MemoryStore:
         self.codes: list[CodeRow] = []  # fingerprints only, never a code
         self.offboardings: list[OffboardingRow] = []
         self.quota = MemoryQuota()
+        # Messaging channels: what the conversation would have linked, and the codes.
+        self.channels: list[ChannelIdentity] = []
+        self.link_codes: list[LinkCode] = []  # hashes only, never a code
         self._fail = fail
 
     def _check(self) -> None:
@@ -447,6 +453,7 @@ class MemoryStore:
             for session in self.sessions.values():
                 if session.account_id == account_id and session.revoked_at is None:
                     session.revoked_at = now
+            self._unlink_channels(account_id, now)
         if self.jobs is not None:
             await self.jobs.enqueue(SEND_MAIL_KIND, dict(mail), max_attempts=MAIL_MAX_ATTEMPTS)
             await self.jobs.enqueue(
@@ -458,15 +465,29 @@ class MemoryStore:
             )
         return CodeCheck(CODE_OK, delete_at=delete_at)
 
-    async def restore_offboarding(self, account_id: str, now: datetime) -> bool:
+    async def _restore(self, leave: OffboardingRow, now: datetime, mail: dict) -> None:
+        # The email first: if it cannot be enqueued nothing has changed, as the
+        # transaction of PostgreSQL would leave it.
+        to = self._account(leave.account_id).email
+        if to and self.jobs is not None:
+            await self.jobs.enqueue(
+                SEND_MAIL_KIND,
+                {**mail, "to": to, "scope": leave.scope},
+                max_attempts=MAIL_MAX_ATTEMPTS,
+            )
+        leave.restored_at, leave.restore_token_hash = now, None
+
+    async def restore_offboarding(self, account_id: str, now: datetime, *, mail: dict) -> bool:
         self._check()
         leave = self._pending(account_id)
         if leave is None:
             return False
-        leave.restored_at, leave.restore_token_hash = now, None
+        await self._restore(leave, now, mail)
         return True
 
-    async def restore_offboarding_by_token(self, token_hash: str, now: datetime) -> str | None:
+    async def restore_offboarding_by_token(
+        self, token_hash: str, now: datetime, *, mail: dict
+    ) -> str | None:
         self._check()
         for leave in self.offboardings:
             if (
@@ -476,6 +497,46 @@ class MemoryStore:
                 and leave.effective_at is None
                 and leave.delete_at > now
             ):
-                leave.restored_at, leave.restore_token_hash = now, None
+                await self._restore(leave, now, mail)
                 return leave.account_id
         return None
+
+    # --- messaging channels (app/ports/channel_links.py) ---------------------------
+    # Without a database there is no conversation process: nothing links an address
+    # here. Tests (and a demo) add them to `channels` by hand.
+
+    async def save_link_code(self, code: LinkCode) -> None:
+        self._check()
+        hashes = {code.code_hash, code.token_hash} - {None}
+        if any(c.code_hash in hashes or c.token_hash in hashes for c in self.link_codes):
+            raise LinkCodeTaken
+        self.link_codes = [
+            replace(c, used_at=code.created_at)
+            if c.account_id == code.account_id and c.used_at is None
+            else c
+            for c in self.link_codes
+        ]
+        self.link_codes.append(code)
+
+    async def list_channels(self, account_id: str) -> list[ChannelIdentity]:
+        self._check()
+        found = [c for c in self.channels if c.account_id == account_id and c.active]
+        return sorted(found, key=lambda c: (c.verified_at, c.id))
+
+    async def unlink_channel(self, account_id: str, identity_id: str, now: datetime) -> bool:
+        self._check()
+        for index, channel in enumerate(self.channels):
+            if channel.id == identity_id and channel.account_id == account_id and channel.active:
+                self.channels[index] = replace(channel, unlinked_at=now)
+                return True
+        return False
+
+    def _unlink_channels(self, account_id: str, now: datetime) -> None:
+        self.channels = [
+            replace(c, unlinked_at=now) if c.account_id == account_id and c.active else c
+            for c in self.channels
+        ]
+        self.link_codes = [
+            replace(c, used_at=now) if c.account_id == account_id and c.used_at is None else c
+            for c in self.link_codes
+        ]

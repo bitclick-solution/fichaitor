@@ -118,6 +118,15 @@ def test_the_notice_carries_the_restore_link_built_from_the_public_url():
     assert store.scrubbed == ["job-2"] and store.code_mail == {}
 
 
+def test_the_restored_email_is_sent_and_its_payload_emptied():
+    store, mailer = MailStore(), FakeMailer()
+    payload = {"template": "offboarding_restored", "to": ADDRESS, "scope": "cuenta"}
+    run(SendMail(store, mailer, "https://fichaitor.test")(Job("job-3", "send_mail", payload)))
+    (mail,) = mailer.sent
+    assert mail.to == ADDRESS and mail.subject == "Has restaurado Fichaitor"
+    assert store.scrubbed == ["job-3"] and store.code_mail == {}
+
+
 def test_a_temporary_failure_keeps_the_payload_for_the_retry_and_says_nothing_sensitive():
     store = MailStore()
     handler = SendMail(store, FakeMailer(fail=MailerError), "https://fichaitor.test")

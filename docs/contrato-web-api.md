@@ -496,7 +496,9 @@ Qué pasa al confirmar:
 Cancela la baja programada de la cuenta de la sesión. Sin cuerpo. Respuesta 204.
 
 - 409 si la cuenta no tiene ninguna baja programada: "No tienes ninguna baja programada."
+- 503 si no se pudo guardar: "No hemos podido hacerlo. Prueba otra vez en un minuto." La baja sigue programada.
 - Tras restaurar, todo vuelve a como estaba y se pide una sincronización. El enlace del correo deja de valer.
+- Se envía un correo que confirma la restauración («Has restaurado Fichaitor»).
 
 ### `POST /api/v1/public/offboarding/restore`
 
@@ -509,7 +511,8 @@ Cancela la baja desde el enlace del correo. **Sin sesión** y sin la cabecera de
 Respuesta 204.
 
 - El enlace del correo es `https://<dominio>/app#restaurar=<token>`. El token va en el **fragmento**, que el navegador no envía al servidor: no queda en los registros de acceso. La web lo lee del fragmento, lo quita de la barra de direcciones y lo envía en el cuerpo de esta ruta.
-- El token sirve una sola vez y hasta `delete_at`.
+- El token sirve una sola vez y hasta `delete_at`. Solo se gasta si la restauración se guarda: con un **503** ("No hemos podido hacerlo. Prueba otra vez en un minuto.") el enlace sigue valiendo y la web puede ofrecer reintentar.
+- Al restaurar se envía el mismo correo de confirmación que desde la sesión.
 - **410** para un token desconocido, usado o caducado, siempre con el mismo `detail`: "Este enlace ya no vale: ha caducado o ya se ha usado." La respuesta no revela si la cuenta existe.
 - **429** con más de 20 intentos por IP en una hora.
 - Restaurar no abre sesión. Si el dueño no tiene una, la web le pide entrar con Google.

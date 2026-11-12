@@ -6,6 +6,9 @@ deleted, so that restoring needs no new connection with Google.
 
 Neither the code nor the restore token is stored: only fingerprints. They exist in
 clear in the payload of the mail job, which the worker empties once the email is out.
+
+Restoring, from the session or from the link, enqueues the email that says so in the
+same write: if anything fails, nothing is restored and the link still works.
 """
 
 import logging
@@ -19,6 +22,7 @@ from app.domain.offboarding import (
     CODE_LOCKED,
     CODE_OK,
     MAIL_CODE,
+    MAIL_RESTORED,
     MAIL_SCHEDULED,
     CodeCheck,
     code_hash,
@@ -155,10 +159,13 @@ class Offboarding:
         raise CodeWrong(check.attempts_left)
 
     async def restore(self, account: Account) -> bool:
-        return await self._store.restore_offboarding(account.id, self._now())
+        return await self._store.restore_offboarding(
+            account.id, self._now(), mail={"template": MAIL_RESTORED}
+        )
 
     async def restore_by_token(self, token: str) -> str | None:
-        """The account whose leave was cancelled, or None. Same answer whatever was wrong."""
+        """The account whose leave was cancelled, or None. Same answer whatever was wrong.
+        The token is spent only if the restore is saved: an error leaves it valid."""
         return await self._store.restore_offboarding_by_token(
-            restore_token_hash(token), self._now()
+            restore_token_hash(token), self._now(), mail={"template": MAIL_RESTORED}
         )

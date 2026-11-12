@@ -26,6 +26,7 @@ APPLY_KIND = "apply_offboarding"
 RETENTION_KIND = "retention"
 MAIL_CODE = "offboarding_code"
 MAIL_SCHEDULED = "offboarding_scheduled"
+MAIL_RESTORED = "offboarding_restored"
 MAIL_MAX_ATTEMPTS = 3
 APPLY_MAX_ATTEMPTS = 5
 

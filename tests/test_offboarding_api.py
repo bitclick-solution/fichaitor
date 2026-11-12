@@ -389,6 +389,104 @@ def test_restoring_from_the_link_needs_no_session_and_works_once():
     assert used.json() == unknown.json()  # nothing tells one case from the other
 
 
+def restored_mails(w: World) -> list[dict]:
+    return [
+        j.payload for j in w.jobs("send_mail") if j.payload["template"] == "offboarding_restored"
+    ]
+
+
+@pytest.mark.parametrize("scope", ["ficha", "cuenta"])
+def test_restoring_from_the_session_sends_the_restored_email(scope):
+    w = World()
+    client = w.ready()
+    w.leave(client, scope)
+    if scope == "cuenta":
+        client = w.connect()  # its sessions were closed: it signs in again
+    assert restored_mails(w) == []
+    assert client.post(RESTORE, headers=HEADER).status_code == 204
+    assert restored_mails(w) == [
+        {"template": "offboarding_restored", "to": "dueno@example.com", "scope": scope}
+    ]
+
+
+@pytest.mark.parametrize("scope", ["ficha", "cuenta"])
+def test_restoring_from_the_link_sends_the_restored_email_once(scope):
+    w = World()
+    client = w.ready()
+    w.leave(client, scope)
+    token = w.mail("offboarding_scheduled")["token"]
+    anonymous = TestClient(w.app)
+    assert anonymous.post(PUBLIC_RESTORE, json={"token": token}).status_code == 204
+    assert anonymous.post(PUBLIC_RESTORE, json={"token": token}).status_code == 410
+    # No token, no code: only what the email needs.
+    assert restored_mails(w) == [
+        {"template": "offboarding_restored", "to": "dueno@example.com", "scope": scope}
+    ]
+
+
+def test_the_restored_email_goes_to_the_address_the_account_has_when_restoring():
+    w = World()
+    client = w.ready()
+    w.leave(client, "cuenta")
+    w.connect(email="nuevo@example.com")  # Google says the address changed meanwhile
+    token = w.mail("offboarding_scheduled")["token"]
+    assert TestClient(w.app).post(PUBLIC_RESTORE, json={"token": token}).status_code == 204
+    assert [m["to"] for m in restored_mails(w)] == ["nuevo@example.com"]
+
+
+def test_without_an_address_left_the_leave_is_restored_and_no_email_is_sent():
+    w = World()
+    client = w.ready()
+    w.leave(client, "cuenta")
+    token = w.mail("offboarding_scheduled")["token"]
+    (account,) = w.store.accounts.values()
+    account.email = ""
+    assert TestClient(w.app).post(PUBLIC_RESTORE, json={"token": token}).status_code == 204
+    assert restored_mails(w) == []
+
+
+class FailingOnce:
+    """Wraps the queue: the restored email cannot be enqueued, once."""
+
+    def __init__(self, inner) -> None:
+        self.inner, self.failed = inner, False
+
+    def __getattr__(self, name):
+        return getattr(self.inner, name)
+
+    async def enqueue(self, kind, payload, **options):
+        if payload.get("template") == "offboarding_restored" and not self.failed:
+            self.failed = True
+            raise RuntimeError("fallo simulado a mitad de la restauración")
+        return await self.inner.enqueue(kind, payload, **options)
+
+
+def test_a_server_error_while_restoring_from_the_link_does_not_spend_the_token():
+    w = World()
+    client = w.ready()
+    w.leave(client)
+    token = w.mail("offboarding_scheduled")["token"]
+    w.store.jobs = FailingOnce(w.store.jobs)
+    anonymous = TestClient(w.app)
+    failed = anonymous.post(PUBLIC_RESTORE, json={"token": token})
+    assert failed.status_code == 503
+    # Nothing changed: the leave is still scheduled and the link still works.
+    assert client.get(ME).json()["pending_deletion"]["scope"] == "ficha"
+    assert anonymous.post(PUBLIC_RESTORE, json={"token": token}).status_code == 204
+    assert client.get(ME).json()["pending_deletion"] is None
+    assert len(restored_mails(w)) == 1
+
+
+def test_a_server_error_while_restoring_from_the_session_leaves_the_leave_scheduled():
+    w = World()
+    client = w.ready()
+    w.leave(client)
+    w.store.jobs = FailingOnce(w.store.jobs)
+    assert client.post(RESTORE, headers=HEADER).status_code == 503
+    assert client.get(ME).json()["pending_deletion"]["scope"] == "ficha"
+    assert client.post(RESTORE, headers=HEADER).status_code == 204
+
+
 def test_the_link_stops_working_at_the_date_of_the_leave():
     w = World()
     client = w.ready()
@@ -478,6 +576,4 @@ def test_with_fake_mail_and_no_database_the_code_is_written_to_the_log(caplog):
     client.get(CALLBACK, params={"code": "c", "state": state})
     with caplog.at_level(logging.WARNING, logger="fichaitor.mail"):
         assert client.post(CODE, json={"scope": "ficha"}, headers=HEADER).status_code == 202
-    assert (
-        "[CORREO SIMULADO]" in caplog.text and "Tu código para desconectar tu ficha" in caplog.text
-    )
+    assert "[CORREO SIMULADO]" in caplog.text and "Has pedido desconectar tu ficha" in caplog.text

@@ -253,12 +253,13 @@ El recorrido de una baja, los plazos y la tabla de qué se borra y cuándo está
 
 ### El job `send_mail`
 
-Envía los dos correos de una baja. La API los encola; solo el worker habla con el servidor de correo.
+Envía los correos de una baja. La API los encola; solo el worker habla con el servidor de correo.
 
 | Plantilla | Carga | Cuándo |
 |---|---|---|
 | `offboarding_code` | `to`, `scope`, `code`, `minutes`, `code_id` | Al pedir el código |
 | `offboarding_scheduled` | `to`, `scope`, `delete_at`, `token` | Al confirmar la baja |
+| `offboarding_restored` | `to`, `scope` | Al restaurar, desde la sesión o desde el enlace, en la misma transacción que restaura. `to` es el correo que tiene la cuenta en ese momento; si ya no tiene, no se encola |
 
 - **La carga del job es el único sitio donde el código y el token de restauración existen en claro.** El job la vacía (`{}`) al enviar el correo, al fallar para siempre y al agotar los intentos. Cada minuto, `on_lost` vacía la de los jobs terminados que la conserven porque su worker murió.
 - **3 intentos.** Un fallo temporal del servidor (4xx de SMTP, red) se reintenta. Un rechazo (5xx de SMTP, credenciales, certificado no válido, servidor sin TLS) no.
@@ -269,9 +270,9 @@ Envía los dos correos de una baja. La API los encola; solo el worker habla con 
 El adaptador SMTP usa `smtplib`, de la biblioteca estándar, en un hilo. Basta para un correo por conversación y no añade dependencias.
 
 - **TLS obligatorio y certificado comprobado.** En el puerto 465, TLS desde el primer byte. En cualquier otro, STARTTLS: si el servidor no lo ofrece, el correo no se envía.
-- **Cabeceras**: `From` con el nombre de `FICHAITOR_MAIL_FROM_NAME`, `Message-ID` con el dominio del remitente, `Auto-Submitted: auto-generated` y, si `FICHAITOR_MAIL_REPLY_TO` tiene valor, `Reply-To`.
-- **Cuerpo**: texto plano y una versión HTML sencilla. Sin datos de reseñas.
-- **El enlace de restauración** es `<FICHAITOR_PUBLIC_BASE_URL>/app#restaurar=<token>`. El token va en el fragmento para que no llegue a los registros de acceso.
+- **Cabeceras**: `From` con el nombre de `FICHAITOR_MAIL_FROM_NAME` (en producción, `Fichaitor <avisos@fichaitor.es>`), `Message-ID` con el dominio del remitente, `Auto-Submitted: auto-generated` y `Reply-To` con `FICHAITOR_MAIL_REPLY_TO` (por defecto `soporte@fichaitor.es`: `avisos@` no se lee).
+- **Cuerpo**: `multipart/alternative` con texto plano y HTML. El HTML usa las plantillas de marca de `brand/correo/` (textos y reglas en `brand/correo/LEEME.md`), copiadas en `app/mail_templates/` para que viajen en la imagen; una prueba falla si la copia difiere del original. Cada valor pasa por `html.escape`, salvo el cuerpo, que son bloques ya escapados. El código nunca va en el asunto ni en el preencabezado. Sin datos de reseñas.
+- **El enlace de restauración** es `<FICHAITOR_PUBLIC_BASE_URL>/app#restaurar=<token>`, absoluto y montado solo con la configuración: nunca con la cabecera `Host` ni con datos de la petición. Si `FICHAITOR_PUBLIC_BASE_URL` no es una URL absoluta `http(s)` sin consulta ni fragmento, la configuración no arranca. El token va en el fragmento para que no llegue a los registros de acceso.
 
 > **Nota:** La fecha de los correos sale en hora peninsular si la imagen tiene los datos de zonas horarias (`tzdata`). Si no, sale en UTC y lo dice.
 
@@ -438,7 +439,7 @@ Todas llevan el prefijo `FICHAITOR_`. El worker las valida al arrancar y, si fal
 | `FICHAITOR_FAKE_SCREENSHOT` | No | `false` | Modelo de ejemplo para el sentimiento, sin clave y sin coste |
 | `FICHAITOR_SENTIMENT_*` | No | Consulta [sentimiento.md](sentimiento.md#variables-de-entorno) | Umbrales, disparadores y límites de coste del sentimiento |
 | `FICHAITOR_SMTP_HOST`, `FICHAITOR_SMTP_PORT`, `FICHAITOR_SMTP_USER`, `FICHAITOR_SMTP_PASSWORD` | No | —, `587`, —, — | Servidor de correo saliente. Consulta [El job `send_mail`](#el-job-send_mail) |
-| `FICHAITOR_MAIL_FROM`, `FICHAITOR_MAIL_FROM_NAME`, `FICHAITOR_MAIL_REPLY_TO` | No | —, `Fichaitor`, — | Remitente, su nombre y la dirección de respuesta |
+| `FICHAITOR_MAIL_FROM`, `FICHAITOR_MAIL_FROM_NAME`, `FICHAITOR_MAIL_REPLY_TO` | No | —, `Fichaitor`, `soporte@fichaitor.es` | Remitente (en producción, `avisos@fichaitor.es`), su nombre y la dirección de respuesta |
 | `FICHAITOR_PUBLIC_BASE_URL` | No | `http://localhost:8080` | Base del enlace de restauración de los correos |
 | `FICHAITOR_FAKE_MAIL` | No | `false` | No envía correo: lo escribe en el log con el prefijo `[CORREO SIMULADO]` |
 | `FICHAITOR_RETENTION_*` | No | Consulta [retencion.md](retencion.md#variables) | Plazos de conservación y hora de la pasada diaria |

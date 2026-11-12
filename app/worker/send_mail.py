@@ -4,6 +4,7 @@ Payloads:
 
 - {"template": "offboarding_code", "to", "scope", "code", "minutes", "code_id"}
 - {"template": "offboarding_scheduled", "to", "scope", "delete_at", "token"}
+- {"template": "offboarding_restored", "to", "scope"}
 
 The payload is the only place where a code or a restore token exists in clear, and
 only until the email is out: every way out of this job empties it, the last failure
@@ -16,8 +17,15 @@ from datetime import datetime
 from typing import Protocol
 
 from app.domain.jobs import Job, JobError, PermanentJobError
-from app.domain.offboarding import MAIL_CODE, MAIL_FAILED, MAIL_SCHEDULED, MAIL_SENT, SCOPES
-from app.domain.offboarding_mail import code_email, restore_url, scheduled_email
+from app.domain.offboarding import (
+    MAIL_CODE,
+    MAIL_FAILED,
+    MAIL_RESTORED,
+    MAIL_SCHEDULED,
+    MAIL_SENT,
+    SCOPES,
+)
+from app.domain.offboarding_mail import code_email, restore_url, restored_email, scheduled_email
 from app.ports.mailer import Email, Mailer, MailerError, MailRejected
 from app.worker import log
 
@@ -54,8 +62,12 @@ def build_email(payload: dict, public_base_url: str) -> Email:
             delete_at = datetime.fromisoformat(_text(payload, "delete_at"))
         except ValueError:
             raise PermanentJobError("payload no válido") from None
+        # The link is made from the configuration and the token alone: nothing else of
+        # the payload, and nothing of the request that enqueued it.
         url = restore_url(public_base_url, _text(payload, "token"))
         return scheduled_email(to, scope, delete_at, url)
+    if template == MAIL_RESTORED:
+        return restored_email(to, scope)
     raise PermanentJobError("payload no válido")
 
 
@@ -109,4 +121,4 @@ class SendMail:
         return await self._store.scrub_finished_jobs(kind)
 
 
-_KNOWN = (MAIL_CODE, MAIL_SCHEDULED)
+_KNOWN = (MAIL_CODE, MAIL_SCHEDULED, MAIL_RESTORED)

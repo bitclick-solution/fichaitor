@@ -1,0 +1,49 @@
+<!doctype html>
+<html lang="es" xmlns="http://www.w3.org/1999/xhtml">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="x-apple-disable-message-reformatting">
+<meta name="color-scheme" content="light">
+<meta name="supported-color-schemes" content="light">
+<title>${asunto}</title>
+</head>
+<body style="margin:0;padding:0;background-color:#f4efe6;-webkit-text-size-adjust:100%;">
+<!-- Plantilla base de los correos de Fichaitor. Guía: brand/correo/LEEME.md -->
+<div style="display:none;max-height:0;overflow:hidden;opacity:0;color:#f4efe6;font-size:1px;line-height:1px;">${preencabezado}</div>
+<table role="presentation" width="100%" cellspacing="0" cellpadding="0" border="0" style="background-color:#f4efe6;">
+  <tr>
+    <td align="center" style="padding:32px 16px;">
+      <table role="presentation" width="100%" cellspacing="0" cellpadding="0" border="0" style="max-width:560px;">
+        <!-- Marca: el símbolo «F.» dibujado con una celda, sin imágenes -->
+        <tr>
+          <td style="padding:0 0 28px 0;">
+            <table role="presentation" cellspacing="0" cellpadding="0" border="0">
+              <tr>
+                <td width="36" height="36" align="center" valign="middle" style="width:36px;height:36px;background-color:#0b0b0b;color:#f4efe6;font-family:'Archivo Black','Arial Black',Arial,Helvetica,sans-serif;font-size:22px;font-weight:900;line-height:36px;">F<span style="color:#ff3b30;">.</span></td>
+                <td style="padding-left:10px;font-family:'Archivo Black','Arial Black',Arial,Helvetica,sans-serif;font-size:19px;font-weight:900;letter-spacing:-0.5px;color:#0b0b0b;">Fichaitor<span style="color:#ff3b30;">.</span></td>
+              </tr>
+            </table>
+          </td>
+        </tr>
+        <!-- Cuerpo -->
+        <tr>
+          <td style="border:2px solid #0b0b0b;padding:32px 28px;">
+            <h1 style="margin:0 0 20px 0;font-family:'Archivo Black','Arial Black',Arial,Helvetica,sans-serif;font-size:26px;line-height:1.1;font-weight:900;letter-spacing:-0.5px;text-transform:uppercase;color:#0b0b0b;">${titular}<span style="color:#ff3b30;">.</span></h1>
+            ${contenido}
+          </td>
+        </tr>
+        <!-- Pie -->
+        <tr>
+          <td style="padding:24px 4px 0 4px;font-family:Arial,Helvetica,sans-serif;font-size:13px;line-height:1.5;color:#55504a;">
+            <p style="margin:0 0 8px 0;">${motivo}</p>
+            <p style="margin:0 0 8px 0;">¿Dudas? Escríbenos a <a href="mailto:soporte@fichaitor.es" style="color:#c4200f;">soporte@fichaitor.es</a>.</p>
+            <p style="margin:0;">Fichaitor es un producto de Bitclick Solutions S.L.U. · C/ Cuenca nº 17, 18230 Atarfe (Granada), España.</p>
+          </td>
+        </tr>
+      </table>
+    </td>
+  </tr>
+</table>
+</body>
+</html>
