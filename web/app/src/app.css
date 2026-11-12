@@ -392,3 +392,17 @@ html.lenis, html.lenis body { height: auto; }
 .pendientes { display: flex; flex-wrap: wrap; gap: 4px 12px; font-size: 0.9rem; font-weight: 600; }
 .pendiente-aviso { color: var(--rojo-tinta); font-weight: 800; }
 .selector-lista li button[aria-current="true"] .pendiente-aviso { color: var(--papel); text-decoration: underline; }
+/* Avisos con multinegocio: qué negocios recibe cada chat */
+.canal-recibe { margin-top: 4px; font-weight: 700; overflow-wrap: anywhere; }
+.canal-acciones { display: flex; flex-wrap: wrap; gap: 8px 20px; }
+.opciones-dos { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+.opciones-lista { grid-template-columns: 1fr; gap: 8px; margin-top: 12px; }
+.opciones-lista .opcion span { display: flex; align-items: flex-start; gap: 12px; padding: 10px 14px; overflow-wrap: anywhere; }
+/* Casilla cuadrada: se pueden marcar varios */
+.opciones-lista .opcion span::before { content: ""; flex: none; width: 14px; height: 14px; margin-top: 0.2em; border: 2px solid currentColor; }
+.opciones-lista .opcion input:checked + span::before { background: var(--rojo); border-color: var(--rojo); }
+@media (max-width: 760px) {
+  .opciones-dos { grid-template-columns: 1fr; }
+}
+.paso-modal { display: grid; gap: 16px; }
+.paso-modal:focus { outline: none; }

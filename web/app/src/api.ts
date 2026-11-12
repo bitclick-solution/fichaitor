@@ -178,6 +178,10 @@ export interface Canal {
   channel: "telegram" | "whatsapp" | "email";
   address: string;
   linked_at: string;
+  /** Multinegocio: null si el chat ve todas las fichas activas (también las futuras); si no, las de su filtro. */
+  locations?: string[] | null;
+  /** Lo que recibe el chat, listo para mostrar tras «Recibe:» («Todos tus negocios», «A y B»…). */
+  locations_label?: string;
 }
 
 /** Franja horaria «HH:MM». */
@@ -228,10 +232,10 @@ export class ApiError extends Error {
   }
 }
 
-const GENERICO = "Algo ha fallado. Prueba de nuevo en un minuto.";
+export const GENERICO = "Algo ha fallado. Prueba de nuevo en un minuto.";
 
 
-async function pedir<T>(method: "GET" | "POST" | "DELETE", path: string, body?: unknown): Promise<T> {
+async function pedir<T>(method: "GET" | "POST" | "PUT" | "DELETE", path: string, body?: unknown): Promise<T> {
   const headers: Record<string, string> = {};
   if (method !== "GET") headers["X-Requested-With"] = "fichaitor";
   if (body !== undefined) headers["content-type"] = "application/json";
@@ -321,7 +325,12 @@ export const api = {
   salir: () => pedir<void>("POST", "/api/v1/auth/logout"),
   // ── Canales (contrato previsto en docs/canales.md, «Paso 3»)
   canales: async () => (await pedir<{ channels: Canal[] }>("GET", "/api/v1/me/channels")).channels ?? [],
-  codigoVinculacion: () => pedir<CodigoVinculacion>("POST", "/api/v1/channels/link-code"),
+  /** Sin fichas (null), el chat verá todas las activas, también las que se activen después. */
+  codigoVinculacion: (fichas: string[] | null = null) =>
+    pedir<CodigoVinculacion>("POST", "/api/v1/channels/link-code", fichas ? { locations: fichas } : undefined),
+  /** Cambia qué fichas ve un chat ya vinculado: null para todas. Responde con el canal. */
+  filtrarCanal: (id: string, fichas: string[] | null) =>
+    pedir<Canal>("PUT", `/api/v1/me/channels/${encodeURIComponent(id)}/locations`, { locations: fichas }),
   desvincularCanal: (id: string) => pedir<void>("DELETE", `/api/v1/me/channels/${encodeURIComponent(id)}`),
   // ── Multinegocio (docs/multinegocio.md, 5.3). Las dos responden con el cuerpo de GET /me.
   /** Sin plan, el servidor elige: gratis si está libre y, si no, el primer plan con hueco. 402: no queda hueco. */

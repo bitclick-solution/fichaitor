@@ -51,8 +51,37 @@ function fichas() {
 let llamadasSentimiento = 0;
 
 // Canales: tras pedir un código, la segunda consulta ya lo ve conectado (como si se hubiera enviado).
-const CANALES: { id: string; channel: string; address: string; linked_at: string }[] = [];
-let codigoPendiente: { consultas: number } | null = null;
+// Cada chat guarda su filtro de fichas (null = todas); la etiqueta se compone al responder, como el backend.
+const CANALES: { id: string; channel: string; address: string; linked_at: string; locations: string[] | null }[] = [];
+let codigoPendiente: { consultas: number; locations: string[] | null } | null = null;
+
+/** «A», «A y B», «A, B y C»; una ficha inactiva lleva « (desactivada)». */
+function etiquetaFiltro(e: Estado, filtro: string[] | null): string {
+  if (filtro === null) return "Todos tus negocios";
+  const nombres = fichas()
+    .filter((f) => filtro.includes(f.id))
+    .map((f) => (e.planes?.[f.id] ? f.title : `${f.title} (desactivada)`));
+  if (nombres.length === 0) return "Ninguno de tus negocios";
+  return nombres.length === 1 ? nombres[0]! : `${nombres.slice(0, -1).join(", ")} y ${nombres[nombres.length - 1]}`;
+}
+
+/** Las reglas del filtro: fichas activas de la cuenta, de 1 a 50. Devuelve el error o la lista limpia. */
+function validarFiltro(e: Estado, filtro: unknown): Response | string[] | null {
+  if (e.baja) return json(409, { detail: "Tienes una baja programada. Restáurala para seguir usando Fichaitor." });
+  if (filtro === null || filtro === undefined) return null;
+  if (!Array.isArray(filtro) || filtro.length === 0 || filtro.length > 50 || filtro.some((x) => typeof x !== "string"))
+    return json(422, { detail: [{ msg: "Lista no válida" }] });
+  const ids = [...new Set(filtro as string[])];
+  if (ids.some((id) => !fichas().some((f) => f.id === id))) return json(404, { detail: "Esa ficha no está en tu cuenta." });
+  if (ids.some((id) => !e.planes?.[id])) return json(422, { detail: "Esa ficha no está activa." });
+  return fichas()
+    .filter((f) => ids.includes(f.id))
+    .map((f) => f.id);
+}
+
+function canalVisto(e: Estado, c: (typeof CANALES)[number]) {
+  return { ...c, locations_label: etiquetaFiltro(e, c.locations) };
+}
 
 interface ResenaSimulada {
   id: string;
@@ -232,7 +261,10 @@ export async function mockFetch(method: string, path: string, body: unknown): Pr
   if (method === "GET" && path === "/api/v1/me") return json(200, yo(e));
 
   if (method === "POST" && path === "/api/v1/channels/link-code") {
-    codigoPendiente = { consultas: 0 };
+    if (body && Object.keys(body as object).some((k) => k !== "locations")) return json(422, { detail: [{ msg: "Campo de más" }] });
+    const filtro = validarFiltro(e, (body as { locations?: unknown } | undefined)?.locations);
+    if (filtro instanceof Response) return filtro;
+    codigoPendiente = { consultas: 0, locations: filtro };
     return json(200, {
       code: "482913",
       expires_at: new Date(Date.now() + 10 * 60 * 1000).toISOString(),
@@ -299,10 +331,27 @@ export async function mockFetch(method: string, path: string, body: unknown): Pr
   }
   if (method === "GET" && path === "/api/v1/me/channels") {
     if (codigoPendiente && ++codigoPendiente.consultas >= 2) {
-      CANALES.push({ id: `ch_${CANALES.length + 1}`, channel: "telegram", address: "Telegram de ••••7342", linked_at: new Date().toISOString() });
+      CANALES.push({
+        id: `ch_${CANALES.length + 1}`,
+        channel: "telegram",
+        address: `Telegram de ••••${7342 + CANALES.length}`,
+        linked_at: new Date().toISOString(),
+        locations: codigoPendiente.locations,
+      });
       codigoPendiente = null;
     }
-    return json(200, { channels: CANALES });
+    return json(200, { channels: CANALES.map((c) => canalVisto(e, c)) });
+  }
+  const filtroCanal = /^\/api\/v1\/me\/channels\/([^/]+)\/locations$/.exec(path);
+  if (method === "PUT" && filtroCanal) {
+    const c = CANALES.find((x) => x.id === filtroCanal[1]);
+    if (!c) return json(404, { detail: "Ese canal no está vinculado a tu cuenta." });
+    const cuerpo = body as { locations?: unknown } | undefined;
+    if (!cuerpo || !("locations" in cuerpo) || Object.keys(cuerpo).length !== 1) return json(422, { detail: [{ msg: "Falta locations o sobra un campo" }] });
+    const filtro = validarFiltro(e, cuerpo.locations);
+    if (filtro instanceof Response) return filtro;
+    c.locations = filtro;
+    return json(200, canalVisto(e, c));
   }
   if (method === "DELETE" && path.startsWith("/api/v1/me/channels/")) {
     const id = path.split("/").pop();

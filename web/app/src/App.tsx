@@ -196,6 +196,7 @@ export function App() {
             onRecargar={() => void cargar()}
             onDespedida={(borrado) => setVista({ tipo: "despedida", borrado })}
             variasFichas={vista.me.locations.length > 1}
+            negocios={esMultinegocio(vista.me) ? vista.me.locations.filter((l) => l.active) : []}
             // Con multinegocio, se cambia desde el selector de la barra.
             onCambiar={esMultinegocio(vista.me) ? undefined : () => setVista({ tipo: "elegir", me: vista.me })}
             onDesactivarFicha={
@@ -532,6 +533,7 @@ function Panel({
   onRecargar,
   onDespedida,
   variasFichas,
+  negocios,
   onCambiar,
   onDesactivarFicha,
   onSinSesion,
@@ -543,6 +545,8 @@ function Panel({
   /** Tras confirmar el borrado de la cuenta, con el momento del borrado. */
   onDespedida: (borrado: string) => void;
   variasFichas: boolean;
+  /** Multinegocio: fichas activas, para elegir qué negocios ve cada chat de «Avisos». Vacía sin multinegocio. */
+  negocios: Location[];
   onCambiar?: (() => void) | undefined;
   /** Multinegocio: desactivar la que se ve (también la última: se vuelve a «activa tu primera ficha»). */
   onDesactivarFicha?: (() => void) | undefined;
@@ -715,7 +719,7 @@ function Panel({
         </Seccion>
       )}
 
-      <Canales onSinSesion={onSinSesion} />
+      <Canales negocios={negocios} onSinSesion={onSinSesion} />
 
       <Instalar />
 
