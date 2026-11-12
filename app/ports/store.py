@@ -4,6 +4,7 @@ from datetime import date, datetime
 from typing import Protocol
 
 from app.domain.offboarding import CodeCheck, PendingDeletion
+from app.domain.plans import ActiveLocation, Entitlement, Plan
 from app.domain.profile_summary import STATUS_NEEDS_RECONNECT, ProfileFacts
 from app.domain.sentiment import Analysis
 from app.ports.google_oauth import ProfileLocation
@@ -86,6 +87,62 @@ class SelectedProfile:
     # several syncs in a row) and retired it. Nothing stored of it is served: the
     # summary only says 'needs_reconnect', and no sync is asked for.
     access_lost: bool = False
+    location_id: str = ""  # ours: "loc_..."
+
+
+@dataclass(frozen=True)
+class ActiveProfile:
+    """An active profile of an account, as Google names it: what a sync needs."""
+
+    location_id: str
+    google_sub: str
+    location: str  # "locations/123"
+
+
+@dataclass(frozen=True)
+class LocationOverview:
+    """A profile of the account for the selector of the panel (docs/multinegocio.md, 5.2).
+
+    `summary_status` is the status of its summary (ok, needs_reconnect or error), None
+    when it is inactive or nothing has been synced yet. `pending_reviews` and
+    `pending_key_dates` are None when it is inactive."""
+
+    id: str
+    title: str
+    place_id: str | None
+    verified: bool
+    plan: Plan | None = None
+    active_since: datetime | None = None
+    summary_status: str | None = None
+    pending_reviews: int | None = None
+    pending_key_dates: int | None = None
+
+    @property
+    def active(self) -> bool:
+        return self.plan is not None
+
+
+@dataclass(frozen=True)
+class LocationsOverview:
+    """Every profile of the account, with what it may have active: what GET /me needs
+    for `locations`, `plans` and `pricing` (app/domain/plans.py)."""
+
+    locations: tuple[LocationOverview, ...]
+    entitlements: tuple[Entitlement, ...]
+
+    def active_by_plan(self) -> dict[Plan, int]:
+        counts: dict[Plan, int] = {}
+        for location in self.locations:
+            if location.plan is not None:
+                counts[location.plan] = counts.get(location.plan, 0) + 1
+        return counts
+
+    def active(self) -> list[ActiveLocation]:
+        return [
+            ActiveLocation(loc.id, loc.plan, loc.active_since)
+            for loc in self.locations
+            if loc.plan is not None and loc.active_since is not None
+        ]
 
 
 def lost_access_summary(at: datetime) -> StoredSummary:
@@ -124,6 +181,7 @@ class StoredReview:
     reply_text: str | None  # None: unanswered
     reply_at: datetime | None
     draft: ReviewDraft | None = None  # only read by get_review
+    location_id: str | None = None  # ours, of the profile it is of; only read by get_review
 
 
 @dataclass(frozen=True)
@@ -155,6 +213,56 @@ class StoredSentiment:
 
 class ReplyInProgress(Exception):
     """That review already has a reply on its way to Google."""
+
+
+# --- which profile: errors the routes translate (docs/multinegocio.md, 5.1 and 5.3) ----
+
+
+class NoLocationChosen(Exception):
+    """No profile named and no preference: 409 «Primero elige con qué ficha quieres
+    trabajar.»"""
+
+
+class LocationNotFound(Exception):
+    """Not a profile of that account: of another one, or it does not exist. The same
+    answer in both cases: 404 «Esa ficha no está en tu cuenta.»"""
+
+
+class LocationInactive(Exception):
+    """A profile of that account that is not active: 409 «Esa ficha no está activa.»"""
+
+
+class ActivationRefused(Exception):
+    """The database refused to activate a profile or change its plan (trigger
+    location_active_guard). `code` is what the routes answer with."""
+
+    code = "refused"
+
+
+class LocationLimit(ActivationRefused):
+    """No room left in that plan: 402, and the web shows the offer of plans."""
+
+    code = "limit"
+
+
+class FreeTaken(ActivationRefused):
+    """That Google profile is already active on the free plan in another account
+    (decision 5 of the owner): 409 with code free_taken."""
+
+    code = "free_taken"
+
+
+class OffboardingPending(ActivationRefused):
+    """The account has a scheduled leave: nothing can be activated. 409 with code
+    offboarding_pending."""
+
+    code = "offboarding_pending"
+
+
+class LocationRemoved(ActivationRefused):
+    """Google no longer lists that profile for the account: 409."""
+
+    code = "location_removed"
 
 
 class Store(Protocol):
@@ -209,42 +317,110 @@ class Store(Protocol):
         ...
 
     async def select_location(self, account_id: str, location_id: str) -> bool:
-        """Select a profile. False, and nothing changes, if it is not of that account."""
-        ...
+        """Make a profile the preference of the panel (the profile it shows when a
+        request names none). False, and nothing changes, if it is not of that account.
 
-    async def selected_profile(self, account_id: str) -> SelectedProfile | None:
-        """The selected profile of that account and its summary. None if nothing is selected.
-
-        A selected profile the worker retired for lack of access comes back with
-        access_lost and lost_access_summary, without anything that was read from Google.
-
-        The summary is looked up by the Google identity of that very account and its own
-        selected profile: an account never reads the summary written for another one,
-        not even when both manage the same Google profile.
+        Until step 9 of docs/multinegocio.md (5.5), an inactive profile is first
+        activated with the default plan, so that the web that only knows "choose a
+        profile" keeps working: raises what `activate` raises if it does not fit.
         """
         ...
 
+    # --- profiles of the account, active or not (docs/multinegocio.md) -------------
+
+    async def resolve_location(self, account_id: str, location_id: str | None) -> str:
+        """The profile a request works on: `location_id` or, if None, the preference.
+
+        Raises NoLocationChosen (None and no preference), LocationNotFound (not of that
+        account; also a named profile Google no longer lists) or LocationInactive. A
+        preferred profile Google no longer lists is returned: `profile` serves it with
+        access_lost.
+        """
+        ...
+
+    async def locations_overview(self, account_id: str, today: date) -> LocationsOverview:
+        """Every profile of that account Google lists, ordered as list_locations, each
+        with its plan and, if active, the status of its summary, its unanswered reviews
+        and its key dates still to answer on `today` or later; and the entitlements of
+        the account."""
+        ...
+
+    async def active_profiles(self, account_id: str) -> list[ActiveProfile]:
+        """The active profiles of that account, as Google names them. Empty while the
+        account has a scheduled leave."""
+        ...
+
+    async def activate(self, account_id: str, location_id: str, plan: Plan | None = None) -> Plan:
+        """Activate a profile of that account, or change the plan of an active one.
+        Returns the plan it ends up with.
+
+        Without a plan: an active profile stays as it is; an inactive one gets the free
+        plan while it is left (also in the other accounts: decision 5) and otherwise the
+        first paid plan with room (app/domain/plans.py, default_plan).
+
+        Raises LocationNotFound, LocationRemoved, LocationLimit, FreeTaken or
+        OffboardingPending. The database decides (trigger location_active_guard): two
+        activations at once are counted one after the other.
+        """
+        ...
+
+    async def deactivate(self, account_id: str, location_id: str) -> bool:
+        """Deactivate a profile of that account. In one transaction, holding the thread
+        of the conversation: the profile stops being active, its open proposals are
+        cancelled (outcome location_inactive, new token) and its lane and the thread let
+        them go. If it was the preference, the preference moves to the oldest active
+        profile, or to none. False, and nothing changes, if it is not of that account.
+        Deactivating an inactive profile changes nothing and is not an error."""
+        ...
+
+    async def profile(
+        self, account_id: str, location_id: str | None = None
+    ) -> SelectedProfile | None:
+        """That active profile of that account and its summary; with None, the
+        preference. None if it is not an active profile of that account (of another
+        account, unknown or inactive) or the account has a scheduled leave.
+
+        A preferred profile the worker retired for lack of access comes back with
+        access_lost and lost_access_summary, without anything that was read from Google.
+
+        The summary is looked up by the Google identity of that very account and its own
+        profile: an account never reads the summary written for another one, not even
+        when both manage the same Google profile.
+        """
+        ...
+
+    async def selected_profile(self, account_id: str) -> SelectedProfile | None:
+        """profile(account_id): the preference. Until step 9."""
+        ...
+
     async def list_reviews(
-        self, account_id: str, *, unanswered_only: bool, limit: int
+        self,
+        account_id: str,
+        *,
+        unanswered_only: bool,
+        limit: int,
+        location_id: str | None = None,
     ) -> ReviewPage:
-        """Reviews of the selected profile of that account, and of no other.
+        """Reviews of that active profile of that account (None: the preference), and
+        of no other.
 
         Unanswered first; within each group, fewer stars first and then the newest.
-        Removed reviews are left out. Empty when no profile is selected.
+        Removed reviews are left out. Empty when it is not an active profile of that
+        account.
         """
         ...
 
     async def get_review(self, account_id: str, review_id: str) -> StoredReview | None:
-        """One review of the selected profile of that account, with its stored draft.
-        None if it is not there: unknown, removed, of another profile or of another
-        account. The answer is the same in every case."""
+        """One review of any active profile of that account, with its stored draft and
+        the id of its profile. None if it is not there: unknown, removed, of an inactive
+        profile or of another account. The answer is the same in every case."""
         ...
 
     async def save_draft(
         self, account_id: str, review_id: str, source_hash: str, text: str, now: datetime
     ) -> None:
         """Keep the last draft of that review, replacing the previous one. Nothing is
-        stored unless the review is of the selected profile of that account."""
+        stored unless the review is of an active profile of that account."""
         ...
 
     async def create_reply_action(
@@ -254,7 +430,7 @@ class Store(Protocol):
         action, its audit row and the job that will carry it out, all or nothing.
 
         `text` is stored exactly as given. Returns the id of the action; None if the
-        review is not of the selected profile of that account. Raises ReplyInProgress
+        review is not of an active profile of that account. Raises ReplyInProgress
         if that review already has a reply on its way.
         """
         ...
@@ -263,13 +439,15 @@ class Store(Protocol):
         """An action of that account. None if it is unknown or of another account."""
         ...
 
-    async def sentiment(self, account_id: str, now: datetime) -> StoredSentiment | None:
-        """The sentiment analysis of the selected profile of that account, and of no
-        other, with the scores of the last twelve months. None if there is none yet or
-        no profile is selected.
+    async def sentiment(
+        self, account_id: str, now: datetime, location_id: str | None = None
+    ) -> StoredSentiment | None:
+        """The sentiment analysis of that active profile of that account (None: the
+        preference), and of no other, with the scores of the last twelve months. None if
+        there is none yet or it is not an active profile of that account.
 
         Looked up like the summary: by the Google identity of that very account and its
-        own selected profile.
+        own profile.
         """
         ...
 

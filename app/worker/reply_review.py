@@ -14,6 +14,8 @@ Rules:
 - No incoherent action either. Its account must have its Google user and its profile,
   and its review must be of that user and profile; otherwise it fails without calling
   Google (the API role can insert any row: docs/02-hld.md, residual risk).
+- No action on a profile that is no longer active (multinegocio): one the owner
+  deactivated after confirming fails as `location_inactive` without calling Google.
 - The text is sent exactly as confirmed. Nothing here edits it.
 - A retry first reads the review back: if Google already has that very text (the
   earlier attempt arrived and only its answer was lost), nothing is sent again.
@@ -31,6 +33,7 @@ from app.adapters.crypto.sealed import unseal
 from app.domain.actions import (
     ACTION_ID,
     ERROR_INTERNAL,
+    ERROR_LOCATION_INACTIVE,
     ERROR_RECONNECT,
     ERROR_REJECTED,
     ERROR_REVIEW_GONE,
@@ -81,6 +84,12 @@ class ReplyReview:
             await self._fail(action, job, ERROR_INTERNAL)
             log.event("action_incoherent", logging.WARNING, job_id=job.id, action_id=action.id)
             raise PermanentJobError("la acción no casa con su cuenta, su ficha o su reseña")
+
+        if not action.active:
+            # The owner deactivated that profile after confirming: nothing is sent.
+            await self._fail(action, job, ERROR_LOCATION_INACTIVE)
+            log.event("action_location_inactive", job_id=job.id, action_id=action.id)
+            return
 
         if await self._store.is_suspended(action.google_sub):
             # A scheduled leave: nothing is sent to Google for that account.

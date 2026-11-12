@@ -13,17 +13,19 @@ from datetime import UTC, datetime, timedelta
 
 DAY_SECONDS = 86400
 
-# What a counter is named after: a fixed word, and an account id when it is per account.
-# Never an IP address, a search or anything typed by a visitor.
-SCOPE = re.compile(r"[a-z_]{1,40}(:[0-9a-f-]{1,64})?")
+# What a counter is named after: a fixed word, and one of our ids (of an account, or of a
+# profile: "loc_...") when it is per account or per profile. Never an IP address, a
+# search or anything typed by a visitor. The same expression as usage_counter.scope.
+SCOPE = re.compile(r"[a-z_]{1,40}(:[0-9a-z_-]{1,64})?")
 
 SCREENSHOT_DAY = "screenshot_day"
 DIAGNOSIS_DAY = "diagnosis_day"
 
 
-def draft_scope(account_id: str) -> str:
-    """The drafts of replies of one account."""
-    return f"review_draft:{account_id}"
+def draft_scope(location_id: str) -> str:
+    """The drafts of replies of one profile (docs/multinegocio.md, 5.4): each business
+    of an account has its own cap."""
+    return f"review_draft:{location_id}"
 
 
 def window(now: datetime, seconds: int) -> tuple[datetime, datetime]:

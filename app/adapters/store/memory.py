@@ -3,7 +3,7 @@
 import secrets
 import uuid
 from collections.abc import Sequence
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from datetime import UTC, date, datetime
 
 from app.adapters.memory_tables import ActionRow, MemoryTables, ReviewRow
@@ -11,6 +11,7 @@ from app.adapters.quota.memory import MemoryQuota
 from app.domain.actions import REPLY_REVIEW, SET_SPECIAL_HOURS
 from app.domain.conversation import ChannelIdentity
 from app.domain.key_dates import (
+    ANSWERABLE_STATES,
     OUTCOME_DISMISSED,
     REFUSED_PROFILE,
     PanelRefused,
@@ -34,8 +35,17 @@ from app.domain.offboarding import (
     PendingDeletion,
     same_hash,
 )
+from app.domain.plans import (
+    BETA_PRO_QUANTITY,
+    PAID_PLANS,
+    Entitlement,
+    Plan,
+    activation_allowed,
+)
 from app.domain.proposals import (
+    CANCELLED_BY_DEACTIVATION,
     CANCELLED_BY_LEAVE,
+    OUTCOME_LOCATION_INACTIVE,
     OUTCOME_OFFBOARDING,
     Proposal,
     ProposalState,
@@ -50,8 +60,18 @@ from app.ports.job_queue import JobEnqueuer
 from app.ports.key_dates import KeyDateNotFound, KeyDateView, SpecialHoursInProgress
 from app.ports.store import (
     Account,
+    ActiveProfile,
+    FreeTaken,
     GoogleConnection,
     Location,
+    LocationInactive,
+    LocationLimit,
+    LocationNotFound,
+    LocationOverview,
+    LocationRemoved,
+    LocationsOverview,
+    NoLocationChosen,
+    OffboardingPending,
     ReplyInProgress,
     ReviewDraft,
     ReviewPage,
@@ -79,6 +99,12 @@ class AccountRow:
     google_sub: str
     email: str
     selected_location_id: str | None = None
+    # Every new account gets the beta one (db/schema.sql, account_beta_entitlement).
+    entitlements: list[Entitlement] = field(
+        default_factory=lambda: [
+            Entitlement(Plan.PRO, BETA_PRO_QUANTITY, datetime(2026, 1, 1, tzinfo=UTC))
+        ]
+    )
 
 
 @dataclass
@@ -87,6 +113,16 @@ class LocationRow:
     account_id: str
     profile: ProfileLocation
     removed: bool = False
+    # What location_active_guard keeps in PostgreSQL: active means a plan.
+    plan: Plan | None = None
+    active_since: datetime | None = None
+    deactivated_at: datetime | None = None
+
+    @property
+    def active(self) -> bool:
+        # A retired profile is never active (in PostgreSQL, the trigger sees to it); a
+        # test that stands in for the worker may only set `removed`.
+        return self.plan is not None and not self.removed
 
 
 @dataclass
@@ -203,6 +239,8 @@ class MemoryStore:
         account = self._account(account_id)
         for row in stale.values():
             row.removed = True
+            if row.plan is not None:
+                row.plan, row.active_since, row.deactivated_at = None, None, now
             if account.selected_location_id == row.id:
                 account.selected_location_id = None
 
@@ -239,33 +277,183 @@ class MemoryStore:
 
     async def select_location(self, account_id: str, location_id: str) -> bool:
         self._check()
-        owned = any(
-            r.id == location_id and r.account_id == account_id and not r.removed
-            for r in self.locations
+        row = self._own(account_id, location_id)
+        if row is None or row.removed:
+            return False
+        if row.plan is None:  # until step 9 (docs/multinegocio.md, 5.5)
+            self._activate(row, None)
+        self._account(account_id).selected_location_id = location_id
+        return True
+
+    # --- profiles of the account, active or not (docs/multinegocio.md) -------------
+
+    def _own(self, account_id: str, location_id: str | None) -> LocationRow | None:
+        return next(
+            (r for r in self.locations if r.id == location_id and r.account_id == account_id),
+            None,
         )
-        if owned:
-            self._account(account_id).selected_location_id = location_id
-        return owned
+
+    def _active_by_plan(self, account_id: str, leave_out: str = "") -> dict[Plan, int]:
+        counts: dict[Plan, int] = {}
+        for r in self.locations:
+            if r.account_id == account_id and r.active and r.id != leave_out:
+                counts[r.plan] = counts.get(r.plan, 0) + 1
+        return counts
+
+    def _fits(self, row: LocationRow, plan: Plan) -> type[Exception] | None:
+        """What location_active_guard would refuse, or None."""
+        if self._pending(row.account_id) is not None:
+            return OffboardingPending
+        account = self._account(row.account_id)
+        now = datetime.now(UTC)
+        if not activation_allowed(
+            self._active_by_plan(row.account_id, row.id), account.entitlements, plan, now
+        ):
+            return LocationLimit
+        if plan is Plan.GRATIS and any(
+            r.profile.location == row.profile.location
+            and r.account_id != row.account_id
+            and r.plan is Plan.GRATIS
+            for r in self.locations
+        ):
+            return FreeTaken
+        return None
+
+    def _activate(self, row: LocationRow, plan: Plan | None) -> Plan:
+        if row.plan is not None and plan in (None, row.plan):
+            return row.plan
+        candidates = [plan] if plan is not None else [Plan.GRATIS, *PAID_PLANS]
+        refusal: type[Exception] = LocationLimit
+        for candidate in candidates:
+            refused = self._fits(row, candidate)
+            if refused is None:
+                row.plan = candidate
+                row.active_since = row.active_since or datetime.now(UTC)
+                row.deactivated_at = None
+                return candidate
+            if refused is OffboardingPending:
+                raise refused
+            refusal = refused
+        raise refusal
+
+    async def activate(self, account_id: str, location_id: str, plan: Plan | None = None) -> Plan:
+        self._check()
+        row = self._own(account_id, location_id)
+        if row is None:
+            raise LocationNotFound
+        if row.removed:
+            raise LocationRemoved
+        return self._activate(row, plan)
+
+    async def deactivate(self, account_id: str, location_id: str) -> bool:
+        self._check()
+        row = self._own(account_id, location_id)
+        if row is None or row.removed:
+            return False
+        if row.plan is None:
+            return True
+        row.plan, row.active_since, row.deactivated_at = None, None, datetime.now(UTC)
+        for proposal_id, proposal in list(self.key_date_proposals.items()):
+            if (
+                proposal.account_id == account_id
+                and proposal.payload.get("location_id") == location_id
+                and proposal.state in CANCELLED_BY_DEACTIVATION
+            ):
+                self.key_date_proposals[proposal_id] = replace(
+                    proposal,
+                    state=ProposalState.CANCELLED,
+                    outcome_reason=OUTCOME_LOCATION_INACTIVE,
+                    step_token=secrets.token_hex(3),
+                    message_refs={},
+                )
+        account = self._account(account_id)
+        if account.selected_location_id == location_id:
+            oldest = sorted(
+                (r for r in self.locations if r.account_id == account_id and r.active),
+                key=lambda r: (r.active_since, r.id),
+            )
+            account.selected_location_id = oldest[0].id if oldest else None
+        return True
+
+    async def resolve_location(self, account_id: str, location_id: str | None) -> str:
+        self._check()
+        account = self._account(account_id)
+        chosen = location_id if location_id is not None else account.selected_location_id
+        row = self._own(account_id, chosen)
+        if row is None:
+            raise NoLocationChosen if location_id is None else LocationNotFound
+        if row.removed:
+            if row.id == account.selected_location_id:
+                return row.id
+            raise LocationNotFound
+        if row.plan is None:
+            raise LocationInactive
+        return row.id
+
+    async def locations_overview(self, account_id: str, today: date) -> LocationsOverview:
+        self._check()
+        account = self._account(account_id)
+        found = []
+        for location in await self.list_locations(account_id):
+            row = self._own(account_id, location.id)
+            assert row is not None
+            if row.plan is None:
+                found.append(
+                    LocationOverview(
+                        location.id, location.title, location.place_id, location.verified
+                    )
+                )
+                continue
+            summary = self.summaries.get((account.google_sub, row.profile.location))
+            key_dates = sum(
+                1
+                for p in self.key_date_proposals.values()
+                if p.account_id == account_id
+                and p.payload.get("location_id") == row.id
+                and p.state in ANSWERABLE_STATES
+                and p.payload.get("date", "") >= today.isoformat()
+            )
+            found.append(
+                LocationOverview(
+                    location.id,
+                    location.title,
+                    location.place_id,
+                    location.verified,
+                    plan=row.plan,
+                    active_since=row.active_since,
+                    summary_status=summary.status if summary is not None else None,
+                    pending_reviews=(summary.unanswered_count or 0) if summary else 0,
+                    pending_key_dates=key_dates,
+                )
+            )
+        return LocationsOverview(tuple(found), tuple(account.entitlements))
+
+    async def active_profiles(self, account_id: str) -> list[ActiveProfile]:
+        self._check()
+        if self._pending(account_id) is not None:
+            return []
+        account = self._account(account_id)
+        rows = sorted(
+            (r for r in self.locations if r.account_id == account_id and r.active),
+            key=lambda r: (r.active_since, r.id),
+        )
+        return [ActiveProfile(r.id, account.google_sub, r.profile.location) for r in rows]
 
     def put_summary(self, google_sub: str, location: str, summary: StoredSummary) -> None:
         """Stand-in for the worker: the API itself never writes a summary."""
         self.summaries[(google_sub, location)] = summary
 
     async def selected_profile(self, account_id: str) -> SelectedProfile | None:
+        return await self.profile(account_id)
+
+    async def profile(
+        self, account_id: str, location_id: str | None = None
+    ) -> SelectedProfile | None:
         self._check()
         account = self._account(account_id)
-        row = next(
-            (
-                r
-                for r in self.locations
-                if r.id == account.selected_location_id
-                and r.account_id == account_id
-                and not r.removed
-            ),
-            None,
-        )
-        if row is None or self._pending(account_id) is not None:
-            return self._lost_profile(account)
+        row = self._active_row(account_id, location_id)
+        if row is None:
+            return self._lost_profile(account, location_id)
         key = (account.google_sub, row.profile.location)
         summary = self.summaries.get(key)
         synced_at = self.tables.reviews_synced_at.get(key)
@@ -285,43 +473,63 @@ class MemoryStore:
             summary,
             row.profile.title,
             row.profile.place_id or None,
+            location_id=row.id,
         )
 
-    def _lost_profile(self, account: AccountRow) -> SelectedProfile | None:
-        """The selected profile retired by the worker for lack of access, if that is it."""
+    def _lost_profile(self, account: AccountRow, location_id: str | None) -> SelectedProfile | None:
+        """The preferred profile retired by the worker for lack of access, if that is it."""
         if self._pending(account.id) is not None:
+            return None
+        if location_id not in (None, account.selected_location_id):
             return None
         for row in self.locations:
             if row.id == account.selected_location_id and row.account_id == account.id:
                 if row.removed:
                     summary = lost_access_summary(datetime.now(UTC))
                     return SelectedProfile(
-                        account.google_sub, row.profile.location, summary, access_lost=True
+                        account.google_sub,
+                        row.profile.location,
+                        summary,
+                        access_lost=True,
+                        location_id=row.id,
                     )
         return None
 
     # --- reviews and replies ------------------------------------------------------
 
-    def _selected_key(self, account_id: str) -> tuple[str, str] | None:
-        """(google_sub, Google location) of the selected profile of that account."""
+    def _active_row(self, account_id: str, location_id: str | None) -> LocationRow | None:
+        """That active profile of that account (None: the preference), unless the
+        account has a scheduled leave."""
         account = next((a for a in self.accounts.values() if a.id == account_id), None)
         if account is None or self._pending(account_id) is not None:
             return None
-        for row in self.locations:
-            if (
-                row.id == account.selected_location_id
-                and row.account_id == account_id
-                and not row.removed
-            ):
-                return account.google_sub, row.profile.location
-        return None
+        chosen = location_id if location_id is not None else account.selected_location_id
+        row = self._own(account_id, chosen)
+        return row if row is not None and row.active else None
 
-    def _review_row(self, account_id: str, review_id: str) -> ReviewRow | None:
-        key = self._selected_key(account_id)
+    def _selected_key(
+        self, account_id: str, location_id: str | None = None
+    ) -> tuple[str, str] | None:
+        """(google_sub, Google location) of that active profile of that account."""
+        row = self._active_row(account_id, location_id)
+        return (self._account(account_id).google_sub, row.profile.location) if row else None
+
+    def _review_row(self, account_id: str, review_id: str) -> tuple[ReviewRow, str] | None:
+        """A review of any active profile of that account, and the id of its profile."""
         row = self.tables.reviews.get(review_id)
-        if key is None or row is None or row.removed_at is not None:
+        if row is None or row.removed_at is not None or self._pending(account_id) is not None:
             return None
-        return row if (row.google_sub, row.location) == key else None
+        account = next((a for a in self.accounts.values() if a.id == account_id), None)
+        if account is None or row.google_sub != account.google_sub:
+            return None
+        for location in self.locations:
+            if (
+                location.account_id == account_id
+                and location.active
+                and location.profile.location == row.location
+            ):
+                return row, location.id
+        return None
 
     @staticmethod
     def _stored_review(row: ReviewRow, draft: ReviewDraft | None = None) -> StoredReview:
@@ -330,10 +538,15 @@ class MemoryStore:
         )
 
     async def list_reviews(
-        self, account_id: str, *, unanswered_only: bool, limit: int
+        self,
+        account_id: str,
+        *,
+        unanswered_only: bool,
+        limit: int,
+        location_id: str | None = None,
     ) -> ReviewPage:
         self._check()
-        key = self._selected_key(account_id)
+        key = self._selected_key(account_id, location_id)
         rows = self.tables.reviews_of(*key) if key is not None else []
         if unanswered_only:
             rows = [r for r in rows if r.reply_text is None]
@@ -342,8 +555,12 @@ class MemoryStore:
 
     async def get_review(self, account_id: str, review_id: str) -> StoredReview | None:
         self._check()
-        row = self._review_row(account_id, review_id)
-        return self._stored_review(row, self.drafts.get(row.id)) if row is not None else None
+        found = self._review_row(account_id, review_id)
+        if found is None:
+            return None
+        row, location_id = found
+        stored = self._stored_review(row, self.drafts.get(row.id))
+        return replace(stored, location_id=location_id)
 
     async def save_draft(
         self, account_id: str, review_id: str, source_hash: str, text: str, now: datetime
@@ -356,10 +573,10 @@ class MemoryStore:
         self, account_id: str, review_id: str, text: str, now: datetime
     ) -> str | None:
         self._check()
-        row = self._review_row(account_id, review_id)
-        if row is None:
+        found = self._review_row(account_id, review_id)
+        if found is None:
             return None
-        action = self.tables.create_action(account_id, row, text, now)
+        action = self.tables.create_action(account_id, found[0], text, now)
         if action is None:
             raise ReplyInProgress
         if self.jobs is not None:
@@ -389,16 +606,12 @@ class MemoryStore:
 
     # --- key dates: the hours of one day (app/ports/key_dates.py) -----------------
 
-    def _selected_id(self, account_id: str) -> str | None:
-        account = next((a for a in self.accounts.values() if a.id == account_id), None)
-        return account.selected_location_id if account is not None else None
-
     async def create_special_hours_action(
         self, account_id: str, location_id: str, change: SpecialHoursChange, now: datetime
     ) -> str | None:
         self._check()
-        key = self._selected_key(account_id)
-        if key is None or self._selected_id(account_id) != location_id:
+        key = self._selected_key(account_id, location_id)
+        if key is None:
             return None
         action = self.tables.create_special_hours_action(
             account_id, key[0], key[1], change.day, change.to_text(), now
@@ -431,21 +644,34 @@ class MemoryStore:
             action=action,
         )
 
-    def _own_key_dates(self, account_id: str) -> list[Proposal]:
-        selected = self._selected_id(account_id)
+    def _own_key_dates(self, account_id: str, location_id: str | None = None) -> list[Proposal]:
+        """Of that active profile; with None, of any active profile."""
+        if self._pending(account_id) is not None:
+            return []
+        if location_id is None:
+            active = {r.id for r in self.locations if r.account_id == account_id and r.active}
+        else:
+            row = self._active_row(account_id, location_id)
+            active = {row.id} if row is not None else set()
         return [
             p
             for p in self.key_date_proposals.values()
             if p.account_id == account_id
             and p.type is ProposalType.KEY_DATE
-            and selected is not None
-            and p.payload.get("location_id") == selected
+            and p.payload.get("location_id") in active
         ]
 
-    async def list_key_dates(self, account_id: str, today: date) -> list[KeyDateView]:
+    async def list_key_dates(
+        self, account_id: str, today: date, location_id: str | None = None
+    ) -> list[KeyDateView]:
         self._check()
+        chosen = location_id or self._account(account_id).selected_location_id
+        if chosen is None:
+            return []
         found = [
-            p for p in self._own_key_dates(account_id) if p.payload["date"] >= today.isoformat()
+            p
+            for p in self._own_key_dates(account_id, chosen)
+            if p.payload["date"] >= today.isoformat()
         ]
         found.sort(key=lambda p: (p.payload["date"], p.id))
         return [await self._key_date_view(account_id, p) for p in found]
@@ -507,9 +733,11 @@ class MemoryStore:
             outcome_reason=OUTCOME_DISMISSED,
         )
 
-    async def sentiment(self, account_id: str, now: datetime) -> StoredSentiment | None:
+    async def sentiment(
+        self, account_id: str, now: datetime, location_id: str | None = None
+    ) -> StoredSentiment | None:
         self._check()
-        key = self._selected_key(account_id)
+        key = self._selected_key(account_id, location_id)
         found = self.tables.sentiment_of(*key, now) if key is not None else None
         return StoredSentiment(found[0], tuple(found[1])) if found is not None else None
 

@@ -9,7 +9,9 @@ What it does:
 
 1. Makes effective the scheduled leaves whose job was lost, and finishes revocations
    that were left half done (after a day, giving up on Google).
-2. Deletes, physically, everything past its term (docs/retencion.md has the table).
+2. Deletes, physically, everything past its term (docs/retencion.md has the table),
+   including what was obtained from Google of a profile deactivated for
+   `policy.inactive_days` and not activated again (multinegocio).
 3. Records how many rows went from each table: in `retention_run` and in the log.
    Counts only, never an identifier.
 """

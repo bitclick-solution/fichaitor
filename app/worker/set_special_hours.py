@@ -12,6 +12,8 @@ Rules:
   docs/seguridad/revision-2026-11-12.md): the account of the action must have its Google
   user and its profile, not retired, and the action must name its day. Otherwise it
   fails without calling Google.
+- No action on a profile that is no longer active (multinegocio): one the owner
+  deactivated after confirming fails as `location_inactive` without calling Google.
 - The change is read back from the action's text, strictly; a text that is not exactly
   the canonical form, or whose day is not the action's, fails as `internal`.
 - Too late is too late: once the day has passed (in the local time of the peninsula),
@@ -36,6 +38,7 @@ from app.domain.actions import (
     ACTION_ID,
     ERROR_DATE_PASSED,
     ERROR_INTERNAL,
+    ERROR_LOCATION_INACTIVE,
     ERROR_NO_REGULAR_HOURS,
     ERROR_RECONNECT,
     ERROR_REJECTED,
@@ -102,6 +105,12 @@ class SetSpecialHours:
             await self._fail(action, job, ERROR_INTERNAL)
             log.event("action_incoherent", logging.WARNING, job_id=job.id, action_id=action.id)
             raise PermanentJobError("el horario guardado no se puede leer")
+
+        if not action.active:
+            # The owner deactivated that profile after confirming: nothing is sent.
+            await self._fail(action, job, ERROR_LOCATION_INACTIVE)
+            log.event("action_location_inactive", job_id=job.id, action_id=action.id)
+            return
 
         if await self._store.is_suspended(action.google_sub):
             await self._fail(action, job, ERROR_SUSPENDED)

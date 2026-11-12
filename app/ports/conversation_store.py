@@ -7,7 +7,13 @@ from dataclasses import dataclass
 from datetime import date, datetime
 from typing import Protocol
 
-from app.domain.conversation import AccountInfo, ChannelIdentity, Conversation, LinkOutcome
+from app.domain.conversation import (
+    AccountInfo,
+    ChannelIdentity,
+    Conversation,
+    Focus,
+    LinkOutcome,
+)
 from app.domain.link_codes import LinkCode, SenderState
 from app.domain.proposals import Proposal
 
@@ -31,6 +37,22 @@ class MessageRecord:
     channel_message_id: str = ""
     key: str = ""
     proposal_id: str | None = None
+
+
+@dataclass(frozen=True)
+class Lane:
+    """The lane of one profile in the thread of its account: at most one active
+    proposal per profile (docs/multinegocio.md, 6.1). The thread (`Conversation`) is
+    still the lock of the account and keeps `unknown_streak`."""
+
+    account_id: str
+    location_id: str
+    active_proposal_id: str | None = None
+
+
+class LocationInactive(Exception):
+    """A proposal for a profile that is not an active profile of its account (or, from
+    the old code, of an account with no selected profile). Nothing was stored."""
 
 
 class ConversationStore(Protocol):
@@ -62,6 +84,20 @@ class ConversationStore(Protocol):
         ...
 
     async def touch_inbound(self, identity_id: str, now: datetime) -> None: ...
+
+    async def identities_for(self, account_id: str, location_id: str) -> Sequence[ChannelIdentity]:
+        """The active addresses of an account that see that profile (`sees`: without a
+        filter, or with the profile in it), the oldest link first. None if the profile
+        is not of that account."""
+        ...
+
+    async def set_focus(self, identity_id: str, proposal_id: str, now: datetime) -> None:
+        """That address pressed a button of that proposal (docs/multinegocio.md, 6.3)."""
+        ...
+
+    async def get_focus(self, identity_id: str) -> Focus | None:
+        """The last proposal on which that address pressed a button, if any."""
+        ...
 
     # --- link codes -------------------------------------------------------------
     async def save_link_code(self, code: LinkCode) -> None:
@@ -107,6 +143,12 @@ class ConversationStore(Protocol):
     # --- accounts ---------------------------------------------------------------
     async def get_account_info(self, account_id: str) -> AccountInfo: ...
 
+    async def location_label(self, account_id: str, location_id: str) -> str:
+        """The name of that profile of that account for the header of a message
+        (`channel_messages.business_label`): its title, with the town if another active
+        profile of the account has the same title. "tu negocio" if it is not found."""
+        ...
+
     # --- conversations ----------------------------------------------------------
     async def get_conversation(self, account_id: str) -> Conversation:
         """The thread of the account; created the first time."""
@@ -123,6 +165,22 @@ class ConversationStore(Protocol):
         """Accounts with any proposal that is not finished."""
         ...
 
+    # --- lanes (multinegocio) -----------------------------------------------------
+    async def get_lane(self, account_id: str, location_id: str) -> Lane:
+        """The lane of that profile; an empty one if it has none yet. Reading it does
+        not create it."""
+        ...
+
+    async def save_lane(self, lane: Lane) -> None:
+        """Create or update the lane. Its proposal must be of that account and profile."""
+        ...
+
+    async def lanes_with_open_work(self) -> Sequence[tuple[str, str]]:
+        """(account, profile) with any proposal that is not finished, of accounts
+        without a scheduled leave. Inactive profiles too: their proposals are cancelled
+        there (`location_inactive`)."""
+        ...
+
     # --- messages ---------------------------------------------------------------
     async def record_inbound(self, channel: str, event_id: str, now: datetime) -> bool:
         """False if that event of that channel was already seen: it is not handled twice."""
@@ -132,14 +190,26 @@ class ConversationStore(Protocol):
 
     # --- proposals --------------------------------------------------------------
     async def add_proposal(self, proposal: Proposal) -> bool:
-        """False if the account already has a proposal for that `source_ref` and type."""
+        """False if the account already has a proposal for that `source_ref` and type.
+        Raises LocationInactive if its profile is not an active profile of its account."""
         ...
 
     async def get_proposal(self, proposal_id: str) -> Proposal | None: ...
 
     async def save_proposal(self, proposal: Proposal) -> None: ...
 
-    async def list_unfinished_proposals(self, account_id: str) -> Sequence[Proposal]: ...
+    async def list_unfinished_proposals(
+        self, account_id: str, location_id: str | None = None
+    ) -> Sequence[Proposal]:
+        """Those of the account; with `location_id`, only those of that profile."""
+        ...
+
+    async def proposal_by_message_ref(
+        self, account_id: str, identity_id: str, message_ref: str
+    ) -> Proposal | None:
+        """The unfinished proposal of that account whose last message with buttons to
+        that address is `message_ref` (a reply quoting it, docs/multinegocio.md, 6.3)."""
+        ...
 
     async def get_proposal_by_source(
         self, account_id: str, proposal_type: str, source_ref: str
@@ -149,8 +219,11 @@ class ConversationStore(Protocol):
         """The proposal whose confirmation created that action, if any."""
         ...
 
-    async def count_capped_sent_since(self, account_id: str, since: datetime) -> int:
-        """Proposals that count towards the weekly cap, first sent after `since`."""
+    async def count_capped_sent_since(
+        self, account_id: str, since: datetime, location_id: str | None = None
+    ) -> int:
+        """Proposals that count towards the weekly cap, first sent after `since`. With
+        `location_id`, only those of that profile: the cap is per profile."""
         ...
 
 
@@ -163,7 +236,13 @@ class ReviewTarget:
     created_at: datetime | None
     unanswered: bool
     live: bool  # still returned by Google
-    accounts: tuple[str, ...]  # selected profile with it, linked before it was written
+    # Until step 6b: accounts whose selected profile, active, has it, linked before it
+    # was written. The database gives their proposal that profile.
+    accounts: tuple[str, ...]
+    # Multinegocio: (account, profile) of every ACTIVE profile with it, of an account
+    # without a scheduled leave, whose last sync is "ok" and with an address that sees
+    # that profile linked before the review was written.
+    targets: tuple[tuple[str, str], ...] = ()
 
 
 class ReviewTargets(Protocol):
@@ -172,14 +251,15 @@ class ReviewTargets(Protocol):
 
 class LinkedProfiles(Protocol):
     async def linked_profiles(self) -> Sequence[tuple[str, str]]:
-        """(google_sub, Google location) of the selected profiles of the accounts with a
-        linked address: what the planner keeps in sync."""
+        """(google_sub, Google location) of the active profiles of the accounts without
+        a leave that have a linked address that sees them: what the planner keeps in
+        sync."""
         ...
 
 
 @dataclass(frozen=True)
 class KeyDateProfile:
-    """A selected profile Fichaitor asks about key dates for, with what the last sync
+    """An active profile Fichaitor asks about key dates for, with what the last sync
     stored of it."""
 
     account_id: str
@@ -191,7 +271,7 @@ class KeyDateProfile:
 
 class KeyDateProfiles(Protocol):
     async def key_date_profiles(self) -> Sequence[KeyDateProfile]:
-        """Every selected profile of an account that is not deleted nor disconnected,
-        without a scheduled leave, not retired, whose last sync did not lose the access
-        to Google and stored its facts. Linked chat or not: the panel shows them too."""
+        """Every active profile of an account that is not deleted nor disconnected,
+        without a scheduled leave, whose last sync did not lose the access to Google and
+        stored its facts. Linked chat or not: the panel shows them too."""
         ...

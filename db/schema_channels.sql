@@ -588,6 +588,83 @@ WHERE p.location_id IS NULL AND p.type <> 'key_date' AND a.id = p.account_id
   AND p.state IN ('programada', 'enviada', 'recordada', 'recopilando', 'por_confirmar',
                   'ejecutando');
 
+-- Paso 6a (docs/multinegocio.md, 3.6): toda propuesta nueva es de una ficha activa de
+-- su cuenta. Fuera del propietario (que aplica los esquemas y prepara las pruebas):
+-- - Sin location_id, el disparador la pone como lo haría el código antiguo, que todavía
+--   no la pasa (hasta el paso 6b): una fecha clave, la de su carga; lo demás, la ficha
+--   elegida de la cuenta. Se retira en el paso 9.
+-- - Si sigue sin ficha: check_violation 'propuesta_sin_ficha'.
+-- - Si la ficha no es de la cuenta o no está activa: check_violation 'ficha_inactiva'.
+--   La clave ajena compuesta ya impide la ficha de otra cuenta; aquí se mira además que
+--   esté activa, con el mismo mensaje en los dos casos.
+-- Con los privilegios de quien escribe (no SECURITY DEFINER), para que fichaitor_is_owner
+-- vea al propietario de verdad. La conversación lee account.selected_location_id y
+-- location.active_since.
+CREATE OR REPLACE FUNCTION proposal_location_guard() RETURNS trigger
+LANGUAGE plpgsql SET search_path = pg_catalog, public AS $$
+BEGIN
+    IF fichaitor_is_owner(TG_RELID) THEN
+        RETURN NEW;
+    END IF;
+    IF NEW.location_id IS NULL THEN
+        IF NEW.type = 'key_date' THEN
+            NEW.location_id := NEW.payload->>'location_id';
+        ELSE
+            NEW.location_id := (SELECT a.selected_location_id FROM account a
+                                WHERE a.id = NEW.account_id);
+        END IF;
+    END IF;
+    IF NEW.location_id IS NULL THEN
+        RAISE EXCEPTION 'propuesta_sin_ficha' USING ERRCODE = 'check_violation';
+    END IF;
+    IF NOT EXISTS (SELECT 1 FROM location l
+                   WHERE l.account_id = NEW.account_id AND l.id = NEW.location_id
+                     AND l.active_since IS NOT NULL) THEN
+        RAISE EXCEPTION 'ficha_inactiva' USING ERRCODE = 'check_violation';
+    END IF;
+    RETURN NEW;
+END
+$$;
+
+DROP TRIGGER IF EXISTS proposal_location_guard ON proposal;
+CREATE TRIGGER proposal_location_guard BEFORE INSERT ON proposal
+    FOR EACH ROW EXECUTE FUNCTION proposal_location_guard();
+
+-- Relleno 3.8.4 de los carriles. NO se ejecuta al aplicar este esquema: lo llama el
+-- despliegue del paso 6b, con el proceso de la conversación detenido y el código nuevo
+-- ya en su sitio (consulta la precaución de la sección 3.8):
+--   SELECT fichaitor_fill_conversation_lanes();
+-- Mientras el código antiguo lleve el hilo, conversation.active_proposal_id es lo que
+-- vale: moverlo antes al carril cambiaría su comportamiento.
+-- Copia la propuesta activa de cada hilo al carril de su ficha, solo si sigue abierta y
+-- tiene ficha, sin pisar un carril que ya tenga una; después vacía la del hilo. Devuelve
+-- cuántos carriles ha escrito. Se puede repetir: la segunda vez no hay nada que copiar.
+-- Solo el propietario la ejecuta.
+CREATE OR REPLACE FUNCTION fichaitor_fill_conversation_lanes() RETURNS integer
+LANGUAGE plpgsql SET search_path = pg_catalog, public AS $$
+DECLARE
+    written integer;
+BEGIN
+    WITH moved AS (
+        INSERT INTO conversation_lane AS cl (account_id, location_id, active_proposal_id)
+        SELECT p.account_id, p.location_id, p.id
+        FROM conversation c
+        JOIN proposal p ON p.id = c.active_proposal_id AND p.account_id = c.account_id
+        WHERE p.location_id IS NOT NULL
+          AND p.state IN ('enviada', 'recordada', 'recopilando', 'por_confirmar')
+        ON CONFLICT (account_id, location_id) DO UPDATE
+            SET active_proposal_id = EXCLUDED.active_proposal_id, updated_at = now()
+            WHERE cl.active_proposal_id IS NULL
+        RETURNING 1
+    )
+    SELECT count(*) INTO written FROM moved;
+    UPDATE conversation SET active_proposal_id = NULL, updated_at = now()
+    WHERE active_proposal_id IS NOT NULL;
+    RETURN written;
+END
+$$;
+REVOKE ALL ON FUNCTION fichaitor_fill_conversation_lanes() FROM PUBLIC;
+
 -- ---------------------------------------------------------------------------
 -- Solo desarrollo local y pruebas: está en db/dev-init.sql.
 -- En producción el usuario fichaitor_conversation_prod lo crea deploy/init-roles.sh.

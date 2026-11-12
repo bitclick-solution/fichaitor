@@ -394,12 +394,20 @@ def test_two_accounts_with_the_same_google_profile_never_touch_each_others_revie
     assert seen["ana_follows"].state == "pending" and seen["luis_follows"] is None
 
 
-def test_a_review_of_a_profile_that_is_not_selected_or_was_removed_is_out_of_reach(kind):
+def test_a_review_of_a_profile_that_is_not_active_or_was_removed_is_out_of_reach(kind):
+    # docs/multinegocio.md, 5.4: the reviews of any active profile of the account are
+    # within reach; those of an inactive one are not.
     async def scenario(s: Scene):
         ana = await s.account(ANA, locations=(SHARED, OTHER))
         await s.sync(ANA)
         shared_review = await s.review_id(ANA, "pytest-low")
         await s.select(ana, OTHER)
+        rows = await owner(
+            "SELECT id FROM location WHERE account_id = $1::uuid AND gbp_location = $2",
+            ana,
+            SHARED.location,
+        )
+        assert await s.store.deactivate(ana, rows[0]["id"])
         not_selected = (
             await s.store.get_review(ana, shared_review),
             await s.store.create_reply_action(ana, shared_review, TEXT, NOW),

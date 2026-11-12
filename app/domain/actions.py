@@ -24,6 +24,9 @@ ERROR_REVIEW_GONE = "review_gone"  # the review no longer exists (404)
 ERROR_UNAVAILABLE = "unavailable"  # Google kept failing (5xx, 429, network)
 ERROR_INTERNAL = "internal"  # our side: the profile left the connection, bad token
 ERROR_SUSPENDED = "suspended"  # the account has a scheduled leave: nothing is sent
+# Its profile stopped being active after it was confirmed (multinegocio): nothing is sent.
+# The same code as the outcome of the proposals cancelled then (OUTCOME_LOCATION_INACTIVE).
+ERROR_LOCATION_INACTIVE = "location_inactive"
 # Special hours only.
 ERROR_DATE_PASSED = "date_passed"  # its day had passed before it could be applied
 ERROR_NO_REGULAR_HOURS = "no_regular_hours"  # "horario normal" without regular hours
@@ -59,6 +62,7 @@ _FAILED_MESSAGES = {
     ERROR_REJECTED: "Google no ha aceptado la respuesta. Revisa el texto y vuelve a enviarla.",
     ERROR_REVIEW_GONE: "Esa reseña ya no está en Google. No hay nada que responder.",
     ERROR_SUSPENDED: "No se ha enviado: tienes una baja programada.",
+    ERROR_LOCATION_INACTIVE: "No se ha enviado: esa ficha ya no está activa.",
     ERROR_UNAVAILABLE: (
         "No hemos podido enviar tu respuesta a Google. Prueba otra vez en unos minutos."
     ),
@@ -74,6 +78,7 @@ _HOURS_FAILED_MESSAGES = {
     ERROR_RECONNECT: MSG_RECONNECT,
     ERROR_REJECTED: "Google no ha aceptado ese horario. Tu ficha sigue como estaba.",
     ERROR_SUSPENDED: "No se ha enviado: tienes una baja programada.",
+    ERROR_LOCATION_INACTIVE: "No se ha enviado: esa ficha ya no está activa.",
     ERROR_DATE_PASSED: (
         "Ese día ya ha pasado y no se ha podido aplicar a tiempo. No se ha cambiado nada."
     ),

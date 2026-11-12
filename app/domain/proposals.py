@@ -203,6 +203,11 @@ class Proposal:
     confirmed_summary: str | None = None
     action_id: str | None = None
     outcome_reason: str | None = None
+    # Multinegocio: the profile ("loc_...") it is about, and so its lane. None only in
+    # proposals made by the code before step 6b: the database then fills it in (a key
+    # date from its payload, anything else with the selected profile) and refuses it
+    # if that profile is not active (docs/multinegocio.md, 3.6).
+    location_id: str | None = None
 
     @property
     def is_open(self) -> bool:

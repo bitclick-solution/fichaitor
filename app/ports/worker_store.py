@@ -57,6 +57,10 @@ class ClaimedAction:
     type: str = REPLY_REVIEW
     # set_special_hours: the day it changes (also inside `text`, which must agree).
     special_date: date | None = None
+    # Its profile is in use in its account (multinegocio): active or, until step 9 of
+    # docs/multinegocio.md, the one the panel has selected. Checked when the job takes the
+    # action: one deactivated after it was confirmed fails as `location_inactive`.
+    active: bool = True
 
 
 @dataclass(frozen=True)
@@ -138,6 +142,10 @@ class WorkerStore(Protocol):
         profile (not retired, the account not deleted) and, for a reply, the review
         exists with the action's Google user and profile; for special hours, the action
         names its day. The executor fails such an action.
+
+        `active` is False when that profile is no longer in use in the account: neither
+        active nor, until step 9 of docs/multinegocio.md, the selected one. The executor
+        fails such an action as `location_inactive`, without calling Google.
         """
         ...
 
@@ -213,7 +221,12 @@ class WorkerStore(Protocol):
 
     async def run_retention(self, now: datetime, policy: RetentionPolicy) -> dict[str, int]:
         """Delete everything past its term, and nothing else, and record how many rows
-        went from each table. Safe to repeat and to run from several workers."""
+        went from each table. Safe to repeat and to run from several workers.
+
+        Multinegocio: what was obtained from Google of a profile deactivated for
+        `policy.inactive_days` (and not reactivated) goes too, but not the profile row;
+        the activation log and the plan entitlements go `policy.audit_months` after the
+        leave of their account; and no proposal a lane still names is deleted."""
         ...
 
     async def scrub_job(self, job_id: str) -> None:

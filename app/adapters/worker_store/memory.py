@@ -46,6 +46,9 @@ class MemoryWorkerStore:
         # (account, location) whose action must not pass the M1 check: the accounts are
         # not in these tables, so a test says which ones the real join would refuse.
         self.not_owned: set[tuple[str, str]] = set()
+        # (account, location) no longer in use in its account (multinegocio): a test says
+        # which profiles the real store would find deactivated.
+        self.inactive: set[tuple[str, str]] = set()
 
     # --- sentiment -------------------------------------------------------------
 
@@ -170,6 +173,7 @@ class MemoryWorkerStore:
             coherent=target and owned,
             type=action.type,
             special_date=action.special_date,
+            active=(action.account_id, action.location) not in self.inactive,
         )
 
     async def finish_action(

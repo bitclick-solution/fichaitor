@@ -6,16 +6,19 @@ import itertools
 from collections import defaultdict
 from collections.abc import AsyncIterator, Sequence
 from contextlib import asynccontextmanager
-from dataclasses import replace
+from dataclasses import dataclass, replace
 from datetime import datetime
 
+from app.domain.channel_messages import business_label
 from app.domain.conversation import (
     AccountInfo,
     ChannelIdentity,
     Conversation,
+    Focus,
     LinkOutcome,
     normalize_address,
     plan_link,
+    sees,
 )
 from app.domain.link_codes import (
     CodeCheck,
@@ -28,8 +31,19 @@ from app.domain.link_codes import (
     register_attempt,
     register_success,
 )
-from app.domain.proposals import Proposal, counts_towards_weekly_cap
-from app.ports.conversation_store import LinkResult, MessageRecord
+from app.domain.proposals import Proposal, ProposalType, counts_towards_weekly_cap
+from app.ports.conversation_store import Lane, LinkResult, LocationInactive, MessageRecord
+
+
+@dataclass(frozen=True)
+class MemoryLocation:
+    """A profile of an account, as `location` keeps it (only what the conversation
+    reads). `address` stands for `facts.address` of its last sync."""
+
+    account_id: str
+    title: str = ""
+    address: str = ""
+    active: bool = True
 
 
 class MemoryConversationStore:
@@ -47,6 +61,13 @@ class MemoryConversationStore:
         self._ids = itertools.count(1)
         # Accounts with a leave scheduled (in PostgreSQL, a row of `offboarding`).
         self.leaves: set[str] = set()
+        # Multinegocio: the profiles by id ("loc_..."), the lanes and the focus of each
+        # address. A proposal for a profile listed here must be of an active profile of
+        # its account, as in PostgreSQL; one for a profile not listed is let in (tests
+        # that do not model profiles).
+        self.locations: dict[str, MemoryLocation] = {}
+        self.lanes: dict[tuple[str, str], Lane] = {}
+        self.focus: dict[str, Focus] = {}
 
     async def on_leave(self, account_id: str) -> bool:
         return account_id in self.leaves
@@ -96,6 +117,23 @@ class MemoryConversationStore:
         identity = self.identities.get(identity_id)
         if identity is not None:
             self.identities[identity_id] = replace(identity, last_inbound_at=now)
+
+    async def identities_for(self, account_id: str, location_id: str) -> Sequence[ChannelIdentity]:
+        location = self.locations.get(location_id)
+        if location is not None and location.account_id != account_id:
+            return []  # the profile of another account: nobody of this one sees it
+        return [i for i in await self.list_identities(account_id) if sees(i, location_id)]
+
+    async def set_focus(self, identity_id: str, proposal_id: str, now: datetime) -> None:
+        identity = self.identities.get(identity_id)
+        if identity is not None and identity.active:
+            self.focus[identity_id] = Focus(proposal_id, now)
+
+    async def get_focus(self, identity_id: str) -> Focus | None:
+        identity = self.identities.get(identity_id)
+        if identity is None or not identity.active:
+            return None
+        return self.focus.get(identity_id)
 
     # --- link codes -------------------------------------------------------------
     async def save_link_code(self, code: LinkCode) -> None:
@@ -155,6 +193,25 @@ class MemoryConversationStore:
     async def get_account_info(self, account_id: str) -> AccountInfo:
         return self.accounts.get(account_id, AccountInfo())
 
+    async def location_label(self, account_id: str, location_id: str) -> str:
+        location = self.locations.get(location_id)
+        if location is None or location.account_id != account_id:
+            return business_label("")
+        title = location.title.strip().lower()
+        twin = any(
+            other_id != location_id
+            and other.account_id == account_id
+            and other.active
+            and other.title.strip().lower() == title
+            for other_id, other in self.locations.items()
+        )
+        return business_label(
+            location.title,
+            same_title_elsewhere=twin,
+            address=location.address if twin else "",
+            location_id=location_id,
+        )
+
     # --- conversations ----------------------------------------------------------
     async def get_conversation(self, account_id: str) -> Conversation:
         if account_id not in self.conversations:
@@ -180,6 +237,31 @@ class MemoryConversationStore:
             }
         )
 
+    # --- lanes ------------------------------------------------------------------
+    async def get_lane(self, account_id: str, location_id: str) -> Lane:
+        return self.lanes.get((account_id, location_id), Lane(account_id, location_id))
+
+    async def save_lane(self, lane: Lane) -> None:
+        if lane.active_proposal_id is not None:
+            proposal = self.proposals.get(lane.active_proposal_id)
+            if proposal is None or (proposal.account_id, proposal.location_id) != (
+                lane.account_id,
+                lane.location_id,
+            ):
+                raise ValueError("la propuesta del carril es de otra ficha")
+        self.lanes[(lane.account_id, lane.location_id)] = lane
+
+    async def lanes_with_open_work(self) -> Sequence[tuple[str, str]]:
+        return sorted(
+            {
+                (p.account_id, p.location_id)
+                for p in self.proposals.values()
+                if not p.is_terminal
+                and p.location_id is not None
+                and p.account_id not in self.leaves
+            }
+        )
+
     # --- messages ---------------------------------------------------------------
     async def record_inbound(self, channel: str, event_id: str, now: datetime) -> bool:
         if (channel, event_id) in self._seen:
@@ -192,6 +274,14 @@ class MemoryConversationStore:
 
     # --- proposals --------------------------------------------------------------
     async def add_proposal(self, proposal: Proposal) -> bool:
+        if proposal.location_id is None and proposal.type is ProposalType.KEY_DATE:
+            from_payload = proposal.payload.get("location_id")
+            if isinstance(from_payload, str) and from_payload:
+                proposal = replace(proposal, location_id=from_payload)
+        if proposal.location_id is not None and proposal.location_id in self.locations:
+            location = self.locations[proposal.location_id]
+            if location.account_id != proposal.account_id or not location.active:
+                raise LocationInactive
         if await self.get_proposal_by_source(
             proposal.account_id, proposal.type, proposal.source_ref
         ):
@@ -205,10 +295,30 @@ class MemoryConversationStore:
     async def save_proposal(self, proposal: Proposal) -> None:
         self.proposals[proposal.id] = proposal
 
-    async def list_unfinished_proposals(self, account_id: str) -> Sequence[Proposal]:
+    async def list_unfinished_proposals(
+        self, account_id: str, location_id: str | None = None
+    ) -> Sequence[Proposal]:
         return [
-            p for p in self.proposals.values() if p.account_id == account_id and not p.is_terminal
+            p
+            for p in self.proposals.values()
+            if p.account_id == account_id
+            and not p.is_terminal
+            and (location_id is None or p.location_id == location_id)
         ]
+
+    async def proposal_by_message_ref(
+        self, account_id: str, identity_id: str, message_ref: str
+    ) -> Proposal | None:
+        if not message_ref:
+            return None
+        found = [
+            p
+            for p in self.proposals.values()
+            if p.account_id == account_id
+            and not p.is_terminal
+            and p.message_refs.get(identity_id) == message_ref
+        ]
+        return max(found, key=lambda p: p.created_at, default=None)
 
     async def get_proposal_by_source(
         self, account_id: str, proposal_type: str, source_ref: str
@@ -221,11 +331,14 @@ class MemoryConversationStore:
     async def get_proposal_by_action(self, action_id: str) -> Proposal | None:
         return next((p for p in self.proposals.values() if p.action_id == action_id), None)
 
-    async def count_capped_sent_since(self, account_id: str, since: datetime) -> int:
+    async def count_capped_sent_since(
+        self, account_id: str, since: datetime, location_id: str | None = None
+    ) -> int:
         return sum(
             1
             for p in self.proposals.values()
             if p.account_id == account_id
+            and (location_id is None or p.location_id == location_id)
             and counts_towards_weekly_cap(p.type)
             and p.sent_at is not None
             and p.sent_at >= since

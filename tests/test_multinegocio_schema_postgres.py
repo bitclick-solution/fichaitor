@@ -647,11 +647,14 @@ PROPOSAL = (
 
 def test_a_proposal_cannot_name_a_profile_of_another_account():
     mine, my_loc, _, their_loc = run(_two_accounts())
+    run(owner(ACTIVATE, my_loc, "pro"))
+    run(owner(ACTIVATE, their_loc, "pro"))
     pid = f"prop_{uuid.uuid4().hex[:16]}"
     assert refused(CONVERSATION_URL, PROPOSAL, pid, mine, "pytest:x", their_loc)
     assert run(attempt(CONVERSATION_URL, PROPOSAL, pid, mine, "pytest:x", my_loc)) == "INSERT 0 1"
-    # Old code, without a profile: still let in until step 6a.
-    assert run(attempt(CONVERSATION_URL, PROPOSAL, pid, mine, "pytest:x", None)) == "INSERT 0 1"
+    # Without a profile, and no selected one to fill it in with: refused since step 6a
+    # (tests/test_conversation_lanes_postgres.py).
+    assert refused(CONVERSATION_URL, PROPOSAL, pid, mine, "pytest:x", None)
 
 
 def test_a_key_date_is_of_the_profile_its_payload_names():
@@ -661,6 +664,8 @@ def test_a_key_date_is_of_the_profile_its_payload_names():
         "INSERT INTO proposal (id, account_id, type, source_ref, location_id, payload)"
         " VALUES ($1, $2::uuid, 'key_date', 'k', $3, $4::jsonb)"
     )
+    run(owner(ACTIVATE, my_loc, "pro"))
+    run(owner(ACTIVATE, other, "pro"))
     pid = f"prop_{uuid.uuid4().hex[:16]}"
     payload = json.dumps({"location_id": my_loc})
     assert refused(CONVERSATION_URL, sql, pid, mine, other, payload)

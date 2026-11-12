@@ -356,6 +356,9 @@ Carga: `{}`. La pasada diaria que borra lo que ha superado su plazo. Qué borra 
 - **Cada pasada deja constancia**: una fila en `retention_run` y el evento `retention_done`, con cuántas filas borró de cada tabla. Sin identificadores.
 - **Si no corre, avisa**: con 36 horas sin fila nueva en `retention_run`, el worker escribe `retention_overdue` (nivel `warning`).
 - **Jobs terminados**: borra los `done` y `failed` de más de `FICHAITOR_RETENTION_JOB_DAYS` días (14), salvo el que ejecutó una acción que se conserva (`job_finished` en los recuentos).
+- **Fichas desactivadas** (multinegocio): borra lo obtenido de Google de una ficha que lleva `FICHAITOR_RETENTION_INACTIVE_DAYS` días (30) desactivada, contados desde `location.deactivated_at`, con las mismas sentencias que las fichas retiradas. La fila de `location` se queda. Una ficha activada otra vez no tiene `deactivated_at` y no se toca. Hasta el paso 9 de [multinegocio.md](multinegocio.md#paso-9-retirada-de-la-compatibilidad) tampoco se toca la ficha elegida en el panel.
+- **Registro de activaciones y derechos de plan**: borra los de las cuentas con más de `FICHAITOR_RETENTION_AUDIT_MONTHS` meses (12) de baja efectiva, como el registro de respuestas. Los recuentos los nombran `location_activation_log` y `plan_entitlement`.
+- **Carriles**: no borra ninguna propuesta terminada que nombre un carril (`conversation_lane.active_proposal_id`), igual que las que nombra un hilo. La baja efectiva (`apply_offboarding`) borra los carriles de la cuenta antes que sus propuestas, porque la clave ajena del carril a su propuesta no lleva `ON DELETE`.
 
 Para añadir otro trabajo diario, añade un `DailyJob` a la lista `daily` de `Worker` (`app/worker/__main__.py`).
 

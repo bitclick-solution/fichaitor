@@ -627,3 +627,33 @@ WHERE a.id = l.account_id AND l.active_since IS NULL AND l.deactivated_at IS NUL
 --     END IF;
 -- END
 -- $$;
+
+-- Multinegocio: el registro de activaciones y los derechos de plan se borran a los 12 meses
+-- de la baja efectiva de la cuenta, igual que audit_log. El suelo vive en la base: el worker
+-- no puede borrar antes aunque pida otro corte. Las funciones SECURITY DEFINER del
+-- propietario (registro y derecho beta) no quedan afectadas.
+ALTER TABLE location_activation_log ENABLE ROW LEVEL SECURITY;
+ALTER TABLE plan_entitlement ENABLE ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS plan_entitlement_api_read ON plan_entitlement;
+CREATE POLICY plan_entitlement_api_read ON plan_entitlement FOR SELECT TO fichaitor_api
+    USING (true);
+DROP POLICY IF EXISTS location_activation_log_worker_expired ON location_activation_log;
+CREATE POLICY location_activation_log_worker_expired ON location_activation_log
+    FOR ALL TO fichaitor_worker
+    USING (EXISTS (
+        SELECT 1 FROM account a
+        WHERE a.id = location_activation_log.account_id
+          AND a.disconnected_at <= least(
+              now() - interval '12 months',
+              coalesce(nullif(current_setting('fichaitor.audit_cutoff', true), '')::timestamptz,
+                       now() - interval '12 months'))));
+DROP POLICY IF EXISTS plan_entitlement_worker_expired ON plan_entitlement;
+CREATE POLICY plan_entitlement_worker_expired ON plan_entitlement
+    FOR ALL TO fichaitor_worker
+    USING (EXISTS (
+        SELECT 1 FROM account a
+        WHERE a.id = plan_entitlement.account_id
+          AND a.disconnected_at <= least(
+              now() - interval '12 months',
+              coalesce(nullif(current_setting('fichaitor.audit_cutoff', true), '')::timestamptz,
+                       now() - interval '12 months'))));

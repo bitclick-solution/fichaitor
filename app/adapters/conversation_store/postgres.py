@@ -11,6 +11,10 @@ Same rules as `MemoryConversationStore`, plus what only a database gives:
   docs/seguridad/revision-2026-11-12.md): the attempt of a chat is counted before its
   code is looked at, and the wrong codes of every chat together are counted per window.
 - No row is deleted here: the role has no DELETE. Leaving and retention are the worker's.
+- Multinegocio (docs/multinegocio.md, step 6a): one lane per profile
+  (`conversation_lane`), the filter of each chat and its focus. A new proposal must be
+  of an active profile of its account: the database refuses it otherwise
+  (`proposal_location_guard`), and that refusal is `LocationInactive` here.
 """
 
 import json
@@ -22,11 +26,13 @@ from typing import Any
 
 import asyncpg
 
+from app.domain.channel_messages import business_label
 from app.domain.conversation import (
     DEFAULT_TIMEZONE,
     AccountInfo,
     ChannelIdentity,
     Conversation,
+    Focus,
     LinkOutcome,
     normalize_address,
     plan_link,
@@ -43,7 +49,9 @@ from app.domain.profile_summary import facts_from_json
 from app.domain.proposals import Proposal, ProposalState, ProposalType
 from app.ports.conversation_store import (
     KeyDateProfile,
+    Lane,
     LinkResult,
+    LocationInactive,
     MessageRecord,
     ReviewTarget,
 )
@@ -64,14 +72,19 @@ UNFINISHED = (
 _UNFINISHED = [state.value for state in UNFINISHED]
 # A leave confirmed and not yet restored nor effective (`o` is the leave).
 _SCHEDULED = "o.restored_at IS NULL AND o.effective_at IS NULL"
+# The messages of `proposal_location_guard` (db/schema_channels.sql).
+_LOCATION_REFUSALS = ("ficha_inactiva", "propuesta_sin_ficha")
 
-_IDENTITY = "id, account_id::text AS account_id, channel, address, verified_at, last_inbound_at"
+_IDENTITY = (
+    "id, account_id::text AS account_id, channel, address, verified_at, last_inbound_at,"
+    " location_filter"
+)
 _PROPOSAL = """
     id, account_id::text AS account_id, type, source_ref, state, priority,
     payload::text AS payload, slots::text AS slots, step, step_token,
     message_refs::text AS message_refs, created_at, scheduled_for, sent_at, remind_at,
     reminder_sent_at, expires_at, parked_at, confirmed_at, confirmed_event_id,
-    confirmed_summary, action_id, outcome_reason
+    confirmed_summary, action_id, outcome_reason, location_id
 """
 
 
@@ -83,6 +96,9 @@ def _identity(row: asyncpg.Record) -> ChannelIdentity:
         address=row["address"],
         verified_at=row["verified_at"],
         last_inbound_at=row["last_inbound_at"],
+        location_filter=tuple(row["location_filter"])
+        if row["location_filter"] is not None
+        else None,
     )
 
 
@@ -111,6 +127,7 @@ def _proposal(row: asyncpg.Record) -> Proposal:
         confirmed_summary=row["confirmed_summary"],
         action_id=row["action_id"],
         outcome_reason=row["outcome_reason"],
+        location_id=row.get("location_id"),
     )
 
 
@@ -300,6 +317,47 @@ class PostgresConversationStore:
                 now,
             )
 
+    async def identities_for(self, account_id: str, location_id: str) -> Sequence[ChannelIdentity]:
+        async with self._conn() as conn:
+            rows = await conn.fetch(
+                f"""
+                SELECT {_IDENTITY} FROM channel_identity
+                WHERE account_id = $1::uuid AND unlinked_at IS NULL
+                  AND (location_filter IS NULL OR $2 = ANY(location_filter))
+                  AND EXISTS (SELECT 1 FROM location l
+                              WHERE l.account_id = $1::uuid AND l.id = $2)
+                ORDER BY verified_at, id
+                """,  # noqa: S608
+                account_id,
+                location_id,
+            )
+        return [_identity(r) for r in rows]
+
+    async def set_focus(self, identity_id: str, proposal_id: str, now: datetime) -> None:
+        async with self._conn() as conn:
+            await conn.execute(
+                """
+                UPDATE channel_identity SET focus_proposal_id = $2, focus_at = $3
+                WHERE id = $1 AND unlinked_at IS NULL
+                """,
+                identity_id,
+                proposal_id,
+                now,
+            )
+
+    async def get_focus(self, identity_id: str) -> Focus | None:
+        async with self._conn() as conn:
+            row = await conn.fetchrow(
+                """
+                SELECT focus_proposal_id, focus_at FROM channel_identity
+                WHERE id = $1 AND unlinked_at IS NULL
+                """,
+                identity_id,
+            )
+        if row is None or row["focus_proposal_id"] is None or row["focus_at"] is None:
+            return None
+        return Focus(row["focus_proposal_id"], row["focus_at"])
+
     # --- link codes -------------------------------------------------------------------
 
     async def save_link_code(self, code: LinkCode) -> None:
@@ -467,6 +525,37 @@ class PostgresConversationStore:
             )
         return AccountInfo(business_name=title or "", timezone=DEFAULT_TIMEZONE)
 
+    async def location_label(self, account_id: str, location_id: str) -> str:
+        async with self._conn() as conn:
+            row = await conn.fetchrow(
+                """
+                SELECT l.title, p.facts::text AS facts,
+                       EXISTS (SELECT 1 FROM location o
+                               WHERE o.account_id = l.account_id AND o.id <> l.id
+                                 AND o.active_since IS NOT NULL
+                                 AND lower(btrim(o.title)) = lower(btrim(l.title))) AS twin
+                FROM location l
+                JOIN account a ON a.id = l.account_id
+                LEFT JOIN profile_summary p
+                  ON p.google_sub = a.google_sub AND p.location = l.gbp_location
+                WHERE l.account_id = $1::uuid AND l.id = $2
+                """,
+                account_id,
+                location_id,
+            )
+        if row is None:
+            return business_label("")
+        address = ""
+        if row["twin"] and row["facts"] is not None:
+            facts = facts_from_json(json.loads(row["facts"]))
+            address = facts.address if facts is not None else ""
+        return business_label(
+            row["title"],
+            same_title_elsewhere=row["twin"],
+            address=address,
+            location_id=location_id,
+        )
+
     # --- conversations ------------------------------------------------------------------
 
     async def get_conversation(self, account_id: str) -> Conversation:
@@ -516,6 +605,49 @@ class PostgresConversationStore:
                 _UNFINISHED,
             )
         return [r["account_id"] for r in rows]
+
+    # --- lanes ---------------------------------------------------------------------------
+
+    async def get_lane(self, account_id: str, location_id: str) -> Lane:
+        async with self._conn() as conn:
+            active = await conn.fetchval(
+                """
+                SELECT active_proposal_id FROM conversation_lane
+                WHERE account_id = $1::uuid AND location_id = $2
+                """,
+                account_id,
+                location_id,
+            )
+        return Lane(account_id, location_id, active)
+
+    async def save_lane(self, lane: Lane) -> None:
+        async with self._conn() as conn:
+            await conn.execute(
+                """
+                INSERT INTO conversation_lane (account_id, location_id, active_proposal_id)
+                VALUES ($1::uuid, $2, $3)
+                ON CONFLICT (account_id, location_id) DO UPDATE
+                    SET active_proposal_id = EXCLUDED.active_proposal_id, updated_at = now()
+                """,
+                lane.account_id,
+                lane.location_id,
+                lane.active_proposal_id,
+            )
+
+    async def lanes_with_open_work(self) -> Sequence[tuple[str, str]]:
+        async with self._conn() as conn:
+            rows = await conn.fetch(
+                f"""
+                SELECT DISTINCT p.account_id::text AS account_id, p.location_id
+                FROM proposal p
+                WHERE p.state = ANY($1::text[]) AND p.location_id IS NOT NULL
+                  AND NOT EXISTS (SELECT 1 FROM offboarding o
+                                  WHERE o.account_id = p.account_id AND {_SCHEDULED})
+                ORDER BY 1, 2
+                """,  # noqa: S608
+                _UNFINISHED,
+            )
+        return [(r["account_id"], r["location_id"]) for r in rows]
 
     async def on_leave(self, account_id: str) -> bool:
         async with self._conn() as conn:
@@ -568,15 +700,29 @@ class PostgresConversationStore:
     # --- proposals ----------------------------------------------------------------------
 
     async def add_proposal(self, proposal: Proposal) -> bool:
-        async with self._conn() as conn:
+        try:
+            return await self._insert_proposal(proposal)
+        except asyncpg.CheckViolationError as exc:
+            if str(exc) in _LOCATION_REFUSALS:
+                raise LocationInactive from None
+            raise
+        except asyncpg.ForeignKeyViolationError as exc:
+            if getattr(exc, "constraint_name", None) == "proposal_location_fk":
+                raise LocationInactive from None
+            raise
+
+    async def _insert_proposal(self, proposal: Proposal) -> bool:
+        # In a savepoint when the lock is held: a refused proposal does not spoil the
+        # transaction of the thread.
+        async with self._conn() as conn, conn.transaction():
             status = await conn.execute(
                 """
                 INSERT INTO proposal
                     (id, account_id, type, source_ref, state, priority, payload, slots, step,
                      step_token, message_refs, created_at, scheduled_for, sent_at, remind_at,
-                     reminder_sent_at, expires_at, parked_at)
+                     reminder_sent_at, expires_at, parked_at, location_id)
                 VALUES ($1, $2::uuid, $3, $4, $5, $6, $7::jsonb, $8::jsonb, $9, $10,
-                        $11::jsonb, $12, $13, $14, $15, $16, $17, $18)
+                        $11::jsonb, $12, $13, $14, $15, $16, $17, $18, $19)
                 ON CONFLICT (account_id, type, source_ref) DO NOTHING
                 """,
                 proposal.id,
@@ -597,6 +743,7 @@ class PostgresConversationStore:
                 proposal.reminder_sent_at,
                 proposal.expires_at,
                 proposal.parked_at,
+                proposal.location_id,
             )
         return status.endswith(" 1")
 
@@ -642,18 +789,43 @@ class PostgresConversationStore:
                 proposal.outcome_reason,
             )
 
-    async def list_unfinished_proposals(self, account_id: str) -> Sequence[Proposal]:
+    async def list_unfinished_proposals(
+        self, account_id: str, location_id: str | None = None
+    ) -> Sequence[Proposal]:
         async with self._conn() as conn:
             rows = await conn.fetch(
                 f"""
                 SELECT {_PROPOSAL} FROM proposal
                 WHERE account_id = $1::uuid AND state = ANY($2::text[])
+                  AND ($3::text IS NULL OR location_id = $3)
                 ORDER BY created_at, id
                 """,  # noqa: S608
                 account_id,
                 _UNFINISHED,
+                location_id,
             )
         return [_proposal(r) for r in rows]
+
+    async def proposal_by_message_ref(
+        self, account_id: str, identity_id: str, message_ref: str
+    ) -> Proposal | None:
+        if not message_ref:
+            return None
+        async with self._conn() as conn:
+            row = await conn.fetchrow(
+                f"""
+                SELECT {_PROPOSAL} FROM proposal
+                WHERE account_id = $1::uuid AND state = ANY($2::text[])
+                  AND message_refs->>$3 = $4
+                ORDER BY created_at DESC, id
+                LIMIT 1
+                """,  # noqa: S608
+                account_id,
+                _UNFINISHED,
+                identity_id,
+                message_ref,
+            )
+        return _proposal(row) if row else None
 
     async def get_proposal_by_source(
         self, account_id: str, proposal_type: str, source_ref: str
@@ -678,24 +850,31 @@ class PostgresConversationStore:
             )
         return _proposal(row) if row else None
 
-    async def count_capped_sent_since(self, account_id: str, since: datetime) -> int:
+    async def count_capped_sent_since(
+        self, account_id: str, since: datetime, location_id: str | None = None
+    ) -> int:
         async with self._conn() as conn:
             return await conn.fetchval(
                 """
                 SELECT count(*) FROM proposal
                 WHERE account_id = $1::uuid AND type = $2 AND sent_at >= $3
+                  AND ($4::text IS NULL OR location_id = $4)
                 """,
                 account_id,
                 ProposalType.KEY_DATE.value,
                 since,
+                location_id,
             )
 
     # --- outside the conversation: what its jobs read and write -------------------------
 
     async def review_targets(self, review_id: str) -> ReviewTarget | None:
-        """The review and the accounts it may be proposed to: those whose selected
-        profile has it (same Google user and profile), not deleted, without a scheduled
-        leave, with an address linked before the review was written."""
+        """The review and whom it may be proposed to (ReviewTarget). `accounts`, for the
+        code before step 6b: those whose selected profile, active, has it (same Google
+        user and profile), not deleted, without a scheduled leave, with an address linked
+        before the review was written. `targets`: every active profile with it, of such
+        an account, whose last sync is "ok" (docs/multinegocio.md, 6.5) and with an
+        address that sees that profile linked before the review was written."""
         async with self._conn() as conn:
             row = await conn.fetchrow(
                 """
@@ -705,7 +884,7 @@ class PostgresConversationStore:
                            SELECT a.id::text FROM account a
                            JOIN location l
                              ON l.id = a.selected_location_id AND l.account_id = a.id
-                            AND l.removed_at IS NULL
+                            AND l.removed_at IS NULL AND l.active_since IS NOT NULL
                            WHERE a.google_sub = r.google_sub AND l.gbp_location = r.location
                              AND a.deleted_at IS NULL
                              AND NOT EXISTS (SELECT 1 FROM offboarding o
@@ -721,8 +900,30 @@ class PostgresConversationStore:
                 """,
                 review_id,
             )
-        if row is None:
-            return None
+            if row is None:
+                return None
+            targets = await conn.fetch(
+                f"""
+                SELECT a.id::text AS account_id, l.id AS location_id
+                FROM review r
+                JOIN account a ON a.google_sub = r.google_sub
+                JOIN location l
+                  ON l.account_id = a.id AND l.gbp_location = r.location
+                 AND l.active_since IS NOT NULL AND l.removed_at IS NULL
+                JOIN profile_summary ps
+                  ON ps.google_sub = a.google_sub AND ps.location = l.gbp_location
+                 AND ps.status = 'ok'
+                WHERE r.id = $1 AND a.deleted_at IS NULL
+                  AND NOT EXISTS (SELECT 1 FROM offboarding o
+                                  WHERE o.account_id = a.id AND {_SCHEDULED})
+                  AND (SELECT min(ci.verified_at) FROM channel_identity ci
+                       WHERE ci.account_id = a.id AND ci.unlinked_at IS NULL
+                         AND (ci.location_filter IS NULL OR l.id = ANY(ci.location_filter)))
+                      <= r.created_at
+                ORDER BY 1, 2
+                """,  # noqa: S608
+                review_id,
+            )
         return ReviewTarget(
             stars=row["rating"],
             text=row["comment"],
@@ -730,12 +931,13 @@ class PostgresConversationStore:
             unanswered=row["unanswered"],
             live=row["live"],
             accounts=tuple(row["accounts"]),
+            targets=tuple((t["account_id"], t["location_id"]) for t in targets),
         )
 
     async def linked_profiles(self) -> list[tuple[str, str]]:
-        """(google_sub, Google location) of every selected profile of an account with a
-        linked address, not deleted and without a scheduled leave: what the planner
-        keeps in sync."""
+        """(google_sub, Google location) of every active profile of an account not
+        deleted and without a scheduled leave, with a linked address that sees it: what
+        the planner keeps in sync."""
         async with self._conn() as conn:
             rows = await conn.fetch(
                 """
@@ -743,8 +945,9 @@ class PostgresConversationStore:
                 FROM channel_identity ci
                 JOIN account a ON a.id = ci.account_id
                 JOIN location l
-                  ON l.id = a.selected_location_id AND l.account_id = a.id
+                  ON l.account_id = a.id AND l.active_since IS NOT NULL
                  AND l.removed_at IS NULL
+                 AND (ci.location_filter IS NULL OR l.id = ANY(ci.location_filter))
                 WHERE ci.unlinked_at IS NULL AND a.deleted_at IS NULL
                   AND NOT EXISTS (SELECT 1 FROM offboarding o
                                   WHERE o.google_sub = a.google_sub
@@ -762,7 +965,7 @@ class PostgresConversationStore:
                 SELECT a.id::text AS account_id, l.id AS location_id, p.facts::text AS facts
                 FROM account a
                 JOIN location l
-                  ON l.id = a.selected_location_id AND l.account_id = a.id
+                  ON l.account_id = a.id AND l.active_since IS NOT NULL
                  AND l.removed_at IS NULL
                 JOIN profile_summary p
                   ON p.google_sub = a.google_sub AND p.location = l.gbp_location
@@ -771,7 +974,7 @@ class PostgresConversationStore:
                   AND NOT EXISTS (SELECT 1 FROM offboarding o
                                   WHERE o.google_sub = a.google_sub
                                     AND o.restored_at IS NULL AND o.purged_at IS NULL)
-                ORDER BY a.id
+                ORDER BY a.id, l.id
                 """
             )
         found = []

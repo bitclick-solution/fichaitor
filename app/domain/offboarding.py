@@ -116,8 +116,13 @@ class RetentionPolicy:
 
     google_data_days: int = 30  # everything obtained from Google, after the leave
     removed_days: int = 30  # reviews and profiles Google stopped returning
+    # What was obtained from Google of a profile the owner deactivated (multinegocio),
+    # days after deactivated_at, unless it is activated again.
+    inactive_days: int = 30
     session_days: int = 30  # sessions, after they expired or were closed
-    audit_months: int = 12  # the record of published replies, after the leave
+    # The record of published replies, after the leave. Also the activation log and the
+    # plan entitlements of the account (multinegocio).
+    audit_months: int = 12
     waitlist_months: int = 12  # the waiting list, after signing up
     waitlist_launched_at: datetime | None = None  # entries older than the launch go too
     code_days: int = 30  # fingerprints of used or expired codes

@@ -37,9 +37,17 @@ from app.domain.calendar import Holiday
 from app.domain.profile_summary import STATUS_OK
 from app.domain.sentiment import STATUS_ERROR, SentimentPolicy
 from app.domain.session import hash_token
-from app.ports.store import Account, Store
+from app.ports.store import Account, ActivationRefused, LocationLimit, Store
 
 log = logging.getLogger("fichaitor.me")
+
+# docs/multinegocio.md, «Aclaraciones para la web». No charging yet (beta).
+MSG_NO_ROOM = "No te quedan fichas libres en tu plan. Escríbenos para activar más fichas."
+MSG_FREE_TAKEN = (
+    "Esta ficha ya está activa en el plan Gratis en otra cuenta. Actívala con un plan de "
+    "pago o pide a esa cuenta que la desactive."
+)
+MSG_NOT_ACTIVATED = "Ahora no se puede activar esa ficha."
 
 
 class LocationOut(BaseModel):
@@ -117,12 +125,21 @@ def build_router(
     async def select_location(
         body: SelectLocationRequest,
         account: Account = Depends(active_account),  # noqa: B008
-    ) -> MeResponse:
+    ) -> MeResponse | JSONResponse:
         # Same answer for a profile of another account and for one that does not exist.
-        if not await store.select_location(account.id, body.location_id):
+        # Until step 9 of docs/multinegocio.md (5.5), choosing an inactive profile
+        # activates it with the default plan; that may not fit.
+        try:
+            chosen = await store.select_location(account.id, body.location_id)
+        except LocationLimit:
+            raise HTTPException(402, MSG_NO_ROOM) from None
+        except ActivationRefused as exc:
+            detail = MSG_FREE_TAKEN if exc.code == "free_taken" else MSG_NOT_ACTIVATED
+            return JSONResponse({"detail": detail, "code": exc.code}, status_code=409)
+        if not chosen:
             raise HTTPException(404, "Esa ficha no está en tu cuenta.")
         # So that the panel finds its figures ready. Never fails the choice itself.
-        await sync.request_for_account(account.id)
+        await sync.request_for_location(account.id, body.location_id)
         return await me_of(replace(account, selected_location_id=body.location_id))
 
     @router.get(
@@ -170,7 +187,7 @@ def build_router(
                 return empty_response(STATUS_ERROR)
             # The analysis is chained to a sync: a profile synced before this existed,
             # or whose analysis failed, gets one asked for (once per window).
-            await sync.request_for_account(account.id)
+            await sync.request_for_location(account.id, view.location_id)
         return to_sentiment_response(stored, sentiment_policy)
 
     @router.post(

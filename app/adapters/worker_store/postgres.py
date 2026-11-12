@@ -90,6 +90,18 @@ _COHERENT_LEAVE = f"""
     AND o.delete_at >= o.confirmed_at + interval '{FLOOR_HOURS} hours'
 """
 
+# A profile in use in its account (multinegocio, docs/multinegocio.md): active or,
+# until step 9, the one the panel has selected. Until the API activates the profile it
+# selects (step 4, section 5.5), the old panel still works on a selected profile that is
+# not active; the trigger of location moves the preference away from a profile the
+# owner deactivates, so this never keeps a deactivated profile in use. In step 9 it
+# becomes `l.active_since IS NOT NULL`. `l` is the location and `c` its account.
+# Never NULL (without a selection too), so that `NOT {_IN_USE}` means what it says.
+_IN_USE = (
+    "(l.removed_at IS NULL"
+    " AND (l.active_since IS NOT NULL OR c.selected_location_id IS NOT DISTINCT FROM l.id))"
+)
+
 
 class PostgresWorkerStore:
     def __init__(self, pool: asyncpg.Pool) -> None:
@@ -354,8 +366,10 @@ class PostgresWorkerStore:
         # the same statement checks that the account, its Google identity, its profile
         # and the review agree. There is no foreign key for this on purpose: the action
         # outlives its review (12 months against 30 days).
+        # Multinegocio (docs/multinegocio.md, section 4): and that its profile is still in
+        # use in the account. One deactivated after the owner confirmed is not sent.
         row = await self._pool.fetchrow(
-            """
+            f"""
             UPDATE action a
             SET state = 'running', job_id = $2, attempts = a.attempts + 1, started_at = $3
             WHERE a.id = $1
@@ -368,8 +382,11 @@ class PostgresWorkerStore:
                 EXISTS (SELECT 1 FROM account c JOIN location l ON l.account_id = c.id
                         WHERE c.id = a.account_id AND c.google_sub = a.google_sub
                           AND c.deleted_at IS NULL AND l.gbp_location = a.location
-                          AND l.removed_at IS NULL) AS owned
-            """,
+                          AND l.removed_at IS NULL) AS owned,
+                EXISTS (SELECT 1 FROM account c JOIN location l ON l.account_id = c.id
+                        WHERE c.id = a.account_id AND l.gbp_location = a.location
+                          AND {_IN_USE}) AS active
+            """,  # noqa: S608
             action_id,
             job_id,
             at,
@@ -390,6 +407,7 @@ class PostgresWorkerStore:
             coherent=target and row["owned"],
             type=row["type"],
             special_date=row["special_date"],
+            active=row["active"],
         )
 
     async def finish_action(
@@ -979,6 +997,39 @@ class PostgresWorkerStore:
                         )
                     },
                 )
+            # Profiles the owner deactivated (multinegocio) and did not activate again:
+            # what was read from them goes, with the same statements. A retired profile
+            # is not one of them: its term counts from removed_at (above) or from the
+            # leave, even if the retirement deactivated it. The profile row
+            # stays while Google lists it, so it can be activated again (and read from
+            # scratch). Activating it empties deactivated_at (trigger of location), so a
+            # reactivated profile never matches; repeating this deletes nothing more.
+            for table in (
+                "review",
+                "profile_summary",
+                "sentiment_analysis",
+                "sentiment_history",
+                "sentiment_usage",
+            ):
+                _add(
+                    counts,
+                    {
+                        table: _deleted(
+                            await conn.execute(
+                                f"""
+                                DELETE FROM {table} t USING location l, account c
+                                WHERE c.id = l.account_id AND l.active_since IS NULL
+                                  AND l.removed_at IS NULL AND l.deactivated_at
+                                      <= $1::timestamptz - make_interval(days => $2)
+                                  AND NOT {_IN_USE}
+                                  AND t.google_sub = c.google_sub AND t.location = l.gbp_location
+                                """,  # noqa: S608
+                                now,
+                                policy.inactive_days,
+                            )
+                        )
+                    },
+                )
             # A retired profile may still be the selected one of its account (the
             # worker retires it when the access is lost): it stops being so first.
             await conn.execute(
@@ -1093,6 +1144,20 @@ class PostgresWorkerStore:
                 "SELECT set_config('fichaitor.audit_cutoff', $1, true)", audit_before.isoformat()
             )
             counts["audit_log"] = _deleted(await conn.execute("DELETE FROM audit_log"))
+            # Multinegocio: the activation log and the plan entitlements (no personal
+            # data; the billing will need them) go with the same term as the record of
+            # replies, from the leave of their account. The worker only reads their
+            # account_id.
+            for table in ("location_activation_log", "plan_entitlement"):
+                counts[table] = _deleted(
+                    await conn.execute(
+                        f"""
+                        DELETE FROM {table} t USING account a
+                        WHERE a.id = t.account_id AND a.disconnected_at <= $1
+                        """,  # noqa: S608
+                        audit_before,
+                    )
+                )
             await conn.execute(
                 "INSERT INTO retention_run (deleted) VALUES ($1::jsonb)", json.dumps(counts)
             )
@@ -1131,6 +1196,8 @@ async def _purge_channels(conn: asyncpg.Connection, account_id: object, whole: b
         account_id,
     )
     await conn.execute("DELETE FROM conversation WHERE account_id = $1", account_id)
+    # The lanes before the proposals: a lane's key to its proposal has no ON DELETE.
+    await conn.execute("DELETE FROM conversation_lane WHERE account_id = $1", account_id)
     await conn.execute("DELETE FROM proposal WHERE account_id = $1", account_id)
     if whole:
         await conn.execute("DELETE FROM channel_identity WHERE account_id = $1", account_id)
@@ -1158,6 +1225,8 @@ async def _expire_channels(conn: asyncpg.Connection, now: datetime, days: int) -
               AND p.state NOT IN ('programada', 'enviada', 'recordada', 'recopilando',
                                   'por_confirmar', 'ejecutando')
               AND NOT EXISTS (SELECT 1 FROM conversation c WHERE c.active_proposal_id = p.id)
+              AND NOT EXISTS (SELECT 1 FROM conversation_lane l
+                              WHERE l.active_proposal_id = p.id)
               AND NOT EXISTS (SELECT 1 FROM channel_message m WHERE m.proposal_id = p.id)
             """,
             before,

@@ -141,6 +141,11 @@ class Scene:
         )
         self.bar = await self.location_id(BAR)
         assert await self.api.select_location(self.account_id, self.bar)
+        # Active (multinegocio): a proposal is only made for an active profile. The other
+        # profile stays inactive.
+        await owner(
+            "UPDATE location SET active_since = now(), plan = 'pro' WHERE id = $1", self.bar
+        )
         facts = ProfileFacts(
             address="Calle Elvira 1, 18010 Granada",
             region="AN",
@@ -190,6 +195,11 @@ class Scene:
             step="holiday.ask",
             step_token="abc123",
         )
+        inactive = location_id != self.bar
+        if inactive:  # made while it was active, as one deactivated afterwards
+            await owner(
+                "UPDATE location SET active_since = now(), plan = 'pro' WHERE id = $1", location_id
+            )
         async with self.conv_store.lock(self.account_id):
             assert await self.conv_store.add_proposal(proposal)
             conversation = await self.conv_store.get_conversation(self.account_id)
@@ -197,6 +207,10 @@ class Scene:
 
             await self.conv_store.save_conversation(
                 replace(conversation, active_proposal_id=proposal.id)
+            )
+        if inactive:
+            await owner(
+                "UPDATE location SET active_since = NULL, plan = NULL WHERE id = $1", location_id
             )
         return proposal.id
 

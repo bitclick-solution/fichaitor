@@ -39,8 +39,11 @@ class KeyDates:
     def answerable(self, view: KeyDateView) -> bool:
         return answerable(view.state, view.day, self.today())
 
-    async def list(self, account_id: str, *, pending_only: bool) -> Sequence[KeyDateView]:
-        found = await self._store.list_key_dates(account_id, self.today())
+    async def list(
+        self, account_id: str, *, pending_only: bool, location_id: str | None = None
+    ) -> Sequence[KeyDateView]:
+        """Of that active profile of that account (None: the preference)."""
+        found = await self._store.list_key_dates(account_id, self.today(), location_id)
         return [v for v in found if self.answerable(v)] if pending_only else list(found)
 
     async def answer(self, account_id: str, proposal_id: str, answer: Answer) -> KeyDateView:

@@ -36,7 +36,7 @@ log = logging.getLogger("fichaitor.reviews")
 
 
 class ReviewNotFound(Exception):
-    """Not a review of the selected profile of that account."""
+    """Not a review of an active profile of that account."""
 
 
 class DraftUnavailable(Exception):
@@ -73,8 +73,8 @@ class ReviewReplies:
     ) -> None:
         self._store = store
         self._writer = writer
-        # Per account, counted in the quota store (PostgreSQL in production): a restart
-        # or a second API process does not give an account its drafts back.
+        # Per profile, counted in the quota store (PostgreSQL in production): a restart
+        # or a second API process does not give a profile its drafts back.
         self._quota = quota if quota is not None else MemoryQuota()
         self._draft_limit = draft_limit
         self._draft_window = draft_window_seconds
@@ -107,9 +107,12 @@ class ReviewReplies:
 
         if self._writer is None:
             raise DraftUnavailable
+        # Each business has its own cap (docs/multinegocio.md, 5.4). The store always
+        # says which profile the review is of; the account is only a fallback.
+        scope = draft_scope(review.location_id or account_id)
         try:
             taken = await self._quota.take_quota(
-                draft_scope(account_id), self._draft_limit, self._draft_window, self._now()
+                scope, self._draft_limit, self._draft_window, self._now()
             )
         except Exception as exc:  # no paid call without a working cap
             log.warning("tope de borradores no disponible: %s", type(exc).__name__)

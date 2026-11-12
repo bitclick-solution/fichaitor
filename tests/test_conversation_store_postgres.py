@@ -160,8 +160,10 @@ async def cleanup():
         "DELETE FROM profile_summary WHERE google_sub LIKE 'pytest-chan-%'",
         "DELETE FROM job WHERE kind LIKE 'pytest-chan-%'",
         "DELETE FROM job WHERE payload->>'google_sub' LIKE 'pytest-chan-%'",
+        # The draft cap counts per account, or per profile since multinegocio.
         "DELETE FROM usage_counter WHERE scope LIKE 'review_draft:%'"
-        f" AND split_part(scope, ':', 2)::uuid IN {mine}",
+        f" AND (split_part(scope, ':', 2) IN (SELECT id::text FROM account WHERE id IN {mine})"
+        f" OR split_part(scope, ':', 2) IN (SELECT id FROM location WHERE account_id IN {mine}))",
         "DELETE FROM google_connection WHERE google_sub LIKE 'pytest-chan-%'",
         f"UPDATE account SET selected_location_id = NULL WHERE id IN {mine}",
         f"DELETE FROM offboarding WHERE account_id IN {mine}",
@@ -247,6 +249,12 @@ class Scene:
             BAR.location,
         )
         assert await self.api.select_location(account_id, rows[0]["id"])
+        # Active, as the backfill of multinegocio leaves the selected profile: proposals
+        # are only made for active profiles (docs/multinegocio.md, 3.6). Pro, because the
+        # same Google profile is free in one account only.
+        await owner(
+            "UPDATE location SET active_since = now(), plan = 'pro' WHERE id = $1", rows[0]["id"]
+        )
         await self.api.add_google_connection(
             GoogleConnection(
                 sub,

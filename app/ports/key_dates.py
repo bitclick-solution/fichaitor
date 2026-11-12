@@ -2,8 +2,8 @@
 the owner (by the channel or in the panel), and the panel's view of the proposals.
 
 Implemented by `PostgresStore` (the API's role, and the conversation's for the action)
-and by `MemoryStore`. Every method works on the selected profile of the account it is
-given and on nothing else.
+and by `MemoryStore`. Every method works on the active profiles of the account it is
+given and on nothing else (docs/multinegocio.md, 5.4).
 """
 
 from collections.abc import Mapping, Sequence
@@ -48,18 +48,23 @@ class KeyDateStore(Protocol):
         pending action (its text is `change.to_text()`, which nobody can change after),
         its `special_hours_confirmed` audit row and the `set_special_hours` job.
 
-        None when that profile is not, now, the selected one of that account (or the
+        None when that profile is not, now, an active one of that account (or the
         account has a scheduled leave). Raises SpecialHoursInProgress when that day of
         that profile already has a change on its way.
         """
         ...
 
-    async def list_key_dates(self, account_id: str, today: date) -> Sequence[KeyDateView]:
-        """The key date proposals of the selected profile of that account whose day is
-        `today` or later, earliest first, each with its action if there is one."""
+    async def list_key_dates(
+        self, account_id: str, today: date, location_id: str | None = None
+    ) -> Sequence[KeyDateView]:
+        """The key date proposals of that active profile of that account (None: the
+        preference) whose day is `today` or later, earliest first, each with its action
+        if there is one. Empty if it is not an active profile of that account."""
         ...
 
-    async def get_key_date(self, account_id: str, proposal_id: str) -> KeyDateView | None: ...
+    async def get_key_date(self, account_id: str, proposal_id: str) -> KeyDateView | None:
+        """A key date proposal of an active profile of that account. None otherwise."""
+        ...
 
     async def answer_key_date(
         self,
@@ -76,7 +81,7 @@ class KeyDateStore(Protocol):
         Returns the action id.
 
         Raises KeyDateNotFound, PanelRefused (app/domain/key_dates.py: resolved, its day
-        has passed, or its profile is no longer the selected one) or
+        has passed, or its profile is no longer active) or
         SpecialHoursInProgress.
         """
         ...

@@ -13,6 +13,7 @@ which it can read but never change, and it can only add to the audit log.
 import json
 import secrets
 from collections.abc import Sequence
+from dataclasses import replace
 from datetime import date, datetime
 
 import asyncpg
@@ -32,6 +33,7 @@ from app.domain.actions import (
 from app.domain.conversation import ChannelIdentity
 from app.domain.jobs import DEFAULT_MAX_ATTEMPTS
 from app.domain.key_dates import (
+    ANSWERABLE_STATES,
     OUTCOME_DISMISSED,
     REFUSED_PROFILE,
     PanelRefused,
@@ -55,9 +57,18 @@ from app.domain.offboarding import (
     PendingDeletion,
     same_hash,
 )
+from app.domain.plans import (
+    PAID_PLANS,
+    Entitlement,
+    Plan,
+    activation_allowed,
+    parse_plan,
+)
 from app.domain.profile_summary import ProfileFacts, facts_from_json
 from app.domain.proposals import (
+    CANCELLED_BY_DEACTIVATION,
     CANCELLED_BY_LEAVE,
+    OUTCOME_LOCATION_INACTIVE,
     OUTCOME_OFFBOARDING,
     ProposalState,
     ProposalType,
@@ -73,8 +84,18 @@ from app.ports.key_dates import KeyDateNotFound, KeyDateView, SpecialHoursInProg
 from app.ports.quota import QuotaUnavailable
 from app.ports.store import (
     Account,
+    ActiveProfile,
+    FreeTaken,
     GoogleConnection,
     Location,
+    LocationInactive,
+    LocationLimit,
+    LocationNotFound,
+    LocationOverview,
+    LocationRemoved,
+    LocationsOverview,
+    NoLocationChosen,
+    OffboardingPending,
     ReplyInProgress,
     ReviewDraft,
     ReviewPage,
@@ -98,26 +119,69 @@ _NO_OPEN_LEAVE = """
                 WHERE o.google_sub = a.google_sub
                   AND o.restored_at IS NULL AND o.purged_at IS NULL)
 """
-# The selected profile of an account, unless it has a scheduled leave.
-_SELECTED = """
-    FROM account a
-    JOIN location l
-      ON l.id = a.selected_location_id AND l.account_id = a.id AND l.removed_at IS NULL
-     AND a.deleted_at IS NULL
-     AND NOT EXISTS (SELECT 1 FROM offboarding o
-                     WHERE o.account_id = a.id
-                       AND o.restored_at IS NULL AND o.effective_at IS NULL)
+_NO_PENDING_LEAVE = """
+    NOT EXISTS (SELECT 1 FROM offboarding o
+                WHERE o.account_id = a.id
+                  AND o.restored_at IS NULL AND o.effective_at IS NULL)
 """
 
-# The reviews an account may see: those of its own selected profile, reached through
-# its own Google identity. $1 is always the account of the session; no identifier from
-# the request takes part in choosing the profile.
+
+def _active(location: str) -> str:
+    """One active profile of an account, unless the account has a scheduled leave
+    (docs/multinegocio.md, 5.1). `location` is the SQL of the id of the profile: a
+    parameter, or that parameter falling back to the preference; never input. The id is
+    matched in the same statement as the account of the session, so a profile of
+    another account and one that does not exist are the same nothing."""
+    return f"""
+    FROM account a
+    JOIN location l
+      ON l.id = {location} AND l.account_id = a.id AND l.active_since IS NOT NULL
+     AND a.deleted_at IS NULL
+     AND {_NO_PENDING_LEAVE}
+"""
+
+
+# The profile a request names ($2), or the preference of the panel when it names none.
+_CHOSEN = "coalesce($2::text, a.selected_location_id)"
+
+# Every active profile of an account, unless it has a scheduled leave.
+_ANY_ACTIVE = f"""
+    FROM account a
+    JOIN location l ON l.account_id = a.id AND l.active_since IS NOT NULL
+     AND a.deleted_at IS NULL
+     AND {_NO_PENDING_LEAVE}
+"""
+
+# The reviews an account may see: those of its own active profiles, reached through
+# its own Google identity. $1 is always the account of the session; a review id from
+# the request only picks among them.
 _OWN_REVIEWS = f"""
-    {_SELECTED}
+    {_ANY_ACTIVE}
     JOIN review r
       ON r.google_sub = a.google_sub AND r.location = l.gbp_location AND r.removed_at IS NULL
      AND {_NO_OPEN_LEAVE}
 """
+
+# What location_active_guard raises (db/schema.sql), as the domain names it.
+_ACTIVATION_REFUSALS: dict[str, type[Exception]] = {
+    "limite_fichas": LocationLimit,
+    "gratis_ocupada": FreeTaken,
+    "baja_programada": OffboardingPending,
+    "ficha_retirada": LocationRemoved,
+    "cuenta_de_baja": LocationNotFound,
+}
+_FREE_ONE_ACCOUNT = "location_gratis_one_account"  # unique index: the last barrier
+
+
+def _activation_error(exc: asyncpg.PostgresError) -> Exception | None:
+    """The domain error behind a refusal of the database to activate, or None."""
+    if isinstance(exc, asyncpg.UniqueViolationError):
+        return FreeTaken() if exc.constraint_name == _FREE_ONE_ACCOUNT else None
+    if isinstance(exc, asyncpg.CheckViolationError):
+        message = getattr(exc, "message", None) or (str(exc.args[0]) if exc.args else "")
+        kind = _ACTIVATION_REFUSALS.get(message)
+        return kind() if kind is not None else None
+    return None
 
 
 class PostgresStore:
@@ -361,19 +425,262 @@ class PostgresStore:
         return [Location(r["id"], r["title"], r["place_id"], r["verified"]) for r in rows]
 
     async def select_location(self, account_id: str, location_id: str) -> bool:
-        # The ownership check is part of the statement, not a previous read.
-        status = await self._require_pool().execute(
-            """
-            UPDATE account SET selected_location_id = $2
-            WHERE id = $1::uuid AND EXISTS (
-                SELECT 1 FROM location
-                WHERE id = $2 AND account_id = $1::uuid AND removed_at IS NULL
+        async with self._require_pool().acquire() as conn, conn.transaction():
+            row = await self._own_location(conn, account_id, location_id)
+            if row is None or row["removed"]:
+                return False
+            # Until step 9 (docs/multinegocio.md, 5.5): choosing an inactive profile
+            # activates it, as the web that only knows "choose" expects.
+            if row["plan"] is None:
+                await self._activate(conn, account_id, location_id, None, row)
+            # The ownership check is part of the statement, not a previous read.
+            status = await conn.execute(
+                """
+                UPDATE account SET selected_location_id = $2
+                WHERE id = $1::uuid AND EXISTS (
+                    SELECT 1 FROM location
+                    WHERE id = $2 AND account_id = $1::uuid AND removed_at IS NULL
+                )
+                """,
+                account_id,
+                location_id,
             )
+        return status == "UPDATE 1"
+
+    # --- profiles of the account, active or not (docs/multinegocio.md) -------------
+
+    @staticmethod
+    async def _own_location(
+        conn: asyncpg.Connection, account_id: str, location_id: str
+    ) -> asyncpg.Record | None:
+        return await conn.fetchrow(
+            """
+            SELECT l.plan, l.removed_at IS NOT NULL AS removed, now() AS now
+            FROM location l JOIN account a ON a.id = l.account_id AND a.deleted_at IS NULL
+            WHERE l.id = $2 AND l.account_id = $1::uuid
             """,
             account_id,
             location_id,
         )
-        return status == "UPDATE 1"
+
+    @staticmethod
+    async def _default_plans(
+        conn: asyncpg.Connection, account_id: str, location_id: str, now: datetime
+    ) -> list[Plan]:
+        """The plans an activation without a plan tries, in order: those with room in
+        the account now, leaving that profile out (app/domain/plans.py)."""
+        counts = await conn.fetch(
+            """
+            SELECT plan, count(*) AS n FROM location
+            WHERE account_id = $1::uuid AND id <> $2 AND active_since IS NOT NULL
+            GROUP BY plan
+            """,
+            account_id,
+            location_id,
+        )
+        granted = await _entitlements(conn, account_id)
+        active = {Plan(r["plan"]): r["n"] for r in counts}
+        return [
+            plan
+            for plan in (Plan.GRATIS, *PAID_PLANS)
+            if activation_allowed(active, granted, plan, now)
+        ]
+
+    async def _activate(
+        self,
+        conn: asyncpg.Connection,
+        account_id: str,
+        location_id: str,
+        plan: Plan | None,
+        row: asyncpg.Record,
+    ) -> Plan:
+        """Inside a transaction, with the row of _own_location. The database decides;
+        each try runs in a savepoint, so that a refused one can be followed by the next."""
+        current = parse_plan(row["plan"])
+        if current is not None and plan in (None, current):
+            return current
+        if plan is not None:
+            candidates = [plan]
+        else:
+            candidates = await self._default_plans(conn, account_id, location_id, row["now"])
+        if not candidates:
+            raise LocationLimit
+        for index, candidate in enumerate(candidates):
+            try:
+                async with conn.transaction():
+                    # A change of plan keeps active_since: the oldest profile is the one
+                    # that pays in full (app/domain/plans.py).
+                    await conn.execute(
+                        """
+                        UPDATE location
+                        SET active_since = coalesce(active_since, now()), plan = $3
+                        WHERE id = $2 AND account_id = $1::uuid
+                        """,
+                        account_id,
+                        location_id,
+                        candidate.value,
+                    )
+            except asyncpg.PostgresError as exc:
+                error = _activation_error(exc)
+                if error is None:
+                    raise
+                # Without a plan, a free profile taken by another account (or a slot
+                # taken a moment ago) moves on to the next plan with room.
+                last = index + 1 == len(candidates)
+                if last or not isinstance(error, (FreeTaken, LocationLimit)):
+                    raise error from None
+                continue
+            return candidate
+        raise LocationLimit  # not reached: the last candidate returns or raises
+
+    async def activate(self, account_id: str, location_id: str, plan: Plan | None = None) -> Plan:
+        async with self._require_pool().acquire() as conn, conn.transaction():
+            row = await self._own_location(conn, account_id, location_id)
+            if row is None:
+                raise LocationNotFound
+            if row["removed"]:
+                raise LocationRemoved
+            return await self._activate(conn, account_id, location_id, plan, row)
+
+    async def deactivate(self, account_id: str, location_id: str) -> bool:
+        async with self._require_pool().acquire() as conn, conn.transaction():
+            # The thread first, as the conversation and the key dates of the panel do:
+            # nothing in the chat moves a proposal of this profile meanwhile.
+            await conn.execute(
+                "SELECT 1 FROM conversation WHERE account_id = $1::uuid FOR UPDATE", account_id
+            )
+            # The trigger empties plan, sets deactivated_at, writes the log and moves the
+            # preference to the oldest active profile if it was this one.
+            found = await conn.fetchval(
+                """
+                UPDATE location SET active_since = NULL, plan = NULL
+                WHERE id = $2 AND account_id = $1::uuid AND removed_at IS NULL
+                RETURNING id
+                """,
+                account_id,
+                location_id,
+            )
+            if found is None:
+                return False
+            # A key date of a proposal written before it had a column of its own names
+            # its profile in its payload.
+            mine = """
+                coalesce(location_id,
+                         CASE WHEN type = 'key_date' THEN payload->>'location_id' END) = $2
+            """
+            await conn.execute(
+                f"""
+                UPDATE proposal
+                SET state = $3, outcome_reason = $4, message_refs = '{{}}'::jsonb,
+                    step_token = encode(gen_random_bytes(3), 'hex')
+                WHERE account_id = $1::uuid AND state = ANY($5::text[]) AND {mine}
+                """,  # noqa: S608
+                account_id,
+                location_id,
+                ProposalState.CANCELLED.value,
+                OUTCOME_LOCATION_INACTIVE,
+                [state.value for state in CANCELLED_BY_DEACTIVATION],
+            )
+            await conn.execute(
+                """
+                UPDATE conversation_lane SET active_proposal_id = NULL, updated_at = now()
+                WHERE account_id = $1::uuid AND location_id = $2
+                  AND active_proposal_id IS NOT NULL
+                """,
+                account_id,
+                location_id,
+            )
+            await conn.execute(
+                f"""
+                UPDATE conversation SET active_proposal_id = NULL, updated_at = now()
+                WHERE account_id = $1::uuid AND active_proposal_id IN (
+                    SELECT id FROM proposal WHERE account_id = $1::uuid AND {mine})
+                """,  # noqa: S608
+                account_id,
+                location_id,
+            )
+        return True
+
+    async def resolve_location(self, account_id: str, location_id: str | None) -> str:
+        row = await self._require_pool().fetchrow(
+            f"""
+            SELECT l.id, l.active_since IS NOT NULL AS active,
+                   l.removed_at IS NOT NULL AS removed,
+                   l.id = a.selected_location_id AS preferred
+            FROM account a
+            JOIN location l ON l.id = {_CHOSEN} AND l.account_id = a.id
+            WHERE a.id = $1::uuid AND a.deleted_at IS NULL
+            """,  # noqa: S608
+            account_id,
+            location_id,
+        )
+        if row is None:
+            raise NoLocationChosen if location_id is None else LocationNotFound
+        if row["removed"]:
+            # The preference keeps a profile retired for lack of access, to say so.
+            if row["preferred"]:
+                return row["id"]
+            raise LocationNotFound
+        if not row["active"]:
+            raise LocationInactive
+        return row["id"]
+
+    async def locations_overview(self, account_id: str, today: date) -> LocationsOverview:
+        pool = self._require_pool()
+        rows = await pool.fetch(
+            f"""
+            SELECT l.id, l.title, l.place_id, l.verified, l.plan, l.active_since,
+                   p.status, p.unanswered_count,
+                   (SELECT count(*) FROM proposal pr
+                    WHERE pr.account_id = a.id AND pr.type = 'key_date'
+                      AND coalesce(pr.location_id, pr.payload->>'location_id') = l.id
+                      AND pr.state = ANY($2::text[]) AND pr.payload->>'date' >= $3
+                   ) AS key_dates
+            FROM account a
+            JOIN location l ON l.account_id = a.id AND l.removed_at IS NULL
+            LEFT JOIN profile_summary p
+              ON l.active_since IS NOT NULL
+             AND p.google_sub = a.google_sub AND p.location = l.gbp_location
+             AND {_NO_OPEN_LEAVE}
+            WHERE a.id = $1::uuid AND a.deleted_at IS NULL
+            ORDER BY l.title COLLATE "C", l.id
+            """,  # noqa: S608
+            account_id,
+            [state.value for state in ANSWERABLE_STATES],
+            today.isoformat(),
+        )
+        async with pool.acquire() as conn:
+            granted = await _entitlements(conn, account_id)
+        locations = []
+        for r in rows:
+            plan = parse_plan(r["plan"])
+            active = plan is not None
+            locations.append(
+                LocationOverview(
+                    id=r["id"],
+                    title=r["title"],
+                    place_id=r["place_id"],
+                    verified=r["verified"],
+                    plan=plan,
+                    active_since=r["active_since"],
+                    summary_status=r["status"] if active else None,
+                    pending_reviews=(r["unanswered_count"] or 0) if active else None,
+                    pending_key_dates=r["key_dates"] if active else None,
+                )
+            )
+        return LocationsOverview(tuple(locations), tuple(granted))
+
+    async def active_profiles(self, account_id: str) -> list[ActiveProfile]:
+        rows = await self._require_pool().fetch(
+            f"""
+            SELECT l.id, a.google_sub, l.gbp_location
+            {_ANY_ACTIVE}
+            WHERE a.id = $1::uuid
+            ORDER BY l.active_since, l.id
+            """,  # noqa: S608
+            account_id,
+        )
+        return [ActiveProfile(r["id"], r["google_sub"], r["gbp_location"]) for r in rows]
 
     async def enqueue(
         self,
@@ -390,26 +697,32 @@ class PostgresStore:
         )
 
     async def selected_profile(self, account_id: str) -> SelectedProfile | None:
+        return await self.profile(account_id)
+
+    async def profile(
+        self, account_id: str, location_id: str | None = None
+    ) -> SelectedProfile | None:
         # One statement: the summary is joined through the account's own google_sub and
-        # its own selected profile, so no identifier from outside takes part in the lookup.
+        # its own active profile, so an identifier from outside only picks among them.
         row = await self._require_pool().fetchrow(
             f"""
-            SELECT a.google_sub, l.gbp_location, l.title, l.place_id,
+            SELECT l.id, a.google_sub, l.gbp_location, l.title, l.place_id,
                    p.facts::text AS facts,
                    p.status, p.status_at, p.synced_at, p.review_count, p.average_rating,
                    p.unanswered_count, p.unanswered_low_count, p.last_review_at,
                    p.has_regular_hours, p.upcoming_special_hours, p.google_changed,
                    p.google_changed_fields, p.reviews_synced_at
-            {_SELECTED}
+            {_active(_CHOSEN)}
             LEFT JOIN profile_summary p
               ON p.google_sub = a.google_sub AND p.location = l.gbp_location
              AND {_NO_OPEN_LEAVE}
             WHERE a.id = $1::uuid
             """,  # noqa: S608
             account_id,
+            location_id,
         )
         if row is None:
-            return await self._lost_profile(account_id)
+            return await self._lost_profile(account_id, location_id)
         summary = None
         if row["status"] is not None:
             rating = row["average_rating"]
@@ -430,23 +743,30 @@ class PostgresStore:
                 reviews_synced_at=row["reviews_synced_at"],
             )
         return SelectedProfile(
-            row["google_sub"], row["gbp_location"], summary, row["title"], row["place_id"]
+            row["google_sub"],
+            row["gbp_location"],
+            summary,
+            row["title"],
+            row["place_id"],
+            location_id=row["id"],
         )
 
-    async def _lost_profile(self, account_id: str) -> SelectedProfile | None:
-        """The selected profile when the worker retired it for lack of access. Only its
+    async def _lost_profile(
+        self, account_id: str, location_id: str | None
+    ) -> SelectedProfile | None:
+        """The preferred profile when the worker retired it for lack of access. Only its
         Google name, for the account's own Google identity: nothing read from Google."""
         row = await self._require_pool().fetchrow(
-            """
-            SELECT a.google_sub, l.gbp_location, l.removed_at
+            f"""
+            SELECT l.id, a.google_sub, l.gbp_location, l.removed_at
             FROM account a
             JOIN location l ON l.id = a.selected_location_id AND l.account_id = a.id
             WHERE a.id = $1::uuid AND a.deleted_at IS NULL AND l.removed_at IS NOT NULL
-              AND NOT EXISTS (SELECT 1 FROM offboarding o
-                              WHERE o.account_id = a.id
-                                AND o.restored_at IS NULL AND o.effective_at IS NULL)
-            """,
+              AND l.id = {_CHOSEN}
+              AND {_NO_PENDING_LEAVE}
+            """,  # noqa: S608
             account_id,
+            location_id,
         )
         if row is None:
             return None
@@ -455,24 +775,32 @@ class PostgresStore:
             row["gbp_location"],
             lost_access_summary(row["removed_at"]),
             access_lost=True,
+            location_id=row["id"],
         )
 
     # --- reviews and replies ------------------------------------------------------
 
     async def list_reviews(
-        self, account_id: str, *, unanswered_only: bool, limit: int
+        self,
+        account_id: str,
+        *,
+        unanswered_only: bool,
+        limit: int,
+        location_id: str | None = None,
     ) -> ReviewPage:
         rows = await self._require_pool().fetch(
             f"""
             SELECT r.id, r.rating, r.comment, r.created_at, r.reply_text, r.reply_at,
                    count(*) OVER () AS total
             {_OWN_REVIEWS}
-            WHERE a.id = $1::uuid AND (NOT $2::boolean OR r.reply_text IS NULL)
+            WHERE a.id = $1::uuid AND l.id = {_CHOSEN}
+              AND (NOT $3::boolean OR r.reply_text IS NULL)
             ORDER BY (r.reply_text IS NOT NULL), r.rating ASC NULLS LAST,
                      r.created_at DESC NULLS LAST, r.id
-            LIMIT $3
+            LIMIT $4
             """,  # noqa: S608
             account_id,
+            location_id,
             unanswered_only,
             limit,
         )
@@ -483,7 +811,7 @@ class PostgresStore:
         row = await self._require_pool().fetchrow(
             f"""
             SELECT r.id, r.rating, r.comment, r.created_at, r.reply_text, r.reply_at,
-                   d.draft, d.source_hash
+                   d.draft, d.source_hash, l.id AS location_id
             {_OWN_REVIEWS}
             LEFT JOIN review_draft d ON d.review_id = r.id
             WHERE a.id = $1::uuid AND r.id = $2
@@ -494,7 +822,7 @@ class PostgresStore:
         if row is None:
             return None
         draft = ReviewDraft(row["draft"], row["source_hash"]) if row["draft"] is not None else None
-        return _review(row, draft)
+        return replace(_review(row, draft), location_id=row["location_id"])
 
     async def save_draft(
         self, account_id: str, review_id: str, source_hash: str, text: str, now: datetime
@@ -612,14 +940,14 @@ class PostgresStore:
     ) -> str | None:
         """The action, its audit row and its job, on a connection inside a transaction.
         The account, its Google identity and the profile come from the same join as every
-        read: only the selected profile of that account, without a leave."""
+        read: only an active profile of that account, without a leave."""
         action_id = await conn.fetchval(
             f"""
             INSERT INTO action
                 (account_id, type, google_sub, location, special_date, text, confirmed_at)
             SELECT a.id, $3, a.google_sub, l.gbp_location, $4, $5, $6
-            {_SELECTED}
-            WHERE a.id = $1::uuid AND l.id = $2 AND {_NO_OPEN_LEAVE}
+            {_active("$2")}
+            WHERE a.id = $1::uuid AND {_NO_OPEN_LEAVE}
             ON CONFLICT DO NOTHING
             RETURNING id
             """,  # noqa: S608
@@ -632,7 +960,7 @@ class PostgresStore:
         )
         if action_id is None:
             owned = await conn.fetchval(
-                f"SELECT 1 {_SELECTED} WHERE a.id = $1::uuid AND l.id = $2 AND {_NO_OPEN_LEAVE}",  # noqa: S608
+                f"SELECT 1 {_active('$2')} WHERE a.id = $1::uuid AND {_NO_OPEN_LEAVE}",  # noqa: S608
                 account_id,
                 location_id,
             )
@@ -670,9 +998,11 @@ class PostgresStore:
             return await self._insert_hours_action(conn, account_id, location_id, change, now)
 
     @staticmethod
-    def _key_dates_sql(condition: str) -> str:
-        """Key date proposals of the selected profile of account $1, with their action.
-        `condition` narrows the proposals (pr) further; it is never built from input."""
+    def _key_dates_sql(condition: str, profiles: str) -> str:
+        """Key date proposals of account $1 whose profile is one of `profiles` (a FROM
+        of account a and location l, matched with $1), with their action. `condition`
+        narrows the proposals (pr) further. Neither is ever built from input. A proposal
+        written before it had a column of its own names its profile in its payload."""
         return f"""
             SELECT p.*, x.id AS x_id, x.type AS x_type, x.state AS x_state,
                    x.error_code AS x_error, x.confirmed_at AS x_confirmed_at,
@@ -680,24 +1010,28 @@ class PostgresStore:
             FROM (
                 SELECT {PROPOSAL_COLUMNS} FROM proposal pr
                 WHERE pr.account_id = $1::uuid AND pr.type = 'key_date'
-                  AND pr.payload->>'location_id' = (
-                      SELECT a.selected_location_id FROM account a
-                      WHERE a.id = $1::uuid AND a.deleted_at IS NULL)
+                  AND coalesce(pr.location_id, pr.payload->>'location_id') IN (
+                      SELECT l.id {profiles} WHERE a.id = $1::uuid)
                   AND {condition}
             ) p
             LEFT JOIN action x ON x.id = p.action_id AND x.account_id = $1::uuid
             ORDER BY p.payload::jsonb->>'date', p.id
         """  # noqa: S608
 
-    async def list_key_dates(self, account_id: str, today: date) -> list[KeyDateView]:
+    async def list_key_dates(
+        self, account_id: str, today: date, location_id: str | None = None
+    ) -> list[KeyDateView]:
         rows = await self._require_pool().fetch(
-            self._key_dates_sql("pr.payload->>'date' >= $2"), account_id, today.isoformat()
+            self._key_dates_sql("pr.payload->>'date' >= $3", _active(_CHOSEN)),
+            account_id,
+            location_id,
+            today.isoformat(),
         )
         return [_key_date(r) for r in rows]
 
     async def get_key_date(self, account_id: str, proposal_id: str) -> KeyDateView | None:
         row = await self._require_pool().fetchrow(
-            self._key_dates_sql("pr.id = $2"), account_id, proposal_id
+            self._key_dates_sql("pr.id = $2", _ANY_ACTIVE), account_id, proposal_id
         )
         return _key_date(row) if row is not None else None
 
@@ -723,9 +1057,18 @@ class PostgresStore:
 
     @staticmethod
     async def _release(conn: asyncpg.Connection, account_id: str, proposal_id: str) -> None:
+        """The thread and the lane of its profile let that proposal go."""
         await conn.execute(
             """
             UPDATE conversation SET active_proposal_id = NULL, updated_at = now()
+            WHERE account_id = $1::uuid AND active_proposal_id = $2
+            """,
+            account_id,
+            proposal_id,
+        )
+        await conn.execute(
+            """
+            UPDATE conversation_lane SET active_proposal_id = NULL, updated_at = now()
             WHERE account_id = $1::uuid AND active_proposal_id = $2
             """,
             account_id,
@@ -790,9 +1133,11 @@ class PostgresStore:
             )
             await self._release(conn, account_id, proposal_id)
 
-    async def sentiment(self, account_id: str, now: datetime) -> StoredSentiment | None:
+    async def sentiment(
+        self, account_id: str, now: datetime, location_id: str | None = None
+    ) -> StoredSentiment | None:
         # Same join as the summary: the analysis is reached through the account's own
-        # google_sub and its own selected profile. Nothing from the request takes part.
+        # google_sub and its own active profile. An id from the request only picks one.
         pool = self._require_pool()
         row = await pool.fetchrow(
             f"""
@@ -800,27 +1145,29 @@ class PostgresStore:
                    s.with_text, s.provisional, s.period, s.score, s.overall, s.summary,
                    s.suggestion, s.summary_source, s.praised::text AS praised,
                    s.complaints::text AS complaints, s.trigger
-            {_SELECTED}
+            {_active(_CHOSEN)}
             JOIN sentiment_analysis s
               ON s.google_sub = a.google_sub AND s.location = l.gbp_location
              AND {_NO_OPEN_LEAVE}
             WHERE a.id = $1::uuid
             """,  # noqa: S608
             account_id,
+            location_id,
         )
         if row is None:
             return None
         history = await pool.fetch(
             f"""
             SELECT h.month, h.score
-            {_SELECTED}
+            {_active(_CHOSEN)}
             JOIN sentiment_history h
               ON h.google_sub = a.google_sub AND h.location = l.gbp_location
              AND {_NO_OPEN_LEAVE}
-            WHERE a.id = $1::uuid AND h.month >= $2
+            WHERE a.id = $1::uuid AND h.month >= $3
             ORDER BY h.month
             """,  # noqa: S608
             account_id,
+            location_id,
             first_history_month(now),
         )
         figures = Figures(
@@ -1222,3 +1569,12 @@ def _facts(raw: str | None) -> ProfileFacts | None:
         return facts_from_json(json.loads(raw))
     except ValueError:
         return None
+
+
+async def _entitlements(conn: asyncpg.Connection, account_id: str) -> list[Entitlement]:
+    rows = await conn.fetch(
+        "SELECT plan, quantity, starts_at, ends_at FROM plan_entitlement"
+        " WHERE account_id = $1::uuid ORDER BY starts_at, id",
+        account_id,
+    )
+    return [Entitlement(Plan(r["plan"]), r["quantity"], r["starts_at"], r["ends_at"]) for r in rows]

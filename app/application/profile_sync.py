@@ -48,8 +48,9 @@ def reconnect_key(google_sub: str, location: str, now: float) -> str:
 class SummaryView:
     summary: StoredSummary | None  # None: nothing written yet, a sync has been requested
     stale: bool  # the figures are old and a sync has been requested
-    title: str = ""  # of the selected profile, as the connection listed it
+    title: str = ""  # of the profile, as the connection listed it
     place_id: str | None = None
+    location_id: str = ""  # ours: "loc_..."; every answer carries it (docs/multinegocio.md, 5.1)
 
 
 class ProfileSync:
@@ -84,35 +85,51 @@ class ProfileSync:
             log.warning("sincronización de la ficha no encolada: %s", type(exc).__name__)
 
     async def request_for_account(self, account_id: str, *, reconnected: bool = False) -> None:
-        """Sync the selected profile of that account, if it has one. Never raises.
+        """Sync every active profile of that account (docs/multinegocio.md, 7). Never
+        raises.
 
         reconnected: the owner has just connected with Google again, so the sync is
         asked for at once instead of once per window.
         """
         try:
-            profile = await self._store.selected_profile(account_id)
+            profiles = await self._store.active_profiles(account_id)
+        except Exception as exc:
+            log.warning("sincronización de la ficha no encolada: %s", type(exc).__name__)
+            return
+        for profile in profiles:
+            await self._enqueue(profile.google_sub, profile.location, reconnected=reconnected)
+
+    async def request_for_location(self, account_id: str, location_id: str) -> None:
+        """Sync that active profile of that account, if it is one. Never raises."""
+        try:
+            profile = await self._store.profile(account_id, location_id)
         except Exception as exc:
             log.warning("sincronización de la ficha no encolada: %s", type(exc).__name__)
             return
         if profile is not None and not profile.access_lost:
-            await self._enqueue(profile.google_sub, profile.location, reconnected=reconnected)
+            await self._enqueue(profile.google_sub, profile.location)
 
-    async def view(self, account_id: str, *, need_reviews: bool = False) -> SummaryView | None:
-        """The summary of the selected profile of that account. None if none is selected.
+    async def view(
+        self, account_id: str, location_id: str | None = None, *, need_reviews: bool = False
+    ) -> SummaryView | None:
+        """The summary of that active profile of that account (None: the preference).
+        None if it is not an active profile of that account, or there is no preference.
 
         need_reviews: the caller is going to list the reviews, so a summary whose
         reviews were never stored (synced before they were kept) is synced again.
         """
-        profile = await self._store.selected_profile(account_id)
+        profile = await self._store.profile(account_id, location_id)
         if profile is None:
             return None
         if profile.access_lost:
             # Nothing to read until the owner connects again: that is all the panel says.
-            return SummaryView(profile.summary, False)
+            return SummaryView(profile.summary, False, location_id=profile.location_id)
         summary = profile.summary
         if summary is None:
             await self._enqueue(profile.google_sub, profile.location)
-            return SummaryView(None, False, profile.title, profile.place_id)
+            return SummaryView(
+                None, False, profile.title, profile.place_id, location_id=profile.location_id
+            )
 
         now = datetime.fromtimestamp(self._clock(), UTC)
         old = summary.synced_at is not None and now - summary.synced_at > self._stale_after
@@ -126,4 +143,6 @@ class ProfileSync:
             refresh = now - summary.status_at > timedelta(seconds=self._window)
         if refresh:
             await self._enqueue(profile.google_sub, profile.location)
-        return SummaryView(summary, old, profile.title, profile.place_id)
+        return SummaryView(
+            summary, old, profile.title, profile.place_id, location_id=profile.location_id
+        )
