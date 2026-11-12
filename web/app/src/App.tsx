@@ -3,6 +3,7 @@ import logo from "../../../brand/logo.svg";
 import { api, ApiError, OAUTH_START, type BajaPendiente, type Diagnosis, type Location, type Me, type Summary } from "./api";
 import { Ajustes, AvisoBaja, cuando } from "./Ajustes";
 import { Canales } from "./Canales";
+import { Fechas } from "./Fechas";
 import { Indice } from "./Indice";
 import { Instalar } from "./Instalar";
 import { Tour } from "./Tour";
@@ -456,6 +457,7 @@ const SECCIONES = [
   { id: "resumen", nombre: "Resumen", arriba: true },
   { id: "opinion", nombre: "Opinión" },
   { id: "resenas", nombre: "Reseñas" },
+  { id: "festivos", nombre: "Festivos" },
   { id: "mejoras", nombre: "Mejoras" },
   { id: "avisos", nombre: "Avisos" },
   { id: "ajustes", nombre: "Ajustes" },
@@ -577,6 +579,8 @@ function Panel({
       <Sentimiento fichaId={ficha.id} version={version} onSinSesion={onSinSesion} />
 
       <Resenas fichaId={ficha.id} onSinSesion={onSinSesion} onCambio={alCambiar} />
+
+      <Fechas fichaId={ficha.id} onSinSesion={onSinSesion} />
 
       {estado.tipo === "cargando" && <Cargando texto="Analizando tu ficha" />}
 

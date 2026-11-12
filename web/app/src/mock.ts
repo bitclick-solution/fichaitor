@@ -110,6 +110,39 @@ const yo = (e: Estado) => {
   return { email: "dueno@example.com", locations: desconectada ? [] : fichas(), selected_location_id: desconectada ? null : e.elegida, pending_deletion: e.baja ?? null, connected: !desconectada };
 };
 
+// Fechas clave (docs/contrato-web-api.md, «Fechas clave»). Se calculan desde hoy para que siempre estén
+// por venir. La tercera cierra ese día de la semana (regular_hours: []).
+function enDias(n: number): string {
+  const d = new Date();
+  d.setDate(d.getDate() + n);
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+}
+type FranjaSim = { open: string; close: string };
+interface FechaSim {
+  id: string;
+  date: string;
+  name: string;
+  regular_hours: FranjaSim[] | null;
+  status: string;
+  answerable: boolean;
+  answer: { kind: string; ranges: FranjaSim[]; text: string } | null;
+  action: { id: string; status: string; message: string; error: string | null } | null;
+  /** Consultas desde la confirmación: la acción pasa a «hecha» a la tercera. */
+  vueltas: number;
+}
+const pendiente = (id: string, dias: number, name: string, regular_hours: FranjaSim[] | null): FechaSim => ({
+  id, date: enDias(dias), name, regular_hours, status: "pendiente", answerable: true, answer: null, action: null, vueltas: 0,
+});
+let FECHAS: FechaSim[] | null = null;
+const fechasClave = () =>
+  (FECHAS ??= [
+    pendiente("kd_1", 12, "Inmaculada Concepción", [{ open: "09:00", close: "14:00" }, { open: "17:00", close: "20:30" }]),
+    pendiente("kd_2", 30, "Nochebuena", null),
+    pendiente("kd_3", 37, "Nochevieja", []),
+  ]);
+const textoFranjas = (r: FranjaSim[]) => r.map((x) => `de ${x.open} a ${x.close}`).join(" y ");
+const sinVueltas = ({ vueltas: _v, ...f }: FechaSim) => f;
+
 export async function mockFetch(method: string, path: string, body: unknown): Promise<Response> {
   await new Promise((r) => setTimeout(r, 350));
   const e = leer();
@@ -142,6 +175,42 @@ export async function mockFetch(method: string, path: string, body: unknown): Pr
       telegram_url: "https://t.me/FichaitorBot?start=Qm3v0X5k1y2Zt8pW-aR4sLd9_fHj6cNe7uBoVgIiT0Q",
       whatsapp_url: null,
     });
+  }
+  if (method === "GET" && path.startsWith("/api/v1/me/key-dates")) {
+    if (escenario() === "sin-fichas") return json(200, { dates: [] });
+    // Cada consulta avanza el envío a Google: en cola, enviándose y, a la tercera, enviado.
+    for (const f of fechasClave()) {
+      if (!f.action || f.action.status === "hecha") continue;
+      f.vueltas += 1;
+      if (f.vueltas >= 3) {
+        f.status = "aplicada";
+        f.action = { ...f.action, status: "hecha", message: "Enviado a Google. Puede tardar unos minutos en verse en tu ficha." };
+      } else if (f.vueltas >= 1) f.action = { ...f.action, status: "en_curso", message: "Estamos enviando tu cambio de horario a Google." };
+    }
+    const todas = path.includes("filter=all");
+    return json(200, { dates: fechasClave().filter((f) => todas || f.status === "pendiente").map(sinVueltas) });
+  }
+  const fecha = /^\/api\/v1\/me\/key-dates\/([^/]+)\/(answer|dismiss)$/.exec(path);
+  if (method === "POST" && fecha) {
+    const f = fechasClave().find((x) => x.id === fecha[1]);
+    if (!f) return json(404, { detail: "No encontramos esa fecha." });
+    if (f.status !== "pendiente") return json(409, { detail: "Esa fecha ya está resuelta." });
+    if (fecha[2] === "dismiss") {
+      f.status = "descartada";
+      f.answerable = false;
+      return new Response(null, { status: 204 });
+    }
+    const r = body as { kind?: string; ranges?: FranjaSim[] } | undefined;
+    // Como el servidor: 422 con el mensaje para los campos. En el simulador, cualquier franja que empiece a medianoche.
+    if (r?.kind === "custom" && r.ranges?.some((x) => x.open === "00:00"))
+      return json(422, { detail: "Google no acepta franjas que empiezan a medianoche." });
+    if (escenario() === "falla") return json(503, { detail: "No hemos podido guardarlo. Prueba otra vez en un minuto." });
+    const ranges = r?.kind === "custom" ? (r.ranges ?? []) : r?.kind === "regular" ? (f.regular_hours ?? []) : [];
+    f.status = "en_curso";
+    f.answerable = false;
+    f.answer = { kind: r?.kind ?? "closed", ranges, text: ranges.length > 0 ? textoFranjas(ranges) : "" };
+    f.action = { id: `act_${f.id}`, status: "pendiente", message: "Tu cambio de horario está en cola para enviarse a Google.", error: null };
+    return json(202, sinVueltas(f));
   }
   if (method === "GET" && path === "/api/v1/me/channels") {
     if (codigoPendiente && ++codigoPendiente.consultas >= 2) {

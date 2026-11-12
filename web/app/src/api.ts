@@ -98,10 +98,11 @@ export interface ReviewsResponse {
 export interface Action {
   id: string;
   type: string;
-  review_id: string;
+  /** null en los cambios de horario (fechas clave). */
+  review_id: string | null;
   status: "pendiente" | "en_curso" | "hecha" | "fallida";
   message: string;
-  error: "reconnect" | "rejected" | "review_gone" | "unavailable" | "internal" | null;
+  error: "reconnect" | "rejected" | "review_gone" | "date_passed" | "no_regular_hours" | "suspended" | "unavailable" | "internal" | null;
   confirmed_at: string | null;
   finished_at: string | null;
 }
@@ -139,6 +140,31 @@ export interface Canal {
   address: string;
   linked_at: string;
 }
+
+/** Franja horaria «HH:MM». */
+export interface Franja {
+  open: string;
+  close: string;
+}
+
+/** Fecha clave (docs/contrato-web-api.md, «Fechas clave»). */
+export interface FechaClave {
+  id: string;
+  /** Día, «AAAA-MM-DD». */
+  date: string;
+  /** Nombre listo para mostrar: «Inmaculada Concepción», «Nochebuena». */
+  name: string;
+  /** Horario normal de ese día de la semana: null si la ficha no tiene; [] si ese día cierra. */
+  regular_hours: Franja[] | null;
+  status: "pendiente" | "en_curso" | "aplicada" | "fallida" | "descartada" | "caducada";
+  answerable: boolean;
+  /** Lo confirmado, con su texto listo para mostrar. */
+  answer: { kind: "closed" | "regular" | "custom"; ranges: Franja[]; text: string } | null;
+  /** El envío a Google, con los mismos estados que GET /me/actions/{id}. */
+  action: Pick<Action, "id" | "status" | "message" | "error"> | null;
+}
+
+export type RespuestaFecha = { kind: "closed" } | { kind: "regular" } | { kind: "custom"; ranges: Franja[] };
 
 /** Código de vinculación: 6 cifras, un solo uso, 10 minutos. Vale para cualquier canal. */
 export interface CodigoVinculacion {
@@ -183,7 +209,11 @@ async function pedir<T>(method: "GET" | "POST" | "DELETE", path: string, body?: 
   }
 
   if (r.status === 204) return undefined as T;
-  if (r.ok) return (await r.json()) as T;
+  if (r.ok) {
+    // Un 202 puede llegar sin cuerpo: no es un error.
+    const texto = await r.text();
+    return (texto ? JSON.parse(texto) : undefined) as T;
+  }
 
   // En los 422 automáticos, `detail` puede ser una lista: se muestra un mensaje genérico.
   let detalle = GENERICO;
@@ -240,6 +270,10 @@ export const api = {
   canales: async () => (await pedir<{ channels: Canal[] }>("GET", "/api/v1/me/channels")).channels ?? [],
   codigoVinculacion: () => pedir<CodigoVinculacion>("POST", "/api/v1/channels/link-code"),
   desvincularCanal: (id: string) => pedir<void>("DELETE", `/api/v1/me/channels/${encodeURIComponent(id)}`),
+  // ── Fechas clave. Con filter=all también las resueltas desde hoy, para enseñar el resultado.
+  fechasClave: async () => (await pedir<{ dates: FechaClave[] }>("GET", "/api/v1/me/key-dates?filter=all")).dates ?? [],
+  responderFecha: (id: string, r: RespuestaFecha) => pedir<FechaClave>("POST", `/api/v1/me/key-dates/${encodeURIComponent(id)}/answer`, r),
+  descartarFecha: (id: string) => pedir<void>("POST", `/api/v1/me/key-dates/${encodeURIComponent(id)}/dismiss`),
   // ── Baja con código de un solo uso y 48 horas para restaurar (docs/contrato-web-api.md).
   pedirCodigoBaja: (scope: AlcanceBaja) => pedir<{ sent_to: string; expires_in: number }>("POST", "/api/v1/me/offboarding/code", { scope }),
   confirmarBaja: (scope: AlcanceBaja, code: string) => pedir<BajaPendiente>("POST", "/api/v1/me/offboarding/confirm", { scope, code }),

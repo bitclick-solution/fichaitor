@@ -323,3 +323,30 @@ html.lenis, html.lenis body { height: auto; }
 
 /* «En tu móvil»: solo en móviles sin la app instalada */
 .movil { padding-top: clamp(20px, 4vh, 36px); border-top: 2px solid var(--tinta); }
+
+/* ───── Festivos (fechas clave) ───── */
+.festivos { padding-top: clamp(20px, 4vh, 36px); border-top: 2px solid var(--tinta); }
+.fechas { list-style: none; margin: 0; padding: 0; border: 2px solid var(--tinta); }
+.fechas > li + li { border-top: 2px solid var(--tinta); }
+.fecha { display: grid; gap: 16px; padding: clamp(18px, 2.4vw, 28px); }
+.fecha-cab { display: grid; gap: 4px; }
+.fecha-cab .pt { color: var(--rojo); }
+.fecha-dia { font-weight: 700; color: var(--tinta); }
+.fecha-opciones { border: 0; margin: 0; padding: 0; display: grid; gap: 12px; min-width: 0; }
+.fecha-opciones legend { padding: 0; margin-bottom: 12px; }
+/* Las tres respuestas como bloques: el elegido se rellena de tinta */
+.opciones { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; }
+.opcion { position: relative; display: block; cursor: pointer; }
+.opcion input { position: absolute; opacity: 0; inset: 0; margin: 0; cursor: pointer; }
+.opcion span { display: grid; gap: 4px; height: 100%; padding: 14px 16px; border: 2px solid var(--tinta); font-weight: 800; background: var(--papel); transition: background 0.15s, color 0.15s; }
+.opcion small { font-weight: 500; font-size: 0.9rem; }
+.opcion input:checked + span { background: var(--tinta); color: var(--papel); }
+.opcion input:focus-visible + span { outline: 3px solid var(--rojo); outline-offset: 2px; }
+.franjas { display: grid; gap: 12px; justify-items: start; }
+.franja { display: flex; flex-wrap: wrap; gap: 12px 20px; }
+.franja label { display: grid; gap: 4px; }
+.franja input { font: inherit; font-weight: 700; padding: 10px 12px; border: 2px solid var(--tinta); background: var(--papel); color: var(--tinta); border-radius: 0; }
+.franja input:focus-visible { outline: 3px solid var(--rojo); outline-offset: 2px; }
+@media (max-width: 760px) {
+  .opciones { grid-template-columns: 1fr; }
+}

@@ -19,7 +19,7 @@ Bitclick Solutions no ha designado Delegado de Protección de Datos porque no co
 
 ## 2. Qué datos tratamos y para qué
 
-Fichaitor está en pruebas. Hoy están activos la prueba con una captura, la lista de espera, la conexión con Google (con la respuesta a reseñas y el resumen de lo que dicen), la baja con su correo de aviso, los avisos por Telegram, y los registros del servidor. Las demás filas describen funciones previstas (avisos por correo y WhatsApp, planes de pago, analítica) y se aplicarán cuando cada una se active.
+Fichaitor está en pruebas. Hoy están activos la prueba con una captura, la lista de espera, la conexión con Google (con la respuesta a reseñas y el resumen de lo que dicen), la baja con su correo de aviso, los avisos por Telegram, las preguntas por los festivos, y los registros del servidor. Las demás filas describen funciones previstas (avisos por correo y WhatsApp, planes de pago, analítica) y se aplicarán cuando cada una se active.
 
 | Finalidad | Datos | Base jurídica | Conservación |
 |---|---|---|---|
@@ -66,6 +66,10 @@ Solo para prestarte las funciones de Fichaitor que ves en el producto:
 
 Cada respuesta a una reseña que confirmas queda en un registro, con su texto y la fecha, para que conste qué se publicó en tu nombre.
 
+### Festivos
+
+Para avisarte de los festivos, Fichaitor deduce la comunidad autónoma del código postal de tu ficha de Google y guarda tu horario habitual. Cuando confirmas un horario para un día (por Telegram o en el panel), guardamos qué día, qué horario y cuándo lo confirmaste, como registro de los cambios hechos en tu ficha. Las preguntas por cada fecha se borran 90 días después de resolverse o al hacerse efectiva la baja.
+
 Fichaitor solo cambia algo en tu ficha (un horario, una respuesta a una reseña, una publicación, una foto, un dato) después de que tú lo confirmes de forma expresa, o dentro de los límites del modo automático si lo has activado tú. Ningún modelo de inteligencia artificial escribe directamente en tu ficha.
 
 ### Lo que no hacemos
@@ -94,7 +98,7 @@ Pasadas las 48 horas, la baja es efectiva:
 
 - Retiramos el acceso de Fichaitor a tu cuenta de Google.
 - En un máximo de 30 días desde que la baja es efectiva borramos todo lo obtenido de Google o derivado de ello: los tokens, los datos de la ficha, las reseñas, su clasificación, los resúmenes, el historial de notas y los borradores de respuesta.
-- El registro de las respuestas que confirmaste y se enviaron a Google se conserva 12 meses desde la baja y después se borra. Sirve para acreditar qué se publicó en tu nombre si hay una reclamación; la base es el interés legítimo en la defensa frente a reclamaciones — art. 6.1.f. `[REVISAR: base jurídica del registro de respuestas, a confirmar por quien revise los textos.]`
+- El registro de las respuestas y de los horarios que confirmaste y se enviaron a Google se conserva 12 meses desde la baja y después se borra. Sirve para acreditar qué se publicó en tu nombre si hay una reclamación; la base es el interés legítimo en la defensa frente a reclamaciones — art. 6.1.f. `[REVISAR: base jurídica del registro de respuestas, a confirmar por quien revise los textos.]`
 
 ## 4. Datos de terceros en tu ficha
 
