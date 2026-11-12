@@ -131,24 +131,36 @@ Orden de magnitud: 5.000 negocios con 3 mensajes al día son unos 15.000 mensaje
 | Inyección de instrucciones desde reseñas o webs | Contenido de terceros delimitado y marcado como dato; salida del modelo validada contra esquema; lista cerrada de acciones; confirmación humana |
 | Fuga entre cuentas | Seguridad a nivel de fila por cuenta; pruebas que intentan leer datos de otra cuenta |
 | Acción no deseada del modelo | El modelo no tiene herramientas de escritura. Toda acción pasa por validación, confirmación y ejecutor |
-| Abuso del diagnóstico público | Límite por IP (en memoria) y tope diario para todos los clientes juntos (en PostgreSQL, `usage_counter`), comprobados antes de llamar a Google o al modelo. La captura se rechaza por límite antes de leer su cuerpo. Caché por ficha y captcha si hay abuso |
+| Abuso del diagnóstico público | Límite por IP (en memoria) y tope diario para todos los clientes juntos (en PostgreSQL, `usage_counter`, que un disparador solo deja subir de uno en uno), comprobados antes de llamar a Google o al modelo. La captura se rechaza por límite antes de leer su cuerpo. Caché por ficha y captcha si hay abuso |
 | Datos personales (RGPD) | Nombres de autores de reseñas y teléfonos: minimización, plazo de conservación, contrato de encargo con cada proveedor, alojamiento en la UE, borrado al dar de baja |
 | Secretos | Solo en variables de entorno inyectadas en el despliegue; nunca en el repo ni en logs |
 | Trazabilidad | Auditoría inmutable: quién confirmó, qué se envió a Google y qué respondió |
-| La API comprometida ordena una respuesta en Google | Ver el riesgo residual siguiente |
+| La API o la conversación comprometidas ordenan un cambio en Google | Ver el riesgo residual siguiente |
+| La API comprometida da de baja a otro cliente | Ver el riesgo residual siguiente |
 
-### Riesgo residual: la API atestigua la confirmación del dueño
+### Riesgo residual: la API y la conversación atestiguan la confirmación del dueño
 
-El rol de la API puede insertar filas en `action` y en `job`: es quien registra que el dueño ha confirmado un texto. El worker publica en Google lo que dice la acción. Quien consiga ejecutar SQL con el usuario de la API puede, por tanto, crear una acción que nadie ha confirmado.
+Dos roles registran que el dueño ha confirmado algo, y los dos pueden insertar filas en `action`, en `audit_log` (`reply_confirmed`, `special_hours_confirmed`) y en `job`:
+
+- `fichaitor_api`, desde el panel: respuestas a reseñas y, desde las fechas clave (2026-11-12), el horario especial de un día (`set_special_hours`, con `special_date`).
+- `fichaitor_conversation`, desde Telegram: lo mismo, con las mismas consultas (hallazgo I11 de `docs/seguridad/revision-2026-11-12-b.md`).
+
+El worker escribe en Google lo que dice la acción. Quien consiga ejecutar SQL con el usuario de cualquiera de los dos puede, por tanto, crear una acción que nadie ha confirmado: publicar una respuesta o cambiar el horario de un día en la ficha de otro cliente.
 
 Lo que lo acota (hallazgo M1 de `docs/seguridad/revision-2026-11-12.md`):
 
-- Al tomar la acción, el worker comprueba en la misma sentencia que la cuenta tiene ese usuario de Google, que la ficha es de esa cuenta y sigue activa, que la cuenta no está dada de baja y que la reseña es de ese usuario y esa ficha. Si algo no casa, la acción acaba `fallida` (`internal`) sin llamar a Google y queda su fila de auditoría.
+- Al tomar la acción, el worker comprueba en la misma sentencia que la cuenta tiene ese usuario de Google, que la ficha es de esa cuenta y sigue activa, que la cuenta no está dada de baja y, en una respuesta, que la reseña es de ese usuario y esa ficha. Si algo no casa, la acción acaba `fallida` (`internal`) sin llamar a Google y queda su fila de auditoría.
 - No es una clave foránea a propósito: la acción, con su texto, se conserva 12 meses y la reseña, 30 días desde la baja.
+- Cada rol solo encola los tipos de job que encola su código, con claves de su tipo (B9 y B10).
+- La API solo cambia propuestas de fechas clave (y cancela las demás por una baja) y solo libera hilos de la conversación; nunca apunta un hilo a otra propuesta (políticas de fila en `db/schema_channels.sql`). Sus sentencias, además, filtran siempre por la cuenta de la sesión.
 
-Lo que sigue siendo posible: una acción **coherente** para la cuenta de otro cliente. Con `SELECT` sobre `account`, `location` y `review`, la API conoce los identificadores de todos y puede escribir una acción que pase la comprobación. Ninguna barrera de la base distingue esa fila de una confirmación real, porque la confirmación la atestigua la propia API.
+Lo que sigue siendo posible: una acción **coherente** para la cuenta de otro cliente. Con `SELECT` sobre `account`, `location` y `review` (la conversación, también sobre `profile_summary`), los dos roles conocen los identificadores de todos y pueden escribir una acción que pase la comprobación: una respuesta a una reseña real o un horario especial para un día cualquiera de una ficha activa. Ninguna barrera de la base distingue esa fila de una confirmación real, porque la confirmación la atestigua el propio rol.
 
-Para detectarlo: cada `reply_sent` de `audit_log` debe tener antes su `reply_confirmed` con el mismo `action_id`, escrito por el usuario de la API. Una alerta sobre las que no lo tengan, o sobre picos de confirmaciones por cuenta, queda pendiente.
+Para detectarlo: cada `reply_sent` y cada `special_hours_sent` de `audit_log` debe tener antes su `reply_confirmed` o `special_hours_confirmed` con el mismo `action_id`, escrito (`written_by`) por `fichaitor_api_prod` o por `fichaitor_conversation_prod`. Una alerta sobre las que no lo tengan, sobre las confirmadas por un usuario distinto de esos dos, o sobre picos de confirmaciones por cuenta o por rol, queda pendiente.
+
+### Riesgo residual: la API programa la baja de una cuenta
+
+La API programa las bajas (`INSERT` en `offboarding`). Desde M5 de `docs/seguridad/revision-2026-11-12-b.md`, la base solo admite una baja cuyo usuario de Google sea el de esa cuenta y con al menos 47 horas por delante (disparador `offboarding_guard`), y el worker no hace efectiva ninguna que no cumpla eso. Lo que queda: con SQL de la API se puede programar la baja de otra cuenta a 48 horas. El dueño la ve programada al entrar en el panel (y su chat deja de recibir propuestas) y la puede restaurar; no recibe el correo de la baja, porque lo encola la propia API. Para detectarlo: bajas confirmadas sin un `offboarding_code` usado de la misma cuenta en los minutos anteriores.
 
 ## 7. Observabilidad
 

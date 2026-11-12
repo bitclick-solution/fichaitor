@@ -9,12 +9,13 @@ Los plazos los aprobó el propietario el 2026-11-12. Todos están en configuraci
 Hay dos alcances: `ficha` (desconectar Google; la cuenta sigue existiendo, sin fichas) y `cuenta` (borrar la cuenta).
 
 1. **Código.** El dueño pide la baja desde su sesión. La API genera un código de 6 cifras, guarda solo su huella y encola el correo que lo lleva.
-2. **Confirmación.** Con el código correcto, la baja queda **programada** a 48 horas (`FICHAITOR_OFFBOARDING_GRACE_HOURS`). Desde ese instante:
+2. **Confirmación.** Con el código correcto, la baja queda **programada** a 48 horas (`FICHAITOR_OFFBOARDING_GRACE_HOURS`, nunca menos de 48). La base de datos no admite una baja programada a menos de 47 horas ni una cuyo usuario de Google no sea el de esa cuenta (disparador `offboarding_guard`), y el worker no hace efectiva una baja que no cumpla eso. Desde ese instante:
    - Ninguna ruta devuelve datos de la ficha: responden 409.
    - No se encolan sincronizaciones y el worker no lee la ficha, no la analiza y no envía respuestas de esa cuenta.
+   - Por el canal (Telegram) no sale nada por iniciativa del agente: las propuestas sin confirmar de la cuenta pasan a `cancelada` (motivo `offboarding`) en la misma escritura, no se crean propuestas nuevas, no se envían recordatorios y el resultado de una acción ya en marcha se anota sin avisar. Los jobs que ya estaban en cola terminan sin enviar nada.
    - Con `cuenta`, se cierran todas las sesiones.
    - No se revoca ni se borra nada: se puede restaurar sin volver a conectar con Google.
-3. **Restauración.** Hasta la fecha, desde la sesión o desde el enlace del correo. Todo vuelve a como estaba.
+3. **Restauración.** Hasta la fecha, desde la sesión o desde el enlace del correo. Todo vuelve a como estaba, salvo las propuestas canceladas por la baja: una fecha clave se vuelve a preguntar en la siguiente planificación diaria; una reseña sigue en el panel.
 4. **Baja efectiva.** A las 48 horas, el worker (job `apply_offboarding`):
    - Deja la cuenta sin fichas. Con `cuenta`, la da de baja: vacía su correo y libera su identidad de Google.
    - **Revoca en Google todas las conexiones guardadas** de ese usuario y **borra cada token cifrado en ese momento**.
@@ -37,6 +38,7 @@ Hay dos alcances: `ficha` (desconectar Google; la cuenta sigue existiendo, sin f
 | Uso del modelo por ficha (contadores) | `sentiment_usage` | 30 días desde la baja efectiva | Worker, job `retention` | Igual que las reseñas |
 | Fichas guardadas | `location` | 30 días desde la baja efectiva | Worker, job `retention` | Igual que las reseñas |
 | Jobs que nombran al usuario de Google y la ficha | `job` | 30 días desde la baja efectiva | Worker, job `retention` | Igual que las reseñas. Solo los anteriores a la baja y que no estén en curso |
+| Jobs terminados (`done` y `failed`), de cualquier tipo | `job` | 14 días desde que terminan (`FICHAITOR_RETENTION_JOB_DAYS`) | Worker, job `retention` | Pasada diaria. Se conserva el job que ejecutó una acción (`action.job_id`) mientras se conserva la acción: es el rastro de quién la ejecutó. Las claves diarias del sistema (`retention:<fecha>`, `plan_key_dates:<fecha>`) son siempre más recientes que el plazo (mínimo 2 días), así que no se vuelven a encolar |
 | Reseñas que Google deja de devolver | `review` | 30 días desde que se marcan (`removed_at`) | Worker, job `retention` | Pasada diaria |
 | Fichas que Google deja de listar, o cuya lectura rechaza (403 o 404) dos sincronizaciones seguidas, con sus datos | `location` y las de arriba | 30 días desde que se retiran (`removed_at`) | Worker, job `retention` | Pasada diaria. Desde que se retiran, la API no sirve nada de ellas |
 | Topes de llamadas de pago: contadores por ámbito y ventana (el id de la cuenta en los borradores) | `usage_counter` | Hasta que acaba su ventana (un día) | Worker, job `retention` | Pasada diaria |
@@ -63,9 +65,9 @@ Hay dos alcances: `ficha` (desconectar Google; la cuenta sigue existiendo, sin f
 Lo que queda para siempre, sin datos personales:
 
 - La fila de `account` de una cuenta dada de baja: su identificador, `created_at`, `disconnected_at` y `deleted_at`. El correo está vacío y `google_sub` vale `deleted:<id>`.
-- La fila de `offboarding`: alcance y fechas. `google_sub` se vacía al borrar los datos.
+- La fila de `offboarding`: alcance y fechas. `google_sub` se vacía al borrar los datos de una baja efectiva y, en una baja restaurada o sustituida por otra, en la misma escritura que la restaura (disparador `offboarding_guard`).
 - Las filas de `retention_run`: recuentos por tabla.
-- Los jobs terminados que no nombran a ningún usuario.
+- Los jobs terminados que ejecutaron una acción, mientras se conserva la acción (12 meses desde la baja). El resto de jobs terminados, 14 días.
 
 ## Qué significa "al momento"
 
@@ -92,6 +94,7 @@ Los datos se guardan por usuario de Google y ficha. La baja de una cuenta no toc
 - **Idempotente.** Decide con el reloj y con lo que hay en la base. Repetirla no borra nada más. Dos pasadas a la vez no fallan.
 - **Registro.** Cada pasada inserta una fila en `retention_run` con los recuentos por tabla y escribe `retention_done` en el log. Sin identificadores.
 - **Red de seguridad.** También hace efectivas las bajas vencidas cuyo job se perdió.
+- **Aviso si no corre.** Si pasan 36 horas sin una fila nueva en `retention_run` (o sin ninguna desde que arrancó el worker), el worker escribe `retention_overdue` en el log, nivel `warning`, cada pocos minutos hasta que corra. Nadie más que el worker puede encolar un job con la clave `retention:<fecha>` (políticas de la cola en `db/schema_channels.sql`).
 
 Para consultar las pasadas, como propietario:
 
@@ -108,13 +111,15 @@ El borrado lo hace el worker y nadie más. La API sigue sin poder borrar nada.
 - **`account`.** El worker fecha la desconexión y la baja. No lee el correo ni cambia `google_sub`: lo hace el disparador. La API solo puede quitar `disconnected_at`, al volver a conectar.
 - **`session` y `waitlist_entry`.** El worker lee fechas y borra. No lee la huella del token ni el contacto.
 - **Tablas de los canales.** El worker solo borra: lee las columnas de fecha y de cuenta que usan sus `WHERE`, nunca la dirección del chat ni el texto de un mensaje. La conversación (`fichaitor_conversation`) no borra nada; la API solo desvincula.
+- **`job`.** Seguridad a nivel de fila: el worker ve y cambia todo; la API solo encola sus tipos (`reply_review`, `set_special_hours`, `send_mail`, `apply_offboarding`, `sync_profile`, `channel_inbound`) y no lee la cola; la conversación solo ve, toma y cierra los suyos (`channel_inbound`, `conversation_tick`, `propose_review`, `channel_action_result`, `plan_key_dates`), nunca un `send_mail`. La clave de idempotencia de un job tiene que empezar por su tipo (salvo `sync:` y `<canal>:<id>`), así que nadie más que el worker ocupa `retention:<fecha>`.
+- **`retention_run`.** El worker inserta y lee solo `at` (para el aviso de 36 horas).
 - Nadie tiene `TRUNCATE`.
 
 ## Variables
 
 | Variable | Por defecto | Uso |
 |---|---|---|
-| `FICHAITOR_OFFBOARDING_GRACE_HOURS` | `48` | Horas que una baja confirmada queda programada |
+| `FICHAITOR_OFFBOARDING_GRACE_HOURS` | `48` | Horas que una baja confirmada queda programada. Mínimo 48: la base no admite menos de 47 |
 | `FICHAITOR_OFFBOARDING_CODE_TTL_SECONDS` | `600` | Validez del código |
 | `FICHAITOR_OFFBOARDING_CODE_MAX_ATTEMPTS` | `5` | Intentos antes de invalidar el código |
 | `FICHAITOR_OFFBOARDING_CODE_RATE_LIMIT` y `..._RATE_WINDOW_SECONDS` | `5` y `3600` | Códigos por cuenta y ventana |
@@ -128,6 +133,7 @@ El borrado lo hace el worker y nadie más. La API sigue sin poder borrar nada.
 | `FICHAITOR_RETENTION_WAITLIST_LAUNCHED_AT` | — | Fecha del aviso de lanzamiento. Las altas anteriores se borran en la pasada siguiente |
 | `FICHAITOR_RETENTION_CODE_DAYS` | `30` | Huellas de códigos caducados |
 | `FICHAITOR_RETENTION_CHANNEL_DAYS` | `90` | Mensajes del canal, eventos vistos, propuestas terminadas y chats desvinculados. Máximo 90 |
+| `FICHAITOR_RETENTION_JOB_DAYS` | `14` | Jobs terminados (`done` y `failed`). Entre 2 y 90 |
 | `FICHAITOR_RETENTION_HOUR_UTC` | `3` | Hora de la pasada diaria |
 
 Los límites impiden configurar un plazo más largo que el que promete la política.

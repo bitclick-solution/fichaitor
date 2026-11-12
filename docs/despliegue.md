@@ -186,8 +186,9 @@ Reglas que `deploy.sh` comprueba antes de tocar nada:
 - Los cuatro archivos tienen modo 600.
 - Ni `api.env` ni `conversation.env` contienen `FICHAITOR_TOKEN_PRIVATE_KEY`.
 - `api.env` no contiene `FICHAITOR_WORKER_DATABASE_URL` ni `FICHAITOR_CONVERSATION_DATABASE_URL`.
-- `FICHAITOR_LINK_CODE_PEPPER` es igual en `api.env` y `conversation.env`.
-- Ningún archivo activa `FICHAITOR_FAKE_PLACES`, `FICHAITOR_FAKE_GOOGLE` ni `FICHAITOR_FAKE_SCREENSHOT`.
+- `FICHAITOR_LINK_CODE_PEPPER` existe, tiene 32 caracteres o más y es igual en `api.env` y `conversation.env`.
+- `FICHAITOR_TELEGRAM_WEBHOOK_SECRET` tiene 32 caracteres o más en `api.env` (salvo con `FICHAITOR_TELEGRAM_POLLING=true` en `conversation.env`, que en producción no se usa).
+- Ningún archivo activa un modo de ejemplo: ninguna variable `FICHAITOR_FAKE_*` (`PLACES`, `GOOGLE`, `SCREENSHOT`, `MAIL` y las que se añadan) con un valor que no sea vacío, `false`, `0`, `no` u `off`.
 - El identificador del cliente OAuth coincide en los dos archivos.
 
 Estos valores no van en los archivos: los impone `docker-compose.prod.yml` y ganan a lo que diga `api.env`.
@@ -198,7 +199,7 @@ Estos valores no van en los archivos: los impone `docker-compose.prod.yml` y gan
 | `FICHAITOR_GOOGLE_REDIRECT_URI` | `https://fichaitor.es/api/v1/google/oauth/callback` |
 | `FICHAITOR_COOKIE_SECURE` | `true` |
 | `FICHAITOR_TRUST_PROXY_HEADERS` | `true` |
-| `FICHAITOR_FAKE_PLACES`, `FICHAITOR_FAKE_GOOGLE`, `FICHAITOR_FAKE_SCREENSHOT` | `false` |
+| `FICHAITOR_FAKE_PLACES`, `FICHAITOR_FAKE_GOOGLE`, `FICHAITOR_FAKE_SCREENSHOT`, `FICHAITOR_FAKE_MAIL` | `false` |
 
 El resto de variables son opcionales y tienen valor por defecto. Están todas, comentadas, en las dos plantillas.
 

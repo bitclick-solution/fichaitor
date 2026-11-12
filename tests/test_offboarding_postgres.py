@@ -107,6 +107,8 @@ async def cleanup():
         "(SELECT id FROM account WHERE google_sub LIKE 'pytest-%' OR google_sub LIKE 'deleted:%')"
     )
     await owner(f"DELETE FROM audit_log WHERE account_id IN {mine}")  # noqa: S608
+    await owner(f"DELETE FROM conversation WHERE account_id IN {mine}")  # noqa: S608
+    await owner(f"DELETE FROM proposal WHERE account_id IN {mine}")  # noqa: S608
     await owner(f"DELETE FROM action WHERE account_id IN {mine}")  # noqa: S608
     await owner("DELETE FROM review WHERE google_sub LIKE 'pytest-%'")
     await owner("DELETE FROM job WHERE kind LIKE 'pytest-%'")
@@ -280,9 +282,11 @@ class Scene:
                 first["gbp_review_id"],
                 self.now,
             )
+        # Pending, not finished: a finished one goes after 14 days anyway (I12), and these
+        # tests look at what the leave deletes. Nothing runs the kinds 'pytest-...'.
         await owner(
             "INSERT INTO job (kind, payload, state, created_at)"
-            " VALUES ('pytest-old-sync', $1::jsonb, 'done', $2)",
+            " VALUES ('pytest-old-sync', $1::jsonb, 'pending', $2)",
             json.dumps({"google_sub": sub, "location": SHARED.location}),
             self.now - DAY,
         )
@@ -531,6 +535,80 @@ def test_the_restore_link_works_once_until_the_date_and_says_nothing_otherwise()
     assert good == ana and pending is None
 
 
+def test_a_restored_leave_forgets_the_google_user():
+    # I8: a restored leave closes nothing, so it keeps no Google identity that a later
+    # leave of the account could join to the tombstone.
+    async def scenario(s: Scene):
+        ana, session = await s.furnished(ANA)
+        await s.leave(session)
+        await s.offboarding.restore_by_token(await s.restore_token())
+        s.now += timedelta(minutes=5)
+        await s.leave(session)
+        await s.offboarding.restore(await s.me(session))
+        return await owner(
+            "SELECT google_sub, restored_at FROM offboarding WHERE account_id = $1::uuid", ana
+        )
+
+    rows = scene(scenario)
+    assert len(rows) == 2
+    assert all(r["restored_at"] is not None and r["google_sub"] is None for r in rows)
+
+
+@pytest.mark.parametrize("scope", ["ficha", "cuenta"])
+def test_confirming_a_leave_cancels_the_open_proposals_of_the_account(scope):
+    # B12: what waited in the chat (a review, a key date) is never sent after the leave.
+    async def scenario(s: Scene):
+        ana, session = await s.furnished(ANA)
+        luis, _ = await s.furnished(LUIS)
+        ids = {}
+        for account, name, kind, state in (
+            (ana, "review", "review_reply", "enviada"),
+            (ana, "key_date", "key_date", "programada"),
+            (ana, "executing", "review_reply", "ejecutando"),
+            (ana, "applied", "review_reply", "aplicada"),
+            (luis, "other", "review_reply", "enviada"),
+        ):
+            ids[name] = f"prop_{uuid.uuid4().hex[:16]}"
+            confirmed = state in ("ejecutando", "aplicada")
+            await owner(
+                "INSERT INTO proposal (id, account_id, type, source_ref, state, confirmed_at,"
+                " confirmed_event_id) VALUES ($1, $2::uuid, $3, $4, $5, $6, $7)",
+                ids[name],
+                account,
+                kind,
+                f"pytest:{name}",
+                state,
+                NOW if confirmed else None,
+                "pytest-event" if confirmed else None,
+            )
+        await owner(
+            "INSERT INTO conversation (account_id, active_proposal_id) VALUES ($1::uuid, $2)",
+            ana,
+            ids["review"],
+        )
+        await s.leave(session, scope)
+        states = {
+            name: (
+                await owner("SELECT state, outcome_reason FROM proposal WHERE id = $1", proposal_id)
+            )[0]
+            for name, proposal_id in ids.items()
+        }
+        active = await owner(
+            "SELECT active_proposal_id FROM conversation WHERE account_id = $1::uuid", ana
+        )
+        return {k: (v["state"], v["outcome_reason"]) for k, v in states.items()}, active
+
+    states, active = scene(scenario)
+    assert states == {
+        "review": ("cancelada", "offboarding"),
+        "key_date": ("cancelada", "offboarding"),
+        "executing": ("ejecutando", None),  # its action already left: its result is not told
+        "applied": ("aplicada", None),
+        "other": ("enviada", None),
+    }
+    assert active[0]["active_proposal_id"] is None
+
+
 async def restored_payloads(s: "Scene") -> list[dict]:
     return [p for p in await s.mail_payloads() if p.get("template") == "offboarding_restored"]
 
@@ -594,7 +672,7 @@ def test_a_server_error_in_the_middle_of_a_restore_spends_nothing():
         token = await s.restore_token()
         # The same database, but the email job cannot be written (its kind is too long
         # for the table): the restore fails after the leave was already updated.
-        broken = PostgresStore(API_URL, mail_job_kind="x" * 61)
+        broken = PostgresStore(API_URL, mail_job_kind="pytest-" + "x" * 60)
         await broken.connect()
         try:
             failing = Offboarding(
@@ -963,6 +1041,9 @@ def test_what_came_from_google_is_deleted_30_days_after_the_leave_and_not_a_day_
         scene(scenario)
     )
     assert early.pop("offboarding_code") == 1  # the code of the leave, past its own term
+    # Finished jobs go after 14 days whoever they are of (I12): the clock of the test is
+    # months ahead of the jobs this very run finished.
+    early.pop("job_finished")
     assert sum(early.values()) == 0 and before == {**FULL, "google_connection": 0}
     assert after == EMPTY
     for table in ("review", "review_sentiment"):
@@ -1174,6 +1255,7 @@ def test_a_profile_google_stopped_listing_is_deleted_with_its_data_after_30_days
         return early, before, after, await s.stored(LUIS, luis)
 
     early, before, after, luis_rows = scene(scenario)
+    early.pop("job_finished")  # whoever they are of (I12)
     assert sum(early.values()) == 0 and before == FULL
     # The connection (the account is still connected) and the jobs stay.
     assert after == {**EMPTY, "google_connection": 2, "job": 1}

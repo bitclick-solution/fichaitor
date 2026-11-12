@@ -90,6 +90,13 @@ TRANSITIONS: Mapping[tuple[ProposalState, ProposalEvent], ProposalState] = Mappi
 )
 
 TERMINAL_STATES = frozenset({S.APPLIED, S.EXPIRED, S.DISMISSED, S.FAILED, S.CANCELLED})
+# A leave of the profile or of the account was confirmed (B12 of
+# docs/seguridad/revision-2026-11-12-b.md): what had not been confirmed yet is cancelled
+# with this reason in the same write. A proposal cancelled so is offered again if it is
+# submitted after the leave was restored. One that is executing keeps its course: its
+# action already left, and its result is recorded without telling anybody.
+OUTCOME_OFFBOARDING = "offboarding"
+CANCELLED_BY_LEAVE = (S.SCHEDULED, S.SENT, S.REMINDED, S.COLLECTING, S.TO_CONFIRM)
 # Shown to the owner and still waiting for them: the only states in which a button or
 # a text of the owner can move the proposal.
 OPEN_STATES = frozenset({S.SENT, S.REMINDED, S.COLLECTING, S.TO_CONFIRM})

@@ -3,6 +3,7 @@ the key date flow, the queue, reminders and expiry, and the invariants."""
 
 import asyncio
 import itertools
+from dataclasses import replace
 from datetime import UTC, date, datetime, timedelta
 
 import pytest
@@ -22,6 +23,7 @@ from app.domain import channel_messages as cm
 from app.domain import link_codes
 from app.domain.channel_messages import InboundEvent, InboundKind
 from app.domain.conversation import AccountInfo, HoursAnswer, HoursKind
+from app.domain.proposals import OUTCOME_OFFBOARDING
 from app.domain.proposals import ProposalState as S
 from app.ports import proposal_actions as pa
 from app.ports.messaging import MessagingUnavailable
@@ -1206,3 +1208,60 @@ def test_link_code_helpers_are_reachable_from_the_service(w):
     code = w.run(w.service.create_link_code(OTHER))
     assert link_codes.is_code_shaped(code)
     assert len(w.store.link_codes) == 2  # the used one of the fixture and this one
+
+
+# =============================================================================
+# A scheduled leave (B12 of docs/seguridad/revision-2026-11-12-b.md)
+# =============================================================================
+
+
+def test_with_a_leave_scheduled_what_waited_is_not_sent_and_nothing_new_is_proposed(w):
+    w.at(datetime(2026, 11, 12, 21, 30, tzinfo=UTC))  # quiet hours: it waits
+    before = len(w.sent())
+    low = w.review(stars=1)
+    w.store.leaves.add(ACC)  # the owner confirms the leave of the profile
+    w.at(datetime(2026, 11, 13, 8, 0, tzinfo=UTC))
+    w.tick()
+    assert len(w.sent()) == before
+    assert w.proposal(low).state is S.SCHEDULED
+    assert w.review() is None and w.holiday() is None
+    assert len(w.sent()) == before
+
+
+def test_with_a_leave_scheduled_the_result_of_an_action_is_recorded_but_not_told(w):
+    proposal_id = w.review()
+    w.press("Publicar")
+    before = len(w.sent())
+    w.store.leaves.add(ACC)
+    w.result(proposal_id, ok=False, error=OUTCOME_TARGET_GONE)
+    assert w.proposal(proposal_id).state is S.FAILED
+    assert len(w.sent()) == before
+
+
+def test_after_restoring_the_leave_everything_works_again(w):
+    w.at(datetime(2026, 11, 12, 21, 30, tzinfo=UTC))
+    low = w.review(stars=1)
+    w.store.leaves.add(ACC)
+    w.at(datetime(2026, 11, 13, 8, 0, tzinfo=UTC))
+    w.tick()
+    w.store.leaves.discard(ACC)  # restored
+    w.tick()
+    assert w.proposal(low).state is S.SENT
+    assert w.review() is not None
+
+
+def test_a_key_date_cancelled_by_a_leave_is_asked_again_after_restoring_it(w):
+    first = w.holiday()
+    w.store.proposals[first] = replace(
+        w.proposal(first), state=S.CANCELLED, outcome_reason=OUTCOME_OFFBOARDING
+    )
+    w.store.conversations[ACC] = replace(w.store.conversations[ACC], active_proposal_id=None)
+    before = len(w.sent())
+    assert w.holiday() == first  # the planner asks for it again the next day
+    assert w.proposal(first).state is S.SENT
+    assert len(w.sent()) == before + 1
+    # Cancelled for any other reason, it is not.
+    w.store.proposals[first] = replace(
+        w.proposal(first), state=S.CANCELLED, outcome_reason="not_sent_in_time"
+    )
+    assert w.holiday() is None

@@ -29,8 +29,8 @@ from app.domain import link_codes
 from app.domain.calendar import format_date_es
 from app.domain.channel_messages import InboundEvent, InboundKind, MessageKind, OutboundMessage
 from app.domain.conversation import ChannelIdentity, Conversation, HoursAnswer, HoursKind, Reply
-from app.domain.proposals import PRIORITY_KEY_DATE as KEY_DATE_PRIORITY
 from app.domain.proposals import (
+    OUTCOME_OFFBOARDING,
     Proposal,
     ProposalEvent,
     ProposalState,
@@ -40,6 +40,7 @@ from app.domain.proposals import (
     idempotency_key,
     review_priority,
 )
+from app.domain.proposals import PRIORITY_KEY_DATE as KEY_DATE_PRIORITY
 from app.ports import proposal_actions as pa
 from app.ports.conversation_store import ConversationStore, LinkResult, MessageRecord
 from app.ports.messaging import MessagingChannel, MessagingError
@@ -802,10 +803,32 @@ class ConversationService:
 
     async def _submit(self, proposal: Proposal, now: datetime) -> str | None:
         async with self._store.lock(proposal.account_id):
-            if not await self._store.add_proposal(proposal):
+            # With a leave scheduled nothing new is proposed (B12).
+            if await self._store.on_leave(proposal.account_id):
                 return None
+            if not await self._store.add_proposal(proposal):
+                return await self._revive(proposal, now)
             await self._pump(proposal.account_id, now)
         return proposal.id
+
+    async def _revive(self, proposal: Proposal, now: datetime) -> str | None:
+        """The same origin already had a proposal. If a leave cancelled it and the leave
+        was restored, it is offered again as new, under its own id and with what it was
+        created with. Otherwise it is not proposed twice. Called with the lock held."""
+        earlier = await self._store.get_proposal_by_source(
+            proposal.account_id, proposal.type, proposal.source_ref
+        )
+        if (
+            earlier is None
+            or earlier.state is not S.CANCELLED
+            or earlier.outcome_reason != OUTCOME_OFFBOARDING
+        ):
+            return None
+        await self._store.save_proposal(
+            replace(proposal, id=earlier.id, payload=earlier.payload, created_at=earlier.created_at)
+        )
+        await self._pump(proposal.account_id, now)
+        return earlier.id
 
     async def handle_action_result(self, proposal_id: str, outcome: ActionOutcome) -> None:
         """The executor finished the action of a proposal. Asked twice, told once."""
@@ -825,6 +848,9 @@ class ConversationService:
                     outcome_reason=None if outcome.ok else (outcome.error or "failed"),
                 )
             )
+            # With a leave scheduled the outcome is recorded and nothing is told (B12).
+            if await self._store.on_leave(proposal.account_id):
+                return
             key, values = self._result_message(proposal, outcome)
             for identity in await self._store.list_identities(proposal.account_id):
                 await self._reply(identity, key, kind=MessageKind.RESULT, **values)
@@ -880,7 +906,11 @@ class ConversationService:
     # ======================================================== queue and delivery
 
     async def _pump(self, account_id: str, now: datetime) -> None:
-        """Bring the thread of an account up to date. Called with its lock held."""
+        """Bring the thread of an account up to date. Called with its lock held.
+        With a leave scheduled it does nothing: no proposal, reminder or expiry is sent
+        until the leave is restored (B12)."""
+        if await self._store.on_leave(account_id):
+            return
         conversation = await self._store.get_conversation(account_id)
         zone = await self._zone(account_id)
         may_write = rules.may_send_proactively(now, zone, self._config.quiet)
@@ -911,6 +941,8 @@ class ConversationService:
         await self._deliver_next(account_id, now)
 
     async def _deliver_next(self, account_id: str, now: datetime, answering: bool = False) -> None:
+        if await self._store.on_leave(account_id):
+            return
         conversation = await self._store.get_conversation(account_id)
         if await self._active(conversation) is not None:
             return

@@ -45,6 +45,11 @@ class MemoryConversationStore:
         self._seen: set[tuple[str, str]] = set()
         self._locks: dict[str, asyncio.Lock] = defaultdict(asyncio.Lock)
         self._ids = itertools.count(1)
+        # Accounts with a leave scheduled (in PostgreSQL, a row of `offboarding`).
+        self.leaves: set[str] = set()
+
+    async def on_leave(self, account_id: str) -> bool:
+        return account_id in self.leaves
 
     # --- linked addresses -------------------------------------------------------
     async def get_identity(self, channel: str, address: str) -> ChannelIdentity | None:
@@ -167,7 +172,13 @@ class MemoryConversationStore:
             yield
 
     async def accounts_with_open_work(self) -> Sequence[str]:
-        return sorted({p.account_id for p in self.proposals.values() if not p.is_terminal})
+        return sorted(
+            {
+                p.account_id
+                for p in self.proposals.values()
+                if not p.is_terminal and p.account_id not in self.leaves
+            }
+        )
 
     # --- messages ---------------------------------------------------------------
     async def record_inbound(self, channel: str, event_id: str, now: datetime) -> bool:

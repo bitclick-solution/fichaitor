@@ -31,6 +31,9 @@ class RetentionSettings(BaseSettings):
     # Messaging channels: messages, events seen, finished proposals and unlinked
     # addresses, days after they were written or ended (docs/canales.md).
     channel_days: int = Field(default=90, ge=1, le=90)
+    # Finished jobs (done or failed): days after they finished. Never less than 2, so
+    # that the idempotency key of yesterday's daily job is still there.
+    job_days: int = Field(default=14, ge=2, le=90)
     # Hour (UTC) of the daily pass.
     hour_utc: int = Field(default=3, ge=0, le=23)
 
@@ -44,4 +47,5 @@ class RetentionSettings(BaseSettings):
             waitlist_launched_at=self.waitlist_launched_at,
             code_days=self.code_days,
             channel_days=self.channel_days,
+            job_days=self.job_days,
         )

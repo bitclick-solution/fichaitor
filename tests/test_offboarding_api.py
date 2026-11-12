@@ -2,6 +2,7 @@
 No database: MemoryStore and an in-memory queue, where the emails wait as jobs."""
 
 import logging
+import re
 from datetime import UTC, datetime, timedelta
 from urllib.parse import parse_qs, urlparse
 
@@ -563,7 +564,7 @@ def test_neither_the_code_nor_the_token_nor_the_address_reach_the_logs_of_the_ap
     assert "dueno@example.com" not in caplog.text
 
 
-def test_with_fake_mail_and_no_database_the_code_is_written_to_the_log(caplog):
+def test_with_fake_mail_and_no_database_the_email_is_written_to_the_log_without_the_code(caplog):
     fake = MailSettings(_env_file=None, fake_mail=True)
     google = FakeGoogleOAuth(locations=[BAR])
     store = MemoryStore()
@@ -577,3 +578,4 @@ def test_with_fake_mail_and_no_database_the_code_is_written_to_the_log(caplog):
     with caplog.at_level(logging.WARNING, logger="fichaitor.mail"):
         assert client.post(CODE, json={"scope": "ficha"}, headers=HEADER).status_code == 202
     assert "[CORREO SIMULADO]" in caplog.text and "Has pedido desconectar tu ficha" in caplog.text
+    assert "[código]" in caplog.text and not re.search(r"(?<![0-9])[0-9]{6}(?![0-9])", caplog.text)

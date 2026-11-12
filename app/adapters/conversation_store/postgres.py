@@ -62,6 +62,8 @@ UNFINISHED = (
     ProposalState.EXECUTING,
 )
 _UNFINISHED = [state.value for state in UNFINISHED]
+# A leave confirmed and not yet restored nor effective (`o` is the leave).
+_SCHEDULED = "o.restored_at IS NULL AND o.effective_at IS NULL"
 
 _IDENTITY = "id, account_id::text AS account_id, channel, address, verified_at, last_inbound_at"
 _PROPOSAL = """
@@ -501,15 +503,29 @@ class PostgresConversationStore:
             )
 
     async def accounts_with_open_work(self) -> Sequence[str]:
+        # An account with a leave scheduled has nothing to do here until it is restored.
         async with self._conn() as conn:
             rows = await conn.fetch(
-                """
-                SELECT DISTINCT account_id::text AS account_id FROM proposal
-                WHERE state = ANY($1::text[]) ORDER BY 1
-                """,
+                f"""
+                SELECT DISTINCT p.account_id::text AS account_id FROM proposal p
+                WHERE p.state = ANY($1::text[])
+                  AND NOT EXISTS (SELECT 1 FROM offboarding o
+                                  WHERE o.account_id = p.account_id AND {_SCHEDULED})
+                ORDER BY 1
+                """,  # noqa: S608
                 _UNFINISHED,
             )
         return [r["account_id"] for r in rows]
+
+    async def on_leave(self, account_id: str) -> bool:
+        async with self._conn() as conn:
+            return await conn.fetchval(
+                f"""
+                SELECT EXISTS (SELECT 1 FROM offboarding o
+                               WHERE o.account_id = $1::uuid AND {_SCHEDULED})
+                """,  # noqa: S608
+                account_id,
+            )
 
     # --- messages -----------------------------------------------------------------------
 

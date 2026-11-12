@@ -47,6 +47,7 @@ from app.domain.offboarding import (
     CODE_LOCKED,
     CODE_OK,
     CODE_WRONG,
+    FLOOR_HOURS,
     MAIL_MAX_ATTEMPTS,
     SCOPE_ACCOUNT,
     SEND_MAIL_KIND,
@@ -55,7 +56,13 @@ from app.domain.offboarding import (
     same_hash,
 )
 from app.domain.profile_summary import ProfileFacts, facts_from_json
-from app.domain.proposals import ProposalType, advance
+from app.domain.proposals import (
+    CANCELLED_BY_LEAVE,
+    OUTCOME_OFFBOARDING,
+    ProposalState,
+    ProposalType,
+    advance,
+)
 from app.domain.quota import window
 from app.domain.sentiment import Analysis, Figures, TopicCount, first_history_month
 from app.domain.special_hours import JOB_MAX_ATTEMPTS as HOURS_MAX_ATTEMPTS
@@ -750,7 +757,7 @@ class PostgresStore:
                     state = $2, step_token = $3, message_refs = '{}'::jsonb,
                     slots = slots || $4::jsonb, confirmed_at = $5, confirmed_event_id = $6,
                     confirmed_summary = $7, action_id = $8, outcome_reason = NULL
-                WHERE id = $1
+                WHERE id = $1 AND account_id = $9::uuid AND type = 'key_date'
                 """,
                 proposal_id,
                 advance(proposal.state, *path).value,
@@ -760,6 +767,7 @@ class PostgresStore:
                 panel_event_id(now, secrets.token_hex(4)),
                 f"{change.day.isoformat()}: {describe(change)}",
                 action_id,
+                account_id,
             )
             await self._release(conn, account_id, proposal_id)
         return action_id
@@ -772,12 +780,13 @@ class PostgresStore:
                 """
                 UPDATE proposal SET state = $2, step_token = $3, message_refs = '{}'::jsonb,
                                     outcome_reason = $4
-                WHERE id = $1
+                WHERE id = $1 AND account_id = $5::uuid AND type = 'key_date'
                 """,
                 proposal_id,
                 advance(proposal.state, *path).value,
                 secrets.token_hex(3),
                 OUTCOME_DISMISSED,
+                account_id,
             )
             await self._release(conn, account_id, proposal_id)
 
@@ -958,6 +967,12 @@ class PostgresStore:
                 account_id,
                 now,
             )
+            # The database refuses a leave shorter than its floor (47 hours, M5); it is
+            # asked for the configured grace, less the hour between the two clocks.
+            await conn.execute(
+                "SELECT set_config('fichaitor.offboarding_min_hours', $1, true)",
+                str(max(FLOOR_HOURS, (delete_at - now).total_seconds() / 3600 - 1)),
+            )
             offboarding_id = await conn.fetchval(
                 """
                 INSERT INTO offboarding
@@ -974,6 +989,27 @@ class PostgresStore:
             )
             if offboarding_id is None:
                 return CodeCheck(CODE_GONE)
+            # What waited in the chat is not sent any more (B12): the proposals not yet
+            # confirmed end here, and the thread stops showing one.
+            await conn.execute(
+                """
+                UPDATE proposal SET state = $3, outcome_reason = $4, step_token = $5,
+                                    message_refs = '{}'::jsonb
+                WHERE account_id = $1::uuid AND state = ANY($2::text[])
+                """,
+                account_id,
+                [state.value for state in CANCELLED_BY_LEAVE],
+                ProposalState.CANCELLED.value,
+                OUTCOME_OFFBOARDING,
+                secrets.token_hex(3),
+            )
+            await conn.execute(
+                """
+                UPDATE conversation SET active_proposal_id = NULL, updated_at = now()
+                WHERE account_id = $1::uuid AND active_proposal_id IS NOT NULL
+                """,
+                account_id,
+            )
             if scope == SCOPE_ACCOUNT:
                 await conn.execute(
                     """

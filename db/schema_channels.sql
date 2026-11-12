@@ -300,8 +300,13 @@ CREATE POLICY audit_log_conversation_insert ON audit_log FOR INSERT TO fichaitor
     WITH CHECK (event IN ('reply_confirmed', 'special_hours_confirmed'));
 -- Cola: toma y cierra sus propios jobs (los de canal), encola el job del ejecutor de
 -- cada acción que crea y las sincronizaciones periódicas, y vacía la carga de los jobs
--- del webhook al terminarlos. No puede borrar jobs.
-GRANT SELECT, INSERT, UPDATE ON job TO fichaitor_conversation;
+-- del webhook al terminarlos. No puede borrar jobs. Qué filas ve, toma y crea lo dicen
+-- las políticas de la cola, más abajo (B9).
+GRANT SELECT ON job TO fichaitor_conversation;
+GRANT INSERT (kind, payload, run_at, idempotency_key, max_attempts) ON job
+    TO fichaitor_conversation;
+GRANT UPDATE (state, attempts, locked_by, locked_at, run_at, finished_at, last_error, payload)
+    ON job TO fichaitor_conversation;
 
 -- === Worker ==================================================================
 -- Ya no lleva la conversación: en estas tablas solo borra, al hacer efectiva una baja y
@@ -320,6 +325,104 @@ GRANT DELETE ON channel_identity, link_code, channel_sender, link_failure_window
     TO fichaitor_worker;
 -- Antes la conversación iba en el worker y leía el nombre de la ficha: ya no lo necesita.
 REVOKE SELECT (title) ON location FROM fichaitor_worker;
+
+-- ---------------------------------------------------------------------------
+-- Cola de jobs: quién ve, toma y encola qué (B9 y B10 de
+-- docs/seguridad/revision-2026-11-12-b.md). Aquí y no en schema_worker.sql porque nombra
+-- a los tres roles.
+-- - El worker: todo (es quien ejecuta, planifica y borra).
+-- - La API: solo encola, y solo los tipos que encola su código: la respuesta y el horario
+--   confirmados, el correo y la baja, la sincronización de la ficha y lo que llega por el
+--   webhook. No lee la cola.
+-- - La conversación: ve, toma y cierra solo sus tipos (app/domain/channel_jobs.py:KINDS),
+--   así que nunca lee la carga de un send_mail (el correo del dueño, el código de baja y el
+--   token de restauración). Encola solo lo que encola su código.
+-- - Clave de idempotencia: vacía, o "<tipo>:..." del tipo que se encola (más las dos formas
+--   antiguas: "sync:..." de sync_profile y "<canal>:<update_id>" de channel_inbound). Así
+--   nadie más que el worker ocupa "retention:<fecha>" ni otra clave diaria del sistema.
+CREATE OR REPLACE FUNCTION job_key_fits(kind text, key text) RETURNS boolean
+LANGUAGE sql IMMUTABLE AS $$
+    SELECT key IS NULL
+        OR starts_with(key, kind || ':')
+        OR (kind = 'sync_profile' AND starts_with(key, 'sync:'))
+        OR (kind = 'channel_inbound' AND key ~ '^(telegram|whatsapp|email):[0-9]{1,20}$')
+$$;
+
+ALTER TABLE job ENABLE ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS job_worker ON job;
+CREATE POLICY job_worker ON job FOR ALL TO fichaitor_worker USING (true) WITH CHECK (true);
+DROP POLICY IF EXISTS job_api_insert ON job;
+CREATE POLICY job_api_insert ON job FOR INSERT TO fichaitor_api
+    WITH CHECK (kind IN ('reply_review', 'set_special_hours', 'send_mail', 'apply_offboarding',
+                         'sync_profile', 'channel_inbound')
+                AND job_key_fits(kind, idempotency_key));
+DROP POLICY IF EXISTS job_conversation_read ON job;
+CREATE POLICY job_conversation_read ON job FOR SELECT TO fichaitor_conversation
+    USING (kind IN ('channel_inbound', 'conversation_tick', 'propose_review',
+                    'channel_action_result', 'plan_key_dates'));
+DROP POLICY IF EXISTS job_conversation_update ON job;
+CREATE POLICY job_conversation_update ON job FOR UPDATE TO fichaitor_conversation
+    USING (kind IN ('channel_inbound', 'conversation_tick', 'propose_review',
+                    'channel_action_result', 'plan_key_dates'))
+    WITH CHECK (kind IN ('channel_inbound', 'conversation_tick', 'propose_review',
+                         'channel_action_result', 'plan_key_dates'));
+DROP POLICY IF EXISTS job_conversation_insert ON job;
+CREATE POLICY job_conversation_insert ON job FOR INSERT TO fichaitor_conversation
+    WITH CHECK (kind IN ('conversation_tick', 'sync_profile', 'plan_key_dates', 'reply_review',
+                         'set_special_hours')
+                AND job_key_fits(kind, idempotency_key));
+
+-- Solo en una base de pruebas (su nombre termina en _test): las pruebas encolan y toman
+-- jobs de tipos propios ('pytest-...') para que ningún proceso real los ejecute. Con las
+-- mismas reglas de clave. En cualquier otra base esta política no existe.
+DROP POLICY IF EXISTS job_pytest_api ON job;
+DROP POLICY IF EXISTS job_pytest_conversation ON job;
+DO $$
+BEGIN
+    IF current_database() LIKE '%\_test' THEN
+        CREATE POLICY job_pytest_api ON job FOR INSERT TO fichaitor_api
+            WITH CHECK (kind LIKE 'pytest-%' AND job_key_fits(kind, idempotency_key));
+        CREATE POLICY job_pytest_conversation ON job FOR ALL TO fichaitor_conversation
+            USING (kind LIKE 'pytest-%')
+            WITH CHECK (kind LIKE 'pytest-%' AND job_key_fits(kind, idempotency_key));
+    END IF;
+END
+$$;
+
+-- Propuestas e hilos: lo que la API puede cambiar (fechas clave, 2026-11-12). La base no
+-- sabe para qué cuenta trabaja la API en cada petición, así que no puede limitarla a "su"
+-- cuenta: eso lo hacen sus sentencias (siempre con account_id = la de la sesión). Lo que sí
+-- limita aquí, para el caso de SQL arbitrario con su usuario:
+-- - Propuestas: solo cambia las de fechas clave (las que se contestan en el panel). Una
+--   propuesta de respuesta a una reseña solo puede cancelarla por una baja (B12).
+-- - Hilos: solo los libera (active_proposal_id a NULL); nunca apunta uno a otra propuesta.
+-- La conversación hace lo de siempre; el worker lee lo que usan sus WHERE y borra.
+ALTER TABLE proposal ENABLE ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS proposal_api_read ON proposal;
+CREATE POLICY proposal_api_read ON proposal FOR SELECT TO fichaitor_api USING (true);
+DROP POLICY IF EXISTS proposal_api_update ON proposal;
+CREATE POLICY proposal_api_update ON proposal FOR UPDATE TO fichaitor_api
+    USING (true)
+    WITH CHECK (type = 'key_date' OR (state = 'cancelada' AND outcome_reason = 'offboarding'));
+DROP POLICY IF EXISTS proposal_conversation ON proposal;
+CREATE POLICY proposal_conversation ON proposal FOR ALL TO fichaitor_conversation
+    USING (true) WITH CHECK (true);
+DROP POLICY IF EXISTS proposal_worker ON proposal;
+CREATE POLICY proposal_worker ON proposal FOR ALL TO fichaitor_worker
+    USING (true) WITH CHECK (true);
+
+ALTER TABLE conversation ENABLE ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS conversation_api_read ON conversation;
+CREATE POLICY conversation_api_read ON conversation FOR SELECT TO fichaitor_api USING (true);
+DROP POLICY IF EXISTS conversation_api_release ON conversation;
+CREATE POLICY conversation_api_release ON conversation FOR UPDATE TO fichaitor_api
+    USING (true) WITH CHECK (active_proposal_id IS NULL);
+DROP POLICY IF EXISTS conversation_conversation ON conversation;
+CREATE POLICY conversation_conversation ON conversation FOR ALL TO fichaitor_conversation
+    USING (true) WITH CHECK (true);
+DROP POLICY IF EXISTS conversation_worker ON conversation;
+CREATE POLICY conversation_worker ON conversation FOR ALL TO fichaitor_worker
+    USING (true) WITH CHECK (true);
 
 -- ---------------------------------------------------------------------------
 -- Solo desarrollo local y pruebas: está en db/dev-init.sql.

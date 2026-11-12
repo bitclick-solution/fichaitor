@@ -34,7 +34,14 @@ from app.domain.offboarding import (
     PendingDeletion,
     same_hash,
 )
-from app.domain.proposals import Proposal, ProposalType, advance
+from app.domain.proposals import (
+    CANCELLED_BY_LEAVE,
+    OUTCOME_OFFBOARDING,
+    Proposal,
+    ProposalState,
+    ProposalType,
+    advance,
+)
 from app.domain.special_hours import JOB_MAX_ATTEMPTS as HOURS_MAX_ATTEMPTS
 from app.domain.special_hours import SpecialHoursChange, describe
 from app.ports.channel_links import LinkCodeTaken
@@ -584,6 +591,15 @@ class MemoryStore:
             earlier.restored_at, earlier.restore_token_hash = now, None
         leave = OffboardingRow(str(uuid.uuid4()), account_id, scope, now, delete_at, restore_hash)
         self.offboardings.append(leave)
+        # What waited for an answer is not sent any more (B12).
+        for proposal_id, proposal in list(self.key_date_proposals.items()):
+            if proposal.account_id == account_id and proposal.state in CANCELLED_BY_LEAVE:
+                self.key_date_proposals[proposal_id] = replace(
+                    proposal,
+                    state=ProposalState.CANCELLED,
+                    outcome_reason=OUTCOME_OFFBOARDING,
+                    message_refs={},
+                )
         if scope == SCOPE_ACCOUNT:
             for session in self.sessions.values():
                 if session.account_id == account_id and session.revoked_at is None:

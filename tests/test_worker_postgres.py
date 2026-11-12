@@ -186,7 +186,8 @@ def test_two_simultaneous_claims_of_one_job_give_it_to_one_worker_only(kind):
 
 
 def test_the_same_idempotency_key_is_enqueued_once(kind):
-    key = f"pytest-{uuid.uuid4().hex}"
+    # A key starts with the kind of its job (B10): no role takes a key of another kind.
+    key = f"{kind}:{uuid.uuid4().hex}"
 
     async def scenario():
         worker_pool = await asyncpg.create_pool(WORKER_URL, min_size=1, max_size=4)

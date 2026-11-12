@@ -28,6 +28,11 @@ MAIL_CODE = "offboarding_code"
 MAIL_SCHEDULED = "offboarding_scheduled"
 MAIL_RESTORED = "offboarding_restored"
 MAIL_MAX_ATTEMPTS = 3
+# The database refuses a leave scheduled for less than this (offboarding_guard in
+# db/schema_worker.sql, M5). The grace is at least MIN_GRACE_HOURS; the hour between the
+# two absorbs the time from the clock of the API to the one of the database.
+FLOOR_HOURS = 47
+MIN_GRACE_HOURS = 48
 APPLY_MAX_ATTEMPTS = 5
 
 CODE_DIGITS = 6
@@ -119,3 +124,6 @@ class RetentionPolicy:
     # Messaging channels (docs/canales.md): the messages of a conversation, the events
     # already seen, finished proposals, unlinked addresses and the counts of unknown chats.
     channel_days: int = 90
+    # Finished jobs (done or failed), days after they finished (I12). At least 2: the
+    # daily jobs of yesterday keep their idempotency key.
+    job_days: int = 14

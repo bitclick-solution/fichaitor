@@ -156,11 +156,12 @@ async def run(settings: WorkerSettings) -> None:
             log.event("fake_mail_enabled", logging.WARNING)
         retention_settings = RetentionSettings()
         queue = PostgresJobQueue(pool)
+        store = PostgresWorkerStore(pool)
         worker = Worker(
             queue,
             build_registry(
                 settings,
-                PostgresWorkerStore(pool),
+                store,
                 google,
                 jobs=queue,
                 sentiment_model=sentiment_model,
@@ -174,6 +175,7 @@ async def run(settings: WorkerSettings) -> None:
             job_timeout=settings.worker_job_timeout_seconds,
             lock_timeout=settings.worker_lock_timeout_seconds,
             daily=[DailyJob(retention.KIND, retention_settings.hour_utc, retention.MAX_ATTEMPTS)],
+            watch=[retention.RetentionWatch(store)],
         )
         stop = asyncio.Event()
         install_stop_signals(stop)

@@ -209,3 +209,43 @@ REVOKE ALL ON usage_counter FROM PUBLIC, fichaitor_api;
 GRANT SELECT (scope, window_start, hits) ON usage_counter TO fichaitor_api;
 GRANT INSERT (scope, window_start, expires_at, hits) ON usage_counter TO fichaitor_api;
 GRANT UPDATE (hits) ON usage_counter TO fichaitor_api;
+
+-- Quién no está sujeto a los disparadores de guardia: el propietario de la tabla (aplica
+-- los esquemas y prepara las pruebas) y un superusuario. Los roles de la aplicación, sí.
+-- pg_has_role no sirve aquí: un superusuario es "miembro" de todos los roles.
+CREATE OR REPLACE FUNCTION fichaitor_is_owner(rel regclass) RETURNS boolean
+LANGUAGE sql STABLE AS $$
+    SELECT coalesce(bool_or(r.rolsuper OR c.relowner = r.oid), false)
+    FROM pg_roles r, pg_class c
+    WHERE r.rolname = current_user AND c.oid = rel
+$$;
+
+-- B11 de docs/seguridad/revision-2026-11-12-b.md: un contador solo sube, y de uno en uno.
+-- Es lo único que hace take_quota (hits = hits + 1). Con UPDATE (hits), la API y la
+-- conversación podían ponerlo a cero y el tope dejaba de serlo. Un contador nuevo empieza
+-- en 1, y su ámbito, su ventana y su fin no cambian.
+CREATE OR REPLACE FUNCTION usage_counter_guard() RETURNS trigger
+LANGUAGE plpgsql AS $$
+BEGIN
+    IF fichaitor_is_owner(TG_RELID) THEN
+        RETURN NEW;
+    END IF;
+    IF TG_OP = 'INSERT' THEN
+        IF NEW.hits <> 1 THEN
+            RAISE EXCEPTION 'un contador nuevo empieza en 1' USING ERRCODE = 'check_violation';
+        END IF;
+        RETURN NEW;
+    END IF;
+    IF NEW.hits <> OLD.hits + 1
+       OR NEW.scope IS DISTINCT FROM OLD.scope
+       OR NEW.window_start IS DISTINCT FROM OLD.window_start
+       OR NEW.expires_at IS DISTINCT FROM OLD.expires_at THEN
+        RAISE EXCEPTION 'un contador solo suma 1' USING ERRCODE = 'check_violation';
+    END IF;
+    RETURN NEW;
+END
+$$;
+
+DROP TRIGGER IF EXISTS usage_counter_guard ON usage_counter;
+CREATE TRIGGER usage_counter_guard BEFORE INSERT OR UPDATE ON usage_counter
+    FOR EACH ROW EXECUTE FUNCTION usage_counter_guard();

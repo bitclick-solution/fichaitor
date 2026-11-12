@@ -354,6 +354,8 @@ Carga: `{}`. La pasada diaria que borra lo que ha superado su plazo. Qué borra 
 - **Idempotente.** Repetir la pasada no borra nada más. Dos pasadas a la vez no fallan.
 - **Antes de borrar**, hace efectivas las bajas vencidas cuyo job `apply_offboarding` se perdió y termina las revocaciones que quedaron a medias. Pasado un día, sin insistir a Google.
 - **Cada pasada deja constancia**: una fila en `retention_run` y el evento `retention_done`, con cuántas filas borró de cada tabla. Sin identificadores.
+- **Si no corre, avisa**: con 36 horas sin fila nueva en `retention_run`, el worker escribe `retention_overdue` (nivel `warning`).
+- **Jobs terminados**: borra los `done` y `failed` de más de `FICHAITOR_RETENTION_JOB_DAYS` días (14), salvo el que ejecutó una acción que se conserva (`job_finished` en los recuentos).
 
 Para añadir otro trabajo diario, añade un `DailyJob` a la lista `daily` de `Worker` (`app/worker/__main__.py`).
 
@@ -483,7 +485,7 @@ Todas llevan el prefijo `FICHAITOR_`. El worker las valida al arrancar y, si fal
 | `FICHAITOR_SMTP_HOST`, `FICHAITOR_SMTP_PORT`, `FICHAITOR_SMTP_USER`, `FICHAITOR_SMTP_PASSWORD` | No | —, `587`, —, — | Servidor de correo saliente. Consulta [El job `send_mail`](#el-job-send_mail) |
 | `FICHAITOR_MAIL_FROM`, `FICHAITOR_MAIL_FROM_NAME`, `FICHAITOR_MAIL_REPLY_TO` | No | —, `Fichaitor`, `soporte@fichaitor.es` | Remitente (en producción, `avisos@fichaitor.es`), su nombre y la dirección de respuesta |
 | `FICHAITOR_PUBLIC_BASE_URL` | No | `http://localhost:8080` | Base del enlace de restauración de los correos |
-| `FICHAITOR_FAKE_MAIL` | No | `false` | No envía correo: lo escribe en el log con el prefijo `[CORREO SIMULADO]` |
+| `FICHAITOR_FAKE_MAIL` | No | `false` | No envía correo: lo escribe en el log con el prefijo `[CORREO SIMULADO]`, con la dirección enmascarada y sin el código ni el token del enlace (`[código]`, `[oculto]`). Prohibido en producción: `deploy.sh` lo rechaza y el Compose lo fija a `false` |
 | `FICHAITOR_RETENTION_*` | No | Consulta [retencion.md](retencion.md#variables) | Plazos de conservación y hora de la pasada diaria |
 
 > **Precaución:** `FICHAITOR_TOKEN_PRIVATE_KEY` solo debe estar en el entorno del worker. No la pongas en el entorno de la API. La API cifra con la clave pública y no puede leer un token.
@@ -524,7 +526,7 @@ Todas llevan el prefijo `FICHAITOR_`. El worker las valida al arrancar y, si fal
 
 6. Para pararlo, pulsa `Ctrl+C`. El worker termina el job en curso y sale.
 
-El worker escribe una línea JSON por evento: `worker_started`, `job_started`, `job_done`, `job_retry`, `job_failed`, `job_lost`, `lost_jobs_recorded`, `optional_read_rejected`, `reply_sent`, `action_skipped`, `action_lost`, `lost_hook_error`, `exhausted_hook_error`, `queue_error`, `stop_requested` y `worker_stopped`. Los de la baja son `mail_sent`, `mail_failed`, `mail_missing`, `fake_mail_enabled`, `account_suspended`, `offboarding_effective`, `offboarding_skipped`, `offboarding_not_applied`, `leave_purged_on_reconnect`, `daily_job_enqueued`, `schedule_error` y `retention_done`. Los logs llevan el identificador, el tipo y el intento del job, y el identificador de la acción en los eventos del ejecutor. No llevan cargas, tokens, cadenas de conexión, textos de reseñas ni respuestas. Tampoco códigos de baja, enlaces de restauración ni direcciones de correo, salvo con `FICHAITOR_FAKE_MAIL=true`.
+El worker escribe una línea JSON por evento: `worker_started`, `job_started`, `job_done`, `job_retry`, `job_failed`, `job_lost`, `lost_jobs_recorded`, `optional_read_rejected`, `reply_sent`, `action_skipped`, `action_lost`, `lost_hook_error`, `exhausted_hook_error`, `queue_error`, `stop_requested` y `worker_stopped`. Los de la baja son `mail_sent`, `mail_failed`, `mail_missing`, `fake_mail_enabled`, `account_suspended`, `offboarding_effective`, `offboarding_skipped`, `offboarding_not_applied`, `leave_purged_on_reconnect`, `daily_job_enqueued`, `schedule_error`, `retention_done`, `retention_overdue` (aviso: 36 horas sin pasada de retención) y `watch_error`. Los logs llevan el identificador, el tipo y el intento del job, y el identificador de la acción en los eventos del ejecutor. No llevan cargas, tokens, cadenas de conexión, textos de reseñas ni respuestas. Tampoco códigos de baja, enlaces de restauración ni direcciones de correo, ni siquiera con `FICHAITOR_FAKE_MAIL=true`.
 
 > **Precaución:** Con `FICHAITOR_FAKE_GOOGLE=false`, un job `reply_review` publica de verdad. No encoles a mano un job de este tipo ni insertes filas en `action` contra una ficha real para probar: la respuesta es pública y avisa a quien escribió la reseña.
 

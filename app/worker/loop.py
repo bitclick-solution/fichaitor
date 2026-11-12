@@ -4,7 +4,7 @@ import asyncio
 import logging
 import time
 import traceback
-from collections.abc import Callable, Sequence
+from collections.abc import Awaitable, Callable, Sequence
 from dataclasses import dataclass
 from datetime import UTC, date, datetime
 from datetime import time as day_time
@@ -48,6 +48,7 @@ class Worker:
         recover_interval: float = 60.0,
         daily: Sequence[DailyJob] = (),
         clock: Callable[[], datetime] = lambda: datetime.now(UTC),
+        watch: Sequence[Callable[[], Awaitable[object]]] = (),
     ) -> None:
         self._queue = queue
         self._registry = registry
@@ -61,6 +62,9 @@ class Worker:
         self._clock = clock
         self._scheduled: set[str] = set()  # keys this process already tried today
         self._next_schedule = 0.0
+        # Checks that only write to the log (the daily pass is overdue...).
+        self._watch = tuple(watch)
+        self._next_watch = 0.0
 
     async def run(self, stop: asyncio.Event) -> None:
         """Run jobs until stop is set. The job in progress is always finished first."""
@@ -81,6 +85,7 @@ class Worker:
         job = await self._queue.claim(self._worker_id, self._registry.kinds, self._lock_timeout)
         # After claim(), which is what closes the jobs abandoned on their last attempt.
         await self._record_lost()
+        await self._run_watch()
         if job is None:
             return False
         fields = {"job_id": job.id, "kind": job.kind, "attempt": job.attempts}
@@ -138,6 +143,22 @@ class Worker:
             self._scheduled.add(key)
             if created:
                 event("daily_job_enqueued", kind=daily.kind, day=today.isoformat())
+
+    async def _run_watch(self) -> None:
+        """Run the checks, at most once per recover_interval. A failure is logged and
+        never stops the jobs."""
+        if not self._watch:
+            return
+        tick = time.monotonic()
+        if tick < self._next_watch:
+            return
+        self._next_watch = tick + self._recover_interval
+        for check in self._watch:
+            try:
+                async with asyncio.timeout(self._job_timeout):
+                    await check()
+            except Exception as exc:
+                event("watch_error", logging.ERROR, error=type(exc).__name__)
 
     async def _record_lost(self) -> None:
         """Let each handler record the jobs of its kind that died with their worker.

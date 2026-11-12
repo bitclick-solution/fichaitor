@@ -98,15 +98,39 @@ exigir_variables() {
     fi
 }
 
+# Cualquier FICHAITOR_FAKE_* que no esté vacío ni apagado, también los que se añadan
+# después (B13: FICHAITOR_FAKE_MAIL escribía en el registro el código de la baja y el
+# enlace de restauración). docker-compose.prod.yml los fija además a "false".
 prohibir_modos_falsos() {
     local archivo="$1" variable valor
-    for variable in FICHAITOR_FAKE_PLACES FICHAITOR_FAKE_GOOGLE FICHAITOR_FAKE_SCREENSHOT; do
+    for variable in $(grep -oE '^[[:space:]]*(export[[:space:]]+)?FICHAITOR_FAKE_[A-Z0-9_]+=' "${archivo}" |
+        sed -E 's/^[[:space:]]*(export[[:space:]]+)?//; s/=$//' | sort -u); do
         valor="$(valor_env "${archivo}" "${variable}")"
         case "${valor,,}" in
             "" | false | 0 | no | off) ;;
             *) die "$(basename "${archivo}") activa ${variable}: en producción no hay modos de ejemplo." ;;
         esac
     done
+}
+
+# I10: los secretos de Telegram, con longitud mínima. El pimiento de los códigos de
+# vinculación no puede faltar (dos vacíos «coinciden»), y sin sondeo largo (el de
+# producción) el secreto del webhook tampoco: es lo único que protege la ruta.
+# Solo se miden: el valor nunca se imprime.
+comprobar_secretos_telegram() {
+    local pimienta secreto sondeo
+    pimienta="$(valor_env "${API_ENV}" FICHAITOR_LINK_CODE_PEPPER)"
+    ((${#pimienta} >= 32)) ||
+        die "FICHAITOR_LINK_CODE_PEPPER falta o tiene menos de 32 caracteres en api.env (openssl rand -hex 32)."
+    [[ "${pimienta}" == "$(valor_env "${CONVERSATION_ENV}" FICHAITOR_LINK_CODE_PEPPER)" ]] ||
+        die "FICHAITOR_LINK_CODE_PEPPER no coincide entre api.env y conversation.env."
+    sondeo="$(valor_env "${CONVERSATION_ENV}" FICHAITOR_TELEGRAM_POLLING)"
+    case "${sondeo,,}" in
+        true | 1 | yes | on) return 0 ;;
+    esac
+    secreto="$(valor_env "${API_ENV}" FICHAITOR_TELEGRAM_WEBHOOK_SECRET)"
+    ((${#secreto} >= 32)) ||
+        die "FICHAITOR_TELEGRAM_WEBHOOK_SECRET falta o tiene menos de 32 caracteres en api.env (openssl rand -hex 32)."
 }
 
 exigir_privado() {
@@ -151,9 +175,8 @@ comprobar_entorno() {
     [[ -z "$(valor_env "${API_ENV}" FICHAITOR_CONVERSATION_DATABASE_URL)" ]] ||
         die "api.env contiene FICHAITOR_CONVERSATION_DATABASE_URL. Solo va en conversation.env."
     # Los códigos de vinculación los crea la API y los comprueba la conversación: el
-    # secreto de su huella tiene que ser el mismo en los dos.
-    [[ "$(valor_env "${API_ENV}" FICHAITOR_LINK_CODE_PEPPER)" == "$(valor_env "${CONVERSATION_ENV}" FICHAITOR_LINK_CODE_PEPPER)" ]] ||
-        die "FICHAITOR_LINK_CODE_PEPPER no coincide entre api.env y conversation.env."
+    # secreto de su huella tiene que ser el mismo en los dos, y largo.
+    comprobar_secretos_telegram
     [[ "$(valor_env "${API_ENV}" FICHAITOR_TOKEN_PUBLIC_KEY)" != "$(valor_env "${WORKER_ENV}" FICHAITOR_TOKEN_PRIVATE_KEY)" ]] ||
         die "La clave pública de api.env y la privada de worker.env son el mismo valor."
     [[ "$(valor_env "${API_ENV}" FICHAITOR_GOOGLE_CLIENT_ID)" == "$(valor_env "${WORKER_ENV}" FICHAITOR_GOOGLE_CLIENT_ID)" ]] ||

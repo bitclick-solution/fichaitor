@@ -94,7 +94,11 @@ def test_the_terms_cannot_be_configured_beyond_what_the_policy_promises():
     policy = RetentionSettings(_env_file=None).policy()
     assert (policy.google_data_days, policy.session_days, policy.removed_days) == (30, 30, 30)
     assert (policy.audit_months, policy.waitlist_months) == (12, 12)
+    assert policy.job_days == 14
+    assert RetentionSettings(_env_file=None, job_days=30).policy().job_days == 30
     for field, value in (
+        ("job_days", 1),  # the daily keys of yesterday must still be there
+        ("job_days", 91),
         ("google_data_days", 31),
         ("session_days", 31),
         ("waitlist_months", 13),
@@ -269,11 +273,30 @@ def test_smtp_errors_are_sorted_and_never_quote_the_address(smtp, failure, expec
     assert ADDRESS not in str(caught.value) and caught.value.__cause__ is None
 
 
-def test_the_fake_mailer_writes_the_message_to_the_log_with_its_prefix(caplog):
+def test_the_fake_mailer_writes_the_message_to_the_log_without_code_token_or_address(caplog):
+    # B13: even if it reached production, the log would hold no code and no link.
     fake = FakeMailer()
+    token = "tok_" + "x" * 40
+    url = restore_url("https://fichaitor.test", token)
     with caplog.at_level(logging.WARNING, logger="fichaitor.mail"):
         asyncio.run(fake.send(code_email(ADDRESS, "ficha", "042137", 10)))
-    assert fake.sent and PREFIX in caplog.text and "042137" in caplog.text
+        asyncio.run(
+            fake.send(scheduled_email(ADDRESS, "ficha", datetime(2027, 1, 1, tzinfo=UTC), url))
+        )
+    assert len(fake.sent) == 2 and "042137" in fake.sent[0].text  # the message itself is whole
+    assert PREFIX in caplog.text and "Has pedido desconectar tu ficha" in caplog.text
+    assert "042137" not in caplog.text and "[código]" in caplog.text
+    assert token not in caplog.text and "restaurar=[oculto]" in caplog.text
+    assert ADDRESS not in caplog.text and rules.mask_email(ADDRESS) in caplog.text
+
+
+def test_the_grace_of_a_leave_cannot_be_configured_below_48_hours():
+    # M5: the database refuses less than 47 hours; the configuration stops before.
+    from app.config import Settings
+
+    assert Settings(_env_file=None).offboarding_grace_hours == 48
+    with pytest.raises(ValueError):
+        Settings(_env_file=None, offboarding_grace_hours=47)
 
 
 def test_mail_is_available_only_with_a_server_or_in_fake_mode():

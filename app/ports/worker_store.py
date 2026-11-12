@@ -220,6 +220,10 @@ class WorkerStore(Protocol):
         """Empty the payload of a job: what it carried must not outlive it."""
         ...
 
+    async def last_retention_at(self) -> datetime | None:
+        """When the last daily pass finished (its row in retention_run); None if never."""
+        ...
+
     async def scrub_finished_jobs(self, kind: str) -> int:
         """Empty the payload of every finished job of that kind that still has one."""
         ...

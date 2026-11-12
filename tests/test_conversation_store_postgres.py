@@ -632,9 +632,10 @@ async def _counts(account: str) -> dict[str, int]:
 async def _leave(s: Scene, account: str, scope: str) -> None:
     rows = await owner(
         "INSERT INTO offboarding (account_id, scope, google_sub, confirmed_at, delete_at)"
-        " SELECT id, $2, google_sub, $3, $3 FROM account WHERE id = $1::uuid RETURNING id::text",
+        " SELECT id, $2, google_sub, $3, $4 FROM account WHERE id = $1::uuid RETURNING id::text",
         account,
         scope,
+        NOW - timedelta(hours=48),
         NOW,
     )
     assert await s.wstore.begin_offboarding(rows[0]["id"], NOW + timedelta(hours=1)) is not None

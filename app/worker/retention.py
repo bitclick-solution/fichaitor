@@ -16,7 +16,7 @@ What it does:
 
 import logging
 from collections.abc import Callable
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 
 from app.domain.jobs import Job
 from app.domain.offboarding import RetentionPolicy
@@ -26,6 +26,9 @@ from app.worker.apply_offboarding import ApplyOffboarding
 
 KIND = "retention"
 MAX_ATTEMPTS = 3
+# Without a pass for this long, the worker warns in the log (B10 of
+# docs/seguridad/revision-2026-11-12-b.md): a day plus the margin of its retries.
+OVERDUE_AFTER = timedelta(hours=36)
 
 
 class Retention:
@@ -57,3 +60,37 @@ class Retention:
                 )
         deleted = await self._store.run_retention(now, self._policy)
         log.event("retention_done", job_id=job.id, offboardings_applied=applied, deleted=deleted)
+
+
+class RetentionWatch:
+    """Warns in the log (`retention_overdue`, level warning) while the daily pass has
+    not finished for OVERDUE_AFTER: its job may have been blocked (an idempotency key
+    taken in advance, B10), or keep failing. Without any pass yet, it counts from the
+    start of this process. Run by the worker loop every few minutes; it never raises
+    into the loop."""
+
+    def __init__(
+        self,
+        store: WorkerStore,
+        clock: Callable[[], datetime] = lambda: datetime.now(UTC),
+        overdue_after: timedelta = OVERDUE_AFTER,
+    ) -> None:
+        self._store = store
+        self._clock = clock
+        self._overdue_after = overdue_after
+        self._started = clock()
+
+    async def __call__(self) -> bool:
+        """True if it warned."""
+        now = self._clock()
+        last = await self._store.last_retention_at()
+        since = last or self._started
+        if now - since <= self._overdue_after:
+            return False
+        log.event(
+            "retention_overdue",
+            logging.WARNING,
+            hours=int((now - since).total_seconds() // 3600),
+            never=last is None,
+        )
+        return True

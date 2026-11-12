@@ -84,6 +84,7 @@ services:
       FICHAITOR_FAKE_PLACES: "false"
       FICHAITOR_FAKE_GOOGLE: "false"
       FICHAITOR_FAKE_SCREENSHOT: "false"
+      FICHAITOR_FAKE_MAIL: "false"
     depends_on:
       fichaitor-db:
         condition: service_healthy
@@ -122,6 +123,8 @@ services:
       - ${FICHAITOR_ENV_DIR:-.}/worker.env
     environment:
       FICHAITOR_FAKE_GOOGLE: "false"
+      FICHAITOR_FAKE_SCREENSHOT: "false"
+      FICHAITOR_FAKE_MAIL: "false"
     depends_on:
       fichaitor-db:
         condition: service_healthy
@@ -157,6 +160,7 @@ services:
       - ${FICHAITOR_ENV_DIR:-.}/conversation.env
     environment:
       FICHAITOR_FAKE_SCREENSHOT: "false"
+      FICHAITOR_FAKE_MAIL: "false"
       # En producción se recibe por el webhook, nunca por sondeo largo.
       FICHAITOR_TELEGRAM_POLLING: "false"
     depends_on:

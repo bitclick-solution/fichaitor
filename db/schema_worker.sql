@@ -441,6 +441,68 @@ CREATE UNIQUE INDEX IF NOT EXISTS offboarding_restore_token ON offboarding (rest
 CREATE INDEX IF NOT EXISTS offboarding_open_sub ON offboarding (google_sub)
     WHERE restored_at IS NULL AND purged_at IS NULL;
 
+-- M5 de docs/seguridad/revision-2026-11-12-b.md: la API podía programar, con SQL, la baja
+-- inmediata de cualquier cliente (su google_sub en la cuenta del atacante y delete_at
+-- = now()). Reglas en la base, para quien no sea el propietario:
+-- - Al programarla: el google_sub es el de esa cuenta (sin dar de baja) y faltan al menos
+--   47 horas, contadas desde el reloj de la base. Las 47 horas son un suelo fijo; la
+--   aplicación puede pedir más (el plazo configurado, con fichaitor.offboarding_min_hours
+--   en la transacción), nunca menos. Así el dueño ve la baja programada al entrar y la
+--   puede restaurar.
+-- - Después: no cambian la cuenta, el alcance ni las fechas de la baja, y google_sub solo
+--   puede vaciarse.
+-- I8: una baja restaurada (o sustituida por otra) no cierra nada; su google_sub se vacía
+-- en la misma escritura, para no unir la identidad de Google con la cuenta para siempre.
+CREATE OR REPLACE FUNCTION offboarding_guard() RETURNS trigger
+LANGUAGE plpgsql AS $$
+DECLARE
+    account_sub text;
+    min_hours numeric;
+BEGIN
+    IF TG_OP = 'UPDATE' AND NEW.restored_at IS NOT NULL THEN
+        NEW.google_sub := NULL;
+    END IF;
+    IF fichaitor_is_owner(TG_RELID) THEN
+        RETURN NEW;
+    END IF;
+    IF TG_OP = 'UPDATE' THEN
+        IF NEW.account_id IS DISTINCT FROM OLD.account_id
+           OR NEW.scope IS DISTINCT FROM OLD.scope
+           OR NEW.confirmed_at IS DISTINCT FROM OLD.confirmed_at
+           OR NEW.delete_at IS DISTINCT FROM OLD.delete_at
+           OR (NEW.google_sub IS DISTINCT FROM OLD.google_sub AND NEW.google_sub IS NOT NULL) THEN
+            RAISE EXCEPTION 'una baja no cambia de cuenta, de fecha ni de usuario de Google'
+                USING ERRCODE = 'check_violation';
+        END IF;
+        RETURN NEW;
+    END IF;
+    SELECT a.google_sub INTO account_sub FROM account a
+    WHERE a.id = NEW.account_id AND a.deleted_at IS NULL;
+    IF account_sub IS NULL OR NEW.google_sub IS DISTINCT FROM account_sub THEN
+        RAISE EXCEPTION 'la baja no es de esa cuenta' USING ERRCODE = 'check_violation';
+    END IF;
+    min_hours := greatest(47, coalesce(
+        nullif(current_setting('fichaitor.offboarding_min_hours', true), '')::numeric, 47));
+    IF NEW.delete_at < now() + make_interval(secs => min_hours * 3600) THEN
+        RAISE EXCEPTION 'una baja se programa con al menos % horas', min_hours
+            USING ERRCODE = 'check_violation';
+    END IF;
+    IF NEW.restored_at IS NOT NULL OR NEW.effective_at IS NOT NULL
+       OR NEW.purged_at IS NOT NULL OR NEW.revoke_state IS NOT NULL THEN
+        RAISE EXCEPTION 'una baja nace programada' USING ERRCODE = 'check_violation';
+    END IF;
+    RETURN NEW;
+END
+$$;
+
+DROP TRIGGER IF EXISTS offboarding_guard ON offboarding;
+CREATE TRIGGER offboarding_guard BEFORE INSERT OR UPDATE ON offboarding
+    FOR EACH ROW EXECUTE FUNCTION offboarding_guard();
+
+-- Bases anteriores (I8): las bajas ya restauradas olvidan el usuario de Google.
+UPDATE offboarding SET google_sub = NULL
+WHERE restored_at IS NOT NULL AND google_sub IS NOT NULL;
+
 -- Pasadas de la tarea de retención: cuántas filas borró de cada tabla. Solo recuentos.
 CREATE TABLE IF NOT EXISTS retention_run (
     id      bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
@@ -473,6 +535,9 @@ GRANT UPDATE (effective_at, revoke_state, purged_at, google_sub, restore_token_h
     ON offboarding TO fichaitor_worker;
 
 GRANT INSERT (deleted) ON retention_run TO fichaitor_worker;
+-- Cuándo corrió la última pasada: el worker avisa en el registro si pasan 36 horas sin
+-- ninguna (B10). Solo la fecha, no los recuentos.
+GRANT SELECT (at) ON retention_run TO fichaitor_worker;
 
 -- El borrado físico lo hace el worker y nadie más: la API sigue sin poder borrar nada.
 -- No hay un rol aparte para la retención: lo usaría el mismo proceso, con la misma

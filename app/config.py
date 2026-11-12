@@ -55,5 +55,6 @@ class Settings(BaseSettings):
     offboarding_code_rate_limit: int = Field(default=5, ge=1)  # per account
     offboarding_code_rate_window_seconds: int = Field(default=3600, ge=1)
     # Hours a confirmed leave stays scheduled, and can be restored, before it is effective.
-    offboarding_grace_hours: float = Field(default=48.0, ge=0)
+    # At least 48: the database refuses a leave of less than 47 hours (M5).
+    offboarding_grace_hours: float = Field(default=48.0, ge=48)
     offboarding_restore_rate_limit: int = Field(default=20, ge=1)  # per client IP and hour

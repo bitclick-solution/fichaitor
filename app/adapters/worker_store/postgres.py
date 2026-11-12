@@ -27,7 +27,7 @@ from app.domain.actions import (
     REPLY_REVIEW,
     SET_SPECIAL_HOURS,
 )
-from app.domain.offboarding import SCOPE_ACCOUNT, RetentionPolicy
+from app.domain.offboarding import FLOOR_HOURS, SCOPE_ACCOUNT, RetentionPolicy
 from app.domain.profile_summary import (
     LOW_RATING_MAX,
     STATUS_ERROR,
@@ -77,6 +77,17 @@ _AUDIT_FROM_ACTION = """
     LEFT JOIN review r
       ON r.id = a.review_id AND r.google_sub = a.google_sub AND r.location = a.location
     WHERE a.id = $1
+"""
+
+
+# A leave as the API writes it (M5 of docs/seguridad/revision-2026-11-12-b.md): of the
+# Google user of that very account, still not deleted, and scheduled with the floor of
+# hours the database imposes. `o` is the leave.
+_COHERENT_LEAVE = f"""
+    EXISTS (SELECT 1 FROM account a
+            WHERE a.id = o.account_id AND a.google_sub = o.google_sub
+              AND a.deleted_at IS NULL)
+    AND o.delete_at >= o.confirmed_at + interval '{FLOOR_HOURS} hours'
 """
 
 
@@ -740,13 +751,16 @@ class PostgresWorkerStore:
         async with self._pool.acquire() as conn, conn.transaction():
             # One statement decides it: a leave restored a moment ago is not touched,
             # and once this is written it can no longer be restored.
+            # And only a leave that is what the API writes (M5): the Google user of that
+            # very account, scheduled with the floor of hours. One written by other means
+            # is never made effective: nothing is revoked or deleted for it.
             begun = await conn.fetchrow(
-                """
-                UPDATE offboarding SET effective_at = $2, restore_token_hash = NULL
-                WHERE id = $1::uuid AND restored_at IS NULL AND effective_at IS NULL
-                  AND delete_at <= $2
-                RETURNING account_id, scope
-                """,
+                f"""
+                UPDATE offboarding o SET effective_at = $2, restore_token_hash = NULL
+                WHERE o.id = $1::uuid AND o.restored_at IS NULL AND o.effective_at IS NULL
+                  AND o.delete_at <= $2 AND {_COHERENT_LEAVE}
+                RETURNING o.account_id, o.scope
+                """,  # noqa: S608
                 offboarding_id,
                 now,
             )
@@ -831,17 +845,22 @@ class PostgresWorkerStore:
 
     async def due_offboardings(self, now: datetime) -> list[tuple[str, bool]]:
         rows = await self._pool.fetch(
-            """
-            SELECT id::text AS id,
-                   coalesce(effective_at <= $1::timestamptz - interval '1 day', false) AS give_up
-            FROM offboarding
-            WHERE restored_at IS NULL AND revoke_state IS NULL AND google_sub IS NOT NULL
-              AND (effective_at <= $1 OR (effective_at IS NULL AND delete_at <= $1))
-            ORDER BY delete_at, id
-            """,
+            f"""
+            SELECT o.id::text AS id,
+                   coalesce(o.effective_at <= $1::timestamptz - interval '1 day', false)
+                       AS give_up
+            FROM offboarding o
+            WHERE o.restored_at IS NULL AND o.revoke_state IS NULL AND o.google_sub IS NOT NULL
+              AND (o.effective_at <= $1
+                   OR (o.effective_at IS NULL AND o.delete_at <= $1 AND {_COHERENT_LEAVE}))
+            ORDER BY o.delete_at, o.id
+            """,  # noqa: S608
             now,
         )
         return [(r["id"], r["give_up"]) for r in rows]
+
+    async def last_retention_at(self) -> datetime | None:
+        return await self._pool.fetchval("SELECT max(at) FROM retention_run")
 
     async def _purge_leave(self, offboarding_id: object, now: datetime) -> dict[str, int]:
         """Delete everything obtained from Google for the user of an effective leave.
@@ -1022,6 +1041,23 @@ class PostgresWorkerStore:
             # Counters of the caps on paid calls whose window has ended.
             counts["usage_counter"] = _deleted(
                 await conn.execute("DELETE FROM usage_counter WHERE expires_at <= $1", now)
+            )
+            # Finished jobs (I12): their payload may name the Google user and the
+            # profile. Kept: the job that carried out an action, while the action is
+            # kept (the trail of who ran it). The daily keys of the system are younger
+            # than the term (at least 2 days).
+            counts["job_finished"] = _deleted(
+                await conn.execute(
+                    """
+                    DELETE FROM job j
+                    WHERE j.state IN ('done', 'failed')
+                      AND coalesce(j.finished_at, j.created_at)
+                          <= $1::timestamptz - make_interval(days => $2)
+                      AND NOT EXISTS (SELECT 1 FROM action x WHERE x.job_id = j.id::text)
+                    """,
+                    now,
+                    policy.job_days,
+                )
             )
             launched = policy.waitlist_launched_at
             counts["waitlist_entry"] = _deleted(

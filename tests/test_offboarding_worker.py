@@ -33,7 +33,7 @@ from app.worker.apply_offboarding import ApplyOffboarding
 from app.worker.loop import DailyJob, Worker
 from app.worker.registry import HandlerRegistry
 from app.worker.reply_review import ReplyReview
-from app.worker.retention import Retention
+from app.worker.retention import Retention, RetentionWatch
 from app.worker.send_mail import SendMail
 from app.worker.sync_profile import SyncProfile
 
@@ -517,3 +517,60 @@ def test_no_job_of_an_account_with_a_scheduled_leave_reads_writes_or_analyses():
     store.suspended.clear()
     run(sync(Job("j5", "sync_profile", target)))
     assert len(google.reads) > reads
+
+
+# --- the daily pass that does not run (B10) -----------------------------------------
+
+
+class LastPass:
+    def __init__(self, at: datetime | None) -> None:
+        self.at = at
+
+    async def last_retention_at(self) -> datetime | None:
+        return self.at
+
+
+def test_the_worker_warns_when_the_daily_pass_has_not_run_for_36_hours(caplog):
+    clock = [NOW]
+    store = LastPass(NOW - timedelta(hours=30))
+    watch = RetentionWatch(store, lambda: clock[0])
+    with caplog.at_level(logging.WARNING):
+        assert run(watch()) is False
+        clock[0] = NOW + timedelta(hours=7)  # 37 hours after the last pass
+        assert run(watch()) is True
+    (record,) = [r for r in caplog.records if "retention_overdue" in r.getMessage()]
+    assert record.levelno == logging.WARNING
+    assert record.fields == {"hours": 37, "never": False}
+
+
+def test_without_any_pass_it_counts_from_the_start_of_the_worker(caplog):
+    clock = [NOW]
+    watch = RetentionWatch(LastPass(None), lambda: clock[0])
+    assert run(watch()) is False
+    clock[0] = NOW + timedelta(hours=37)
+    with caplog.at_level(logging.WARNING):
+        assert run(watch()) is True
+
+
+def test_the_loop_runs_the_watch_and_a_failing_one_does_not_stop_the_jobs(caplog):
+    clock = [NOW]
+    queue = MemoryJobQueue(lambda: clock[0])
+    calls: list[str] = []
+
+    async def good() -> None:
+        calls.append("good")
+
+    async def broken() -> None:
+        raise RuntimeError("caído")
+
+    worker = Worker(
+        queue,
+        HandlerRegistry(),
+        worker_id="w",
+        recover_interval=0.0,
+        watch=[broken, good],
+        clock=lambda: clock[0],
+    )
+    with caplog.at_level(logging.ERROR):
+        assert run(worker.run_once()) is False
+    assert calls == ["good"] and "watch_error" in caplog.text

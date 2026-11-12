@@ -34,6 +34,13 @@ class MessageRecord:
 
 
 class ConversationStore(Protocol):
+    # --- the account ------------------------------------------------------------
+    async def on_leave(self, account_id: str) -> bool:
+        """The account has a leave scheduled (of its profile or of itself): nothing is
+        sent to it on the agent's initiative, and no new proposal is made, until the leave
+        is restored (B12 of docs/seguridad/revision-2026-11-12-b.md)."""
+        ...
+
     # --- linked addresses -------------------------------------------------------
     async def get_identity(self, channel: str, address: str) -> ChannelIdentity | None:
         """The ACTIVE link of that address, or None. An unlinked address is unknown."""
