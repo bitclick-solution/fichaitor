@@ -127,6 +127,63 @@
   addEventListener("load", medir);
   medir();
 
+  /* ── Salto de sección (brand/DESIGN.md, apartado 11) ──
+     Al detenerse el scroll, la página se asienta en el punto más cercano en el sentido del
+     movimiento: el inicio de una sección o, en las escenas ancladas, cada uno de sus pasos.
+     Dentro de una sección que no cabe en pantalla, el scroll es libre. */
+  if (lenis) {
+    const UMBRAL = 0.08; // fracción de la altura de pantalla que hay que moverse para cambiar de punto
+    let asentado = scrollY, saltando = false, reposo = 0;
+
+    const mapa = () => {
+      const puntos = [], libres = [];
+      const fin = Math.max(0, document.documentElement.scrollHeight - vh);
+      secciones.forEach((s, i) => {
+        const top = tops[i], sobra = altos[i] - vh;
+        if (i === iEscena && sobra > 0) {
+          for (let k = 0; k < 5; k++) puntos.push(top + ((k + 0.5) / 5) * sobra);
+        } else if (i === iPromesa && sobra > 0) {
+          puntos.push(top, top + sobra);
+        } else if (sobra > 24) {
+          // No cabe en pantalla: se puede leer con scroll libre entre su inicio y su final
+          puntos.push(top, top + sobra);
+          libres.push([top + 0.2 * vh, top + sobra]);
+        } else {
+          puntos.push(top);
+        }
+      });
+      const unicos = [...new Set(puntos.map((p) => Math.round(Math.min(p, fin))))].sort((a, b) => a - b);
+      return { puntos: unicos, libres };
+    };
+
+    const asentar = () => {
+      if (saltando || document.documentElement.style.overflow === "hidden") return;
+      const y = scrollY;
+      const { puntos, libres } = mapa();
+      if (libres.some(([a, b]) => y > a && y < b)) { asentado = y; return; }
+
+      let arriba = puntos[0], abajo = puntos[puntos.length - 1];
+      for (const p of puntos) { if (p <= y + 1) arriba = p; }
+      for (let k = puntos.length - 1; k >= 0; k--) { if (puntos[k] > y + 1) abajo = puntos[k]; }
+      if (abajo < arriba) abajo = arriba;
+
+      const baja = y >= asentado;
+      const destino = baja ? (y - arriba > UMBRAL * vh ? abajo : arriba) : (abajo - y > UMBRAL * vh ? arriba : abajo);
+      asentado = destino;
+      if (Math.abs(destino - y) < 2) return;
+
+      saltando = true;
+      const soltar = () => { saltando = false; };
+      lenis.scrollTo(destino, { duration: 0.8, onComplete: soltar });
+      setTimeout(soltar, 1100);
+    };
+
+    addEventListener("scroll", () => {
+      clearTimeout(reposo);
+      if (!saltando) reposo = setTimeout(asentar, 140);
+    }, { passive: true });
+  }
+
   /* ── Enlaces internos: van al inicio natural de la sección ── */
   function irA(id) {
     const i = secciones.findIndex((s) => s.id === id);

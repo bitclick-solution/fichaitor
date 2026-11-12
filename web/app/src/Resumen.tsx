@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { api, ApiError, OAUTH_START, type Summary } from "./api";
+import { Cuenta, Seccion } from "./movimiento";
 
 // Reglas de sondeo del contrato: `pendiente` → cada 3 s, 10 intentos; `stale` → una sola repetición a los 10 s.
 const INTERVALO_PENDIENTE = 3000;
@@ -24,9 +25,17 @@ function fecha(iso: string | null, formato: Intl.DateTimeFormat): string | null 
   return Number.isNaN(d.getTime()) ? null : formato.format(d);
 }
 
-const cifra = (n: number | null) => (n === null ? "—" : numero.format(n));
 
-export function Resumen({ fichaId, onSinSesion }: { fichaId: string; onSinSesion: () => void }) {
+export function Resumen({
+  fichaId,
+  onSinSesion,
+  onDatos,
+}: {
+  fichaId: string;
+  onSinSesion: () => void;
+  /** Avisa al panel de cada lectura buena (para la valoración sobre 5 de la cabecera). */
+  onDatos?: (s: Summary) => void;
+}) {
   const [datos, setDatos] = useState<Summary | null>(null);
   const [fase, setFase] = useState<Fase>("cargando");
   const [mensaje, setMensaje] = useState<string | null>(null);
@@ -53,6 +62,7 @@ export function Resumen({ fichaId, onSinSesion }: { fichaId: string; onSinSesion
         }
         setDatos(s);
         setFase("listo");
+        onDatos?.(s);
         const falloTrasConectar = RECIEN_CONECTADO && (s.status === "needs_reconnect" || s.status === "error");
         if ((s.stale || falloTrasConectar) && !repetidoPorStale) {
           repetidoPorStale = true;
@@ -76,7 +86,7 @@ export function Resumen({ fichaId, onSinSesion }: { fichaId: string; onSinSesion
       vivo = false;
       if (temporizador) clearTimeout(temporizador);
     };
-  }, [fichaId, onSinSesion]);
+  }, [fichaId, onSinSesion, onDatos]);
 
   if (fase === "cargando" || fase === "leyendo") {
     return (
@@ -115,7 +125,7 @@ export function Resumen({ fichaId, onSinSesion }: { fichaId: string; onSinSesion
   const cambios = s.google_changed_labels ?? [];
 
   return (
-    <div className="bloque">
+    <Seccion id="resumen">
       {s.status === "needs_reconnect" && (
         <div className="reconectar" role="alert">
           <p>
@@ -136,7 +146,7 @@ export function Resumen({ fichaId, onSinSesion }: { fichaId: string; onSinSesion
           <div>
             <h2 className="rotulo">Reseñas sin responder</h2>
             <p className="cifra" data-alerta={(s.unanswered_count ?? 0) > 0}>
-              {cifra(s.unanswered_count)}
+              {s.unanswered_count === null ? "—" : <Cuenta valor={s.unanswered_count} />}
             </p>
             {s.review_count !== null && (
               <p className="sec">
@@ -151,7 +161,7 @@ export function Resumen({ fichaId, onSinSesion }: { fichaId: string; onSinSesion
           <div>
             <h2 className="rotulo">Horarios de festivos</h2>
             <p className="cifra" data-alerta={s.upcoming_special_hours === 0}>
-              {cifra(s.upcoming_special_hours)}
+              {s.upcoming_special_hours === null ? "—" : <Cuenta valor={s.upcoming_special_hours} />}
             </p>
             {s.upcoming_special_hours !== null && (
               <p className="sec">
@@ -189,6 +199,6 @@ export function Resumen({ fichaId, onSinSesion }: { fichaId: string; onSinSesion
           {s.stale && ". Actualizando…"}
         </p>
       )}
-    </div>
+    </Seccion>
   );
 }

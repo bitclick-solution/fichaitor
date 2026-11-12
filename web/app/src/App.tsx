@@ -1,7 +1,11 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import logo from "../../../brand/logo.svg";
-import { api, ApiError, OAUTH_START, type Diagnosis, type Location, type Me } from "./api";
+import { api, ApiError, OAUTH_START, type Diagnosis, type Location, type Me, type Summary } from "./api";
+import { Indice } from "./Indice";
+import { Cuenta, Seccion, SelloEstrellas } from "./movimiento";
 import { Resumen } from "./Resumen";
+import { Resenas } from "./Resenas";
+import { Sentimiento } from "./Sentimiento";
 
 type Vista =
   | { tipo: "cargando" }
@@ -254,6 +258,32 @@ function Elegir({ me, onElegida }: { me: Me; onElegida: (me: Me) => void }) {
   );
 }
 
+/**
+ * Muchas fichas llevan el nombre seguido de una descripción: «Publiexpe | Regalos de empresa y
+ * merchandising personalizado». El titular muestra solo el nombre; el resto va debajo, en pequeño.
+ * Si no hay separador, el titular es el nombre entero y su tamaño se ajusta a la longitud.
+ */
+function partirNombre(titulo: string): { principal: string; resto: string } {
+  const limpio = titulo.trim().replace(/\s+/g, " ");
+  const m = /^(.{2,40}?)\s*(?:\s[|·•–—-]\s|:\s)\s*(.+)$/.exec(limpio);
+  if (m?.[1] && m[2]) return { principal: m[1].trim(), resto: m[2].trim() };
+  return { principal: limpio, resto: "" };
+}
+
+function largoDe(texto: string): "corto" | "medio" | "largo" {
+  if (texto.length <= 16) return "corto";
+  if (texto.length <= 32) return "medio";
+  return "largo";
+}
+
+const SECCIONES = [
+  // «Resumen» sube hasta el nombre del negocio: la cabecera forma parte del resumen.
+  { id: "resumen", nombre: "Resumen", arriba: true },
+  { id: "opinion", nombre: "Opinión" },
+  { id: "resenas", nombre: "Reseñas" },
+  { id: "mejoras", nombre: "Mejoras" },
+];
+
 const IMPACTO: Record<string, string> = { alto: "Impacto alto", medio: "Impacto medio", bajo: "Impacto bajo" };
 
 
@@ -309,14 +339,27 @@ function Panel({
     };
   }, [ficha.id, intento, onSinSesion]);
 
+  const nombre = partirNombre(ficha.title);
+  // Tras publicar una respuesta, se vuelven a pedir el resumen y el sentimiento.
+  const [version, setVersion] = useState(0);
+  const alCambiar = useCallback(() => setVersion((n) => n + 1), []);
+  // Valoración real de la ficha (media sobre 5), que llega con el resumen.
+  const [media, setMedia] = useState<{ valor: number; total: number | null } | null>(null);
+  const alLeerResumen = useCallback(
+    (s: Summary) => setMedia(s.average_rating !== null ? { valor: s.average_rating, total: s.review_count } : null),
+    [],
+  );
+
   return (
     <section className="pantalla panel">
       <div className="panel-cab">
         <div>
-          <h1 className="cartel">
-            {ficha.title}
+          <h1 className="cartel nombre" data-largo={largoDe(nombre.principal)}>
+            {nombre.principal}
             <Punto />
           </h1>
+          {nombre.resto && <p className="rotulo nombre-resto">{nombre.resto}</p>}
+          {media && <SelloEstrellas media={media.valor} total={media.total} />}
           {estado.tipo === "ok" && (
             <>
               <p className="sec">{[estado.d.category, estado.d.address].filter(Boolean).join(" · ")}</p>
@@ -332,7 +375,7 @@ function Panel({
         {estado.tipo === "ok" && (
           <div className="nota-grande" data-nivel={estado.d.score < 60 ? "mal" : "bien"}>
             <p className="cartel">
-              {estado.d.score}
+              <Cuenta valor={estado.d.score} />
               <small>/100</small>
             </p>
             <p className="rotulo">{estado.d.label}</p>
@@ -340,7 +383,15 @@ function Panel({
         )}
       </div>
 
-      <Resumen fichaId={ficha.id} onSinSesion={onSinSesion} />
+      {/* Orden decidido por el propietario (2026-11-12): la nota de la ficha en la cabecera,
+          después las tres tarjetas (reseñas sin responder, festivos, cambios) y debajo el sentimiento. */}
+      <Indice secciones={SECCIONES} />
+
+      <Resumen key={`resumen-${version}`} fichaId={ficha.id} onSinSesion={onSinSesion} onDatos={alLeerResumen} />
+
+      <Sentimiento fichaId={ficha.id} version={version} onSinSesion={onSinSesion} />
+
+      <Resenas fichaId={ficha.id} onSinSesion={onSinSesion} onCambio={alCambiar} />
 
       {estado.tipo === "cargando" && <Cargando texto="Analizando tu ficha" />}
 
@@ -380,7 +431,7 @@ function Panel({
       )}
 
       {estado.tipo === "ok" && (
-        <div className="bloque">
+        <Seccion id="mejoras">
           <h2 className="rotulo">Qué mejorar</h2>
           {(estado.d.status === "needs_reconnect" || estado.d.status === "error") && (
             <p className="sec">
@@ -409,7 +460,7 @@ function Panel({
               </a>
             </p>
           )}
-        </div>
+        </Seccion>
       )}
 
     </section>

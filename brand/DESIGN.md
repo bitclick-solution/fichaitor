@@ -276,6 +276,71 @@ La del asistente, descrita en `docs/04-ux-conversacional.md`: tutea, frases cort
 }
 ```
 
+## 11. Reglas de interfaz: la portada
+
+La portada (`fichaitor.es`) es un cartel que se pasa hoja a hoja. Reglas fijadas por el propietario el 2026-11-12.
+
+| Regla | Qué significa |
+|---|---|
+| **Seccional** | Cada idea ocupa una sección. Una sección, un titular, una acción como mucho |
+| **A todo el ancho y a todo el alto** | Cada sección mide como mínimo `100svh` y su fondo llega de borde a borde. El contenido va en caja de 1240 px |
+| **El scroll salta de sección** | Al soltar el scroll, la página se asienta en la sección más cercana. Nunca se queda a medias entre dos |
+| **Suave** | El desplazamiento usa Lenis. El salto dura menos de un segundo y no rebota |
+| **Con animación** | Los titulares entran por líneas; la sección siguiente sube y tapa a la anterior, que se encoge y se apaga |
+
+### Cómo se aplica el salto
+
+- En una sección normal, el punto de asiento es su inicio.
+- En las escenas ancladas (la ficha paso a paso, la promesa), cada paso es un punto de asiento: el scroll avanza de paso en paso.
+- Si una sección no cabe en la pantalla (móviles bajos), dentro de ella el scroll es libre; solo se asienta al acercarse a su inicio o al de la siguiente.
+- El salto nunca lucha con quien está haciendo scroll: espera a que se detenga.
+- Con `prefers-reduced-motion: reduce` no hay salto, ni suavizado, ni entradas.
+- Mientras hay un panel abierto a pantalla completa (resultado de la prueba con captura), el salto se desactiva.
+
+### Lo que no se hace en la portada
+
+- Secciones a media altura ni dos ideas en la misma pantalla.
+- Carruseles, pestañas o contenido escondido tras un clic, salvo el resultado de la prueba.
+- Antetítulos, píldoras o iconos decorativos (apartados 4 y 5).
+
+## 12. Reglas de interfaz: la aplicación del cliente
+
+La aplicación (`/app`) es una herramienta de trabajo para alguien con prisa, de pie y con el móvil. Comparte marca con la portada, pero no su teatralidad. Reglas fijadas por el propietario el 2026-11-12.
+
+| Regla | Qué significa |
+|---|---|
+| **Por secciones** | El panel se divide en secciones con nombre: resumen, opinión, reseñas, mejoras. Cada una responde a una pregunta |
+| **Scroll suave** | Lenis, como en la portada, pero sin salto entre secciones: aquí se lee y se trabaja, y el contenido tiene alturas distintas |
+| **Números que cuentan** | Toda cifra principal parte de cero y cuenta hasta su valor la primera vez que entra en pantalla, en torno a un segundo |
+| **Estrellas** | La valoración real de la ficha se muestra sobre 5, con las estrellas saltando una a una y rellenándose hasta la media. Las estrellas de cada reseña son estáticas |
+| **Menos ruido** | En pantalla solo está lo que ayuda a decidir o a actuar. Ver «Ruido» más abajo |
+
+### Principios de experiencia de uso
+
+1. **Primero, lo que pide una decisión.** El orden del panel es el de la urgencia: la nota y el estado de la ficha, lo pendiente (reseñas sin responder, festivos, cambios de Google), lo que opina la gente, y al final las mejoras.
+2. **Una acción principal por bloque.** Un solo botón relleno; lo demás, secundario o enlace. Si dos acciones compiten, sobra una.
+3. **Nada cambia sin confirmación.** Antes de publicar algo en Google, el dueño ve el texto exacto y pulsa. La aplicación no publica por su cuenta ni reintenta sola.
+4. **Decir la verdad sobre el estado.** «Enviada a Google» no es «publicada». Lo que está calculándose se dice («Leyendo tus reseñas…»); lo que es provisional, también. Nunca un hueco en blanco ni un dato inventado.
+5. **Cada error dice qué pasó y qué hacer.** Una frase, sin jerga, con la salida al lado (reintentar, volver a conectar, escribirlo a mano).
+6. **El lenguaje del dueño.** «Tu ficha», «tus reseñas», «festivos». Nunca «perfil de empresa», «sincronización» ni «sentimiento» en pantalla: ese bloque se llama «Qué dicen de tu negocio».
+7. **El móvil manda.** Todo se diseña primero a 375 px. Objetivos táctiles de 44 px como mínimo, contraste AA, foco visible y todo manejable con teclado.
+8. **Los datos de otras personas, los mínimos.** Las reseñas se muestran sin nombre ni foto de quien las escribió.
+9. **El movimiento informa, no decora.** Un número que cuenta dice «esto es un dato vivo»; una sección que entra dice «aquí empieza otra cosa». Si una animación no dice nada, se quita. Todo se desactiva con «movimiento reducido».
+10. **Coherencia antes que novedad.** Los mismos estados se ven igual en todas las secciones: cargando, sin datos, error, acceso caducado.
+
+### Ruido: qué se quita
+
+- Texto que repite lo que ya dice un número o un titular.
+- Datos que el dueño ya conoce (su dirección) cuando no ayudan a decidir.
+- Más de un nivel de borde dentro de un bloque. El borde de 2 px separa secciones; dentro, espacio.
+- Barras, etiquetas o menús que compiten con el contenido. La navegación por secciones va al margen, como el índice de un documento, no encima del contenido.
+- Avisos permanentes. Un aviso aparece cuando hay algo que avisar y se va cuando deja de haberlo.
+- Dos cifras del mismo tipo sin jerarquía. Si hay dos notas sobre 100, una manda (la de la ficha, en la cabecera) y la otra vive dentro de su bloque.
+
+### Estados que toda sección define
+
+Cargando, vacío, con datos, provisional (pocos datos), error y acceso a Google caducado. Ninguna sección se entrega sin los seis.
+
 ## Archivos
 
 | Pieza | Ruta |

@@ -63,6 +63,63 @@ export interface Summary {
   stale: boolean;
 }
 
+/** Una reseña de la ficha conectada. Sin autor: se identifica por estrellas, fecha y texto. */
+export interface Review {
+  id: string;
+  stars: number;
+  /** Cadena vacía si la reseña solo tiene estrellas. */
+  text: string;
+  created_at: string;
+  replied: boolean;
+  reply: { text: string; updated_at: string } | null;
+}
+
+export interface ReviewsResponse {
+  status: "ok" | "pendiente" | "needs_reconnect" | "error";
+  synced_at: string | null;
+  stale: boolean;
+  total: number;
+  reviews: Review[];
+}
+
+/** Acción sobre Google (hoy, publicar una respuesta). Un 202 no significa «publicada». */
+export interface Action {
+  id: string;
+  type: string;
+  review_id: string;
+  status: "pendiente" | "en_curso" | "hecha" | "fallida";
+  message: string;
+  error: "reconnect" | "rejected" | "review_gone" | "unavailable" | "internal" | null;
+  confirmed_at: string | null;
+  finished_at: string | null;
+}
+
+/** GET /api/v1/me/sentiment (forma prevista). Sin nombres de autores en ningún campo. */
+export interface Sentiment {
+  status: "ok" | "pendiente" | "insuficiente" | "error";
+  based_on: number | null;
+  period: string | null;
+  overall: "positivo" | "mixto" | "negativo" | null;
+  score: number | null;
+  summary: string | null;
+  praised: { topic: string; mentions: number }[];
+  complaints: { topic: string; mentions: number }[];
+  suggestion: string | null;
+  generated_at: string | null;
+  /** Variación respecto al mes anterior, en puntos. Previsto, puede no venir. */
+  delta: number | null;
+  /** Nota del mes anterior. Previsto; si no viene `delta`, se calcula con ella. */
+  previous_score: number | null;
+  /** Notas de los últimos meses, de más antiguo a más reciente. Previsto, puede no venir. */
+  history: { month: string; score: number }[];
+  /** Reseñas con texto que entran en el análisis. */
+  with_text: number | null;
+  /** true con pocas reseñas con texto: la nota se muestra, con un aviso. */
+  provisional: boolean;
+  /** Frase lista para mostrar como pie. */
+  next_update: string | null;
+}
+
 export const OAUTH_START = "/api/v1/google/oauth/start";
 
 export class ApiError extends Error {
@@ -118,5 +175,35 @@ export const api = {
   elegirFicha: (locationId: string) => pedir<Me>("POST", "/api/v1/me/location", { location_id: locationId }),
   diagnostico: () => pedir<Diagnosis>("GET", "/api/v1/me/diagnosis"),
   resumen: () => pedir<Summary>("GET", "/api/v1/me/summary"),
+  resenas: async (filtro: "unanswered" | "all"): Promise<ReviewsResponse> => {
+    const r = await pedir<Partial<ReviewsResponse> & Pick<ReviewsResponse, "status">>("GET", `/api/v1/me/reviews?filter=${filtro}&limit=50`);
+    return { status: r.status, synced_at: r.synced_at ?? null, stale: r.stale ?? false, total: r.total ?? 0, reviews: r.reviews ?? [] };
+  },
+  borrador: (id: string) => pedir<{ review_id: string; text: string; cached: boolean }>("POST", `/api/v1/me/reviews/${encodeURIComponent(id)}/draft`),
+  /** El texto va tal cual: sin recortar ni normalizar. */
+  responder: (id: string, text: string) => pedir<Action>("POST", `/api/v1/me/reviews/${encodeURIComponent(id)}/reply`, { text }),
+  accion: (id: string) => pedir<Action>("GET", `/api/v1/me/actions/${encodeURIComponent(id)}`),
+  sentimiento: async (): Promise<Sentiment> => {
+    const s = await pedir<Partial<Sentiment> & Pick<Sentiment, "status">>("GET", "/api/v1/me/sentiment");
+    // Con `pendiente` o `insuficiente` pueden faltar campos: se normalizan para no romper la pantalla.
+    return {
+      status: s.status,
+      based_on: s.based_on ?? null,
+      period: s.period ?? null,
+      overall: s.overall ?? null,
+      score: s.score ?? null,
+      summary: s.summary ?? null,
+      praised: s.praised ?? [],
+      complaints: s.complaints ?? [],
+      suggestion: s.suggestion ?? null,
+      generated_at: s.generated_at ?? null,
+      delta: s.delta ?? null,
+      previous_score: s.previous_score ?? null,
+      history: Array.isArray(s.history) ? s.history.filter((h) => typeof h?.score === "number") : [],
+      with_text: s.with_text ?? null,
+      provisional: s.provisional === true,
+      next_update: s.next_update ?? null,
+    };
+  },
   salir: () => pedir<void>("POST", "/api/v1/auth/logout"),
 };

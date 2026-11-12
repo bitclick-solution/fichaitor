@@ -1,7 +1,7 @@
 // Respuestas simuladas de las rutas con sesión, según docs/contrato-web-api.md.
 // Solo se usan con `npm run dev:mock`. Nunca en la compilación de producción.
 //
-// Escenario por URL: /app/?mock=sin-sesion | sin-fichas | una | caducado | varias (por defecto)
+// Escenario por URL: /app/?mock=sin-sesion | sin-fichas | una | sin-resenas | caducado | falla | varias (por defecto)
 
 const CLAVE = "fichaitor_mock";
 
@@ -12,8 +12,8 @@ interface Estado {
 
 const FICHAS = [
   { id: "loc_3f2a", title: "Bar La Parra", place_id: "ChIJ_parra", verified: true },
-  { id: "loc_81bc", title: "Bar La Parra · Terraza del Río", place_id: "ChIJ_rio", verified: true },
-  { id: "loc_c07d", title: "Obrador La Parra", place_id: null, verified: false },
+  { id: "loc_81bc", title: "PUBLIEXPE | Regalos de empresa y merchandising personalizado", place_id: "ChIJ_rio", verified: true },
+  { id: "loc_c07d", title: "Restaurante Asador El Rincón de la Abuela Carmen Granada Centro", place_id: null, verified: false },
 ];
 
 function escenario(): string {
@@ -43,6 +43,51 @@ function fichas() {
   if (e === "sin-fichas") return [];
   if (e === "una") return FICHAS.slice(0, 1);
   return FICHAS;
+}
+
+let llamadasSentimiento = 0;
+
+interface ResenaSimulada {
+  id: string;
+  stars: number;
+  text: string;
+  created_at: string;
+  replied: boolean;
+  reply: { text: string; updated_at: string } | null;
+}
+
+const RESENAS: ResenaSimulada[] = [
+  { id: "rev_1", stars: 2, text: "Tardaron mucho en servir y la mesa estaba sin limpiar. La comida, bien.", created_at: "2026-11-08T20:15:00Z", replied: false, reply: null },
+  { id: "rev_2", stars: 5, text: "El arroz, espectacular. Volveremos.", created_at: "2026-11-05T14:02:00Z", replied: false, reply: null },
+  { id: "rev_3", stars: 4, text: "", created_at: "2026-10-28T21:40:00Z", replied: false, reply: null },
+  {
+    id: "rev_4",
+    stars: 5,
+    text: "Trato de diez y terraza muy agradable.",
+    created_at: "2026-10-12T13:20:00Z",
+    replied: true,
+    reply: { text: "¡Gracias! Nos alegra que disfrutaras la terraza.", updated_at: "2026-10-13T09:00:00Z" },
+  },
+];
+
+interface AccionSimulada {
+  id: string;
+  type: string;
+  review_id: string;
+  status: string;
+  message: string;
+  error: string | null;
+  confirmed_at: string;
+  finished_at: string | null;
+  consultas: number;
+  texto: string;
+}
+
+const ACCIONES: AccionSimulada[] = [];
+
+/** La acción tal como la devuelve la API, sin los campos internos del simulador. */
+function publica(a: AccionSimulada) {
+  return { id: a.id, type: a.type, review_id: a.review_id, status: a.status, message: a.message, error: a.error, confirmed_at: a.confirmed_at, finished_at: a.finished_at };
 }
 
 const json = (status: number, cuerpo: unknown) =>
@@ -91,6 +136,135 @@ export async function mockFetch(method: string, path: string, body: unknown): Pr
       google_changed: true, google_changed_fields: ["specialHours"], google_changed_labels: ["Horarios especiales"],
       stale: false,
     });
+  }
+
+  if (method === "GET" && path === "/api/v1/me/sentiment") {
+    if (!e.elegida) return json(409, { detail: "Elige primero una ficha." });
+    llamadasSentimiento += 1;
+    if (llamadasSentimiento <= 1) return json(200, { status: "pendiente" });
+    const pie = "Se actualiza con 3 reseñas nuevas, con una de 1 o 2 estrellas o a los 30 días.";
+    if (escenario() === "sin-resenas") {
+      return json(200, {
+        status: "insuficiente",
+        based_on: 0,
+        summary: "Tu ficha todavía no tiene reseñas.",
+        suggestion: "Pide a tus clientes de confianza que te dejen las primeras reseñas.",
+      });
+    }
+    if (escenario() === "una") {
+      return json(200, {
+        status: "ok",
+        based_on: 3,
+        with_text: 2,
+        period: "últimos 12 meses",
+        overall: "positivo",
+        score: 80,
+        provisional: true,
+        summary: "Las pocas reseñas que hay hablan bien del trato.",
+        praised: [],
+        complaints: [],
+        suggestion: "Con unas cuantas reseñas más, este resumen será más fiable.",
+        delta: null,
+        history: [],
+        next_update: pie,
+        generated_at: new Date().toISOString(),
+      });
+    }
+    return json(200, {
+      status: "ok",
+      based_on: 13,
+      with_text: 11,
+      period: "últimos 12 meses",
+      overall: "positivo",
+      score: 86,
+      provisional: false,
+      summary: "La gente destaca el trato y la rapidez. La queja que se repite es la espera en hora punta.",
+      praised: [
+        { topic: "Trato del personal", mentions: 7 },
+        { topic: "El arroz", mentions: 4 },
+        { topic: "Relación calidad-precio", mentions: 3 },
+      ],
+      complaints: [{ topic: "Tiempo de espera", mentions: 2 }],
+      suggestion: "Responde a las 2 reseñas que mencionan la espera explicando qué habéis cambiado.",
+      delta: 4,
+      previous_score: 82,
+      history: [
+        { month: "2026-06", score: 74 },
+        { month: "2026-07", score: 78 },
+        { month: "2026-08", score: 77 },
+        { month: "2026-09", score: 81 },
+        { month: "2026-10", score: 82 },
+        { month: "2026-11", score: 86 },
+      ],
+      next_update: pie,
+      generated_at: new Date().toISOString(),
+    });
+  }
+
+  // ── Reseñas y respuestas
+  if (method === "GET" && path.startsWith("/api/v1/me/reviews")) {
+    if (!e.elegida) return json(409, { detail: "Elige primero una ficha." });
+    const todas = new URLSearchParams(path.split("?")[1] ?? "").get("filter") === "all";
+    const lista = RESENAS.filter((r) => todas || !r.replied).sort((a, b) => Number(a.replied) - Number(b.replied) || a.stars - b.stars);
+    return json(200, { status: "ok", synced_at: new Date().toISOString(), stale: false, total: lista.length, reviews: lista });
+  }
+
+  const partes = path.split("/");
+  // /api/v1/me/reviews/{id}/draft | reply
+  if (method === "POST" && partes[4] === "reviews" && partes[6] === "draft") {
+    const r = RESENAS.find((x) => x.id === partes[5]);
+    if (!r) return json(404, { detail: "Esa reseña ya no existe." });
+    if (!r.text) return json(422, { detail: "Esta reseña no tiene texto. Escribe tú la respuesta." });
+    await new Promise((ok) => setTimeout(ok, 900));
+    const texto =
+      r.stars <= 2
+        ? "Sentimos que la espera fuera larga. Ese día nos faltó gente en sala y no es excusa. Nos gustaría que volvieras para atenderte como mereces."
+        : "Muchas gracias por tu reseña. Nos alegra que lo disfrutaras. Te esperamos pronto.";
+    return json(200, { review_id: r.id, text: texto, cached: false });
+  }
+  if (method === "POST" && partes[4] === "reviews" && partes[6] === "reply") {
+    const r = RESENAS.find((x) => x.id === partes[5]);
+    if (!r) return json(404, { detail: "Esa reseña ya no existe." });
+    const texto = (body as { text?: string }).text ?? "";
+    if (!texto.trim()) return json(422, { detail: "Escribe una respuesta antes de publicarla." });
+    const accion: AccionSimulada = {
+      id: `act_${Date.now()}`,
+      type: "review_reply",
+      review_id: r.id,
+      status: "pendiente",
+      message: "Enviando tu respuesta a Google…",
+      error: null,
+      confirmed_at: new Date().toISOString(),
+      finished_at: null,
+      consultas: 0,
+      texto,
+    };
+    ACCIONES.push(accion);
+    return json(202, publica(accion));
+  }
+  // /api/v1/me/actions/{id}
+  if (method === "GET" && partes[4] === "actions" && partes[5]) {
+    const a = ACCIONES.find((x) => x.id === partes[5]);
+    if (!a) return json(404, { detail: "Esa acción no existe." });
+    a.consultas += 1;
+    if (a.consultas === 1) a.status = "en_curso";
+    if (a.consultas >= 2 && a.status !== "hecha" && a.status !== "fallida") {
+      if (escenario() === "falla") {
+        a.status = "fallida";
+        a.error = "unavailable";
+        a.message = "Google no ha aceptado la respuesta ahora mismo. No se ha publicado.";
+      } else {
+        a.status = "hecha";
+        a.message = "Enviada a Google. Puede tardar unos minutos en verse en tu ficha.";
+        const r = RESENAS.find((x) => x.id === a.review_id);
+        if (r) {
+          r.replied = true;
+          r.reply = { text: a.texto, updated_at: new Date().toISOString() };
+        }
+      }
+      a.finished_at = new Date().toISOString();
+    }
+    return json(200, publica(a));
   }
 
   if (method === "GET" && path === "/api/v1/me/diagnosis") {

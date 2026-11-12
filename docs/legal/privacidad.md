@@ -94,7 +94,7 @@ También lo usa en la prueba con una captura de tus reseñas: para contar cuánt
 
 Fichaitor usa el servicio de pago de la API de Gemini. Según sus condiciones:
 
-- Google trata lo que se le envía y sus respuestas por cuenta de Fichaitor, como encargado del tratamiento, conforme a su anexo de tratamiento de datos.
+- Google trata lo que se le envía y sus respuestas por cuenta de Fichaitor, como encargado del tratamiento, conforme a su anexo de tratamiento de datos para los productos en los que Google actúa como encargado.
 - Google no usa lo que se le envía ni sus respuestas para mejorar sus productos.
 - Google registra lo que se le envía y sus respuestas durante un periodo limitado, solo para detectar y prevenir usos prohibidos del servicio.
 - Los datos pueden tratarse en cualquier país en el que Google o sus subencargados tengan instalaciones, por lo que puede haber transferencias fuera del Espacio Económico Europeo, con las garantías del apartado 7.

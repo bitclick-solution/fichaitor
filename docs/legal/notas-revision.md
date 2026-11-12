@@ -12,6 +12,7 @@ Notas internas. No se publican. Recogen de dónde sale cada afirmación delicada
 | 2026-11-12 | Alojamiento: IONOS Cloud S.L.U., Madre de Dios nº 21, 26004 Logroño (La Rioja) |
 | 2026-11-12 | Base jurídica de la prueba con una captura de reseñas: interés legítimo (art. 6.1.f) |
 | 2026-11-12 | Mecanismo de transferencia de Google: el del Anexo de Tratamiento de Datos de Cloud (clientes) |
+| 2026-11-12 | La clave de la API de Gemini se creó en Google AI Studio (confirmado a través de la sesión de backend). Valora pasarla a Google Cloud (Vertex AI) antes de abrir al público, para fijar región europea |
 | 2026-11-12 | Correo: también IONOS. Hoy aloja el buzón `soporte@fichaitor.es`; enviará los avisos por correo cuando esa función se active |
 
 ## Fuentes consultadas
@@ -23,10 +24,11 @@ Notas internas. No se publican. Recogen de dónde sale cada afirmación delicada
 | Para usuarios del Espacio Económico Europeo solo se pueden usar los servicios de pago | La misma | 2026-11-11 |
 | Los datos pueden tratarse en cualquier país donde Google o sus subencargados tengan instalaciones | Anexo de Tratamiento de Datos de Cloud (clientes), sección 10.1, `https://services.google.com/fh/files/misc/es-419-cloud-data-processing-addendum-customers.pdf` | 2026-11-12 |
 | Orden de las garantías de transferencia: país adecuado, marco de protección de datos adoptado y, si no, Cláusulas Contractuales Tipo | El mismo anexo, sección 4.1 de las condiciones sobre la ley europea | 2026-11-12 |
+| Las dos afirmaciones anteriores, en el anexo que aplica a una clave de Google AI Studio | «Google Data Processing Addendum for Products Where Google is a Data Processor», versión 10, 7 de mayo de 2026, `https://business.safety.google/processorterms/`: sección 10.1 (ubicación) y apéndice 3A, sección 7 (transferencias) | 2026-11-12 |
 
 ## Puntos que debe mirar quien revise
 
-1. **Qué anexo de Google se aplica a la API de Gemini.** Las condiciones de la API de Gemini remiten al «Google Data Processing Addendum for Products Where Google is a Data Processor» (`https://business.safety.google/processorterms/`, versión 10, 7 de mayo de 2026). El propietario ha indicado el Anexo de Tratamiento de Datos de Cloud (clientes). Son documentos distintos. Los dos fijan el mismo orden de garantías de transferencia y la misma regla de ubicación, que es lo único que afirma la política, así que el texto vale con cualquiera de los dos. Conviene confirmar cuál es el aplicable según cómo esté contratada la clave (Google AI Studio o Google Cloud).
+1. **Qué anexo de Google se aplica a la API de Gemini.** Resuelto: la clave es de Google AI Studio, así que aplica el «Google Data Processing Addendum for Products Where Google is a Data Processor», al que remiten las condiciones de la API de Gemini, y no el Anexo de Tratamiento de Datos de Cloud que indicó el propietario. Los dos fijan el mismo orden de garantías de transferencia y la misma regla de ubicación, que es lo único que afirma la política, así que el texto no cambia. Si la clave pasa a Google Cloud (Vertex AI), aplicará el anexo de Cloud y habrá que revisar el apartado 5: cambian las condiciones de uso de los datos y se podrá fijar una región europea.
 2. **Entidad de Google que contrata.** Ninguno de los dos anexos la nombra: remiten a «la entidad de Google que es parte del acuerdo». La política dice «la entidad del grupo Google con la que está contratado el servicio». El nombre exacto aparece en las facturas de Google Cloud.
 3. **Interés legítimo en la prueba con captura.** La captura incluye el nombre y la foto de perfil de los autores de las reseñas, y la imagen completa llega a Google. A favor del interés legítimo: las reseñas son públicas, las sube el titular del negocio al que se refieren, Fichaitor no guarda la imagen ni devuelve esos datos, y el tratamiento dura segundos. Falta documentar la ponderación (interés, necesidad y equilibrio con los derechos de los autores), que el RGPD exige para esta base.
 4. **Encargo de tratamiento con Google para Gemini.** Es un tratamiento nuevo respecto de la conexión con Google Business Profile.
