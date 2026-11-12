@@ -15,6 +15,8 @@ Notas internas. No se publican. Recogen de dónde sale cada afirmación delicada
 | 2026-11-12 | La clave de la API de Gemini se creó en Google AI Studio (confirmado a través de la sesión de backend). Valora pasarla a Google Cloud (Vertex AI) antes de abrir al público, para fijar región europea |
 | 2026-11-12 | Activas en local, según la sesión de backend: guardar las reseñas de la ficha conectada sin autor, responderlas con registro de cada respuesta confirmada, y el análisis de lo que dicen (Gemini clasifica cada reseña; la nota la calcula el código) |
 | 2026-11-12 | Plazos de conservación aprobados: revocar el acceso en Google al desconectar; borrar en 30 días como máximo todo lo derivado de Google; registro de respuestas publicadas, 12 meses desde la baja; sesiones caducadas, 30 días; lista de espera, tope de 12 meses |
+| 2026-11-12 | Baja: «Desconectar Google» y «Borrar mi cuenta» piden un código de un solo uso enviado al correo de la cuenta, avisan por correo y dejan 48 horas para restaurar; pasado ese plazo, se elimina. Motivo: que una sesión abierta en un ordenador ajeno no baste para borrar nada |
+| 2026-11-12 | Correos automáticos: remitente `avisos@fichaitor.es` (IONOS), nombre «Fichaitor», respuestas a `soporte@fichaitor.es`. Confirmado a través de la sesión de backend. En la política sigue como función prevista hasta que la baja esté construida |
 | 2026-11-12 | Correo: también IONOS. Hoy aloja el buzón `soporte@fichaitor.es`; enviará los avisos por correo cuando esa función se active |
 
 ## Fuentes consultadas

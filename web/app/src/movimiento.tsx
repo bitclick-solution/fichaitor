@@ -27,6 +27,17 @@ export function irA(id: string): void {
   else scrollTo({ top: y, behavior: REDUCIDO ? "auto" : "smooth" });
 }
 
+/** Detiene el scroll de la página mientras hay una ventana modal. Devuelve la función que lo reanuda. */
+export function pausarScroll(): () => void {
+  lenis?.stop();
+  const antes = document.documentElement.style.overflow;
+  document.documentElement.style.overflow = "hidden";
+  return () => {
+    document.documentElement.style.overflow = antes;
+    lenis?.start();
+  };
+}
+
 /** Sube al principio de la página: el nombre del negocio y su nota. */
 export function irArriba(): void {
   if (lenis) lenis.scrollTo(0, { duration: 1.1 });

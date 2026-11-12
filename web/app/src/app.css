@@ -252,3 +252,37 @@ html.lenis, html.lenis body { height: auto; }
   .seccion, .sello .llenas { transition: none; }
   .sello[data-visto="true"] .base svg { animation: none; }
 }
+
+/* ───── Ajustes y baja ───── */
+.ajustes { padding-top: clamp(20px, 4vh, 36px); border-top: 2px solid var(--tinta); }
+.ajustes-lista { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); border: 2px solid var(--tinta); }
+.ajustes-lista > div { display: grid; gap: 10px; align-content: start; justify-items: start; padding: clamp(18px, 2.4vw, 28px); }
+.ajustes-lista > div + div { border-left: 2px solid var(--tinta); }
+.ajustes-lista .btn { margin-top: 6px; }
+.btn.peligro { color: var(--rojo-tinta); border-color: var(--rojo-tinta); box-shadow: 6px 6px 0 var(--rojo-tinta); }
+.btn.peligro:hover { box-shadow: 0 0 0 var(--rojo-tinta); }
+.btn.peligro-lleno { background: var(--rojo-tinta); border-color: var(--rojo-tinta); color: var(--papel); box-shadow: 6px 6px 0 var(--tinta); }
+@media (max-width: 760px) {
+  .ajustes-lista { grid-template-columns: 1fr; }
+  .ajustes-lista > div + div { border-left: 0; border-top: 2px solid var(--tinta); }
+}
+
+/* Aviso de baja programada */
+.aviso-baja { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 16px 32px; padding: clamp(18px, 2.4vw, 28px); background: var(--tinta); color: var(--papel); }
+.aviso-baja > div { display: grid; gap: 6px; max-width: 44em; }
+.aviso-baja .btn { background: var(--papel); color: var(--tinta); border-color: var(--papel); }
+.error-linea { font-weight: 700; color: var(--rojo); }
+
+/* Ventana modal */
+.velo { position: fixed; inset: 0; z-index: 50; display: grid; place-items: center; padding: 16px; background: rgba(11, 11, 11, 0.62); overflow-y: auto; animation: velo 0.2s linear both; }
+.modal { width: min(100%, 560px); display: grid; gap: 16px; padding: clamp(22px, 3vw, 36px); background: var(--papel); color: var(--tinta); border: 2px solid var(--tinta); box-shadow: 10px 10px 0 var(--rojo); outline: none; animation: entra 0.35s var(--curva) both; }
+.modal .cartel { font-size: clamp(1.6rem, 3.4vw, 2.4rem); text-wrap: balance; }
+.modal form { display: grid; gap: 14px; }
+.modal .acciones { margin-top: 4px; }
+.lista-puntos.compacta { margin: 0; }
+.lista-puntos.compacta li { padding: 10px 0 10px 26px; }
+.lista-puntos.compacta li::before { top: 1.05em; }
+.codigo { width: 100%; max-width: 280px; padding: 14px 16px; border: 2px solid var(--tinta); border-radius: 0; background: #fff; color: var(--tinta); font: inherit; font-weight: 900; font-stretch: 125%; font-size: 2rem; letter-spacing: 0.22em; font-variant-numeric: tabular-nums; }
+.codigo[aria-invalid="true"] { border-color: var(--rojo-tinta); }
+@keyframes velo { from { opacity: 0; } to { opacity: 1; } }
+@media (prefers-reduced-motion: reduce) { .velo, .modal { animation: none; } }

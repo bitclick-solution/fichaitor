@@ -44,6 +44,17 @@ export interface Me {
   email: string;
   locations: Location[];
   selected_location_id: string | null;
+  /** Baja programada, si la hay. PROPUESTA de contrato: aún no la envía el backend. */
+  pending_deletion?: BajaPendiente | null;
+}
+
+/** Qué se da de baja: la ficha conectada o la cuenta entera. */
+export type AlcanceBaja = "ficha" | "cuenta";
+
+export interface BajaPendiente {
+  scope: AlcanceBaja;
+  /** Momento en que se borra si no se restaura antes (48 horas después de confirmar). */
+  delete_at: string;
 }
 
 /** GET /api/v1/me/summary. Con `status: "pendiente"` todos los campos van a null, salvo `stale`. */
@@ -206,4 +217,10 @@ export const api = {
     };
   },
   salir: () => pedir<void>("POST", "/api/v1/auth/logout"),
+  // ── Baja con código de un solo uso y 48 horas para restaurar. PROPUESTA de contrato.
+  pedirCodigoBaja: (scope: AlcanceBaja) => pedir<{ sent_to: string; expires_in: number }>("POST", "/api/v1/me/offboarding/code", { scope }),
+  confirmarBaja: (scope: AlcanceBaja, code: string) => pedir<BajaPendiente>("POST", "/api/v1/me/offboarding/confirm", { scope, code }),
+  restaurarBaja: () => pedir<void>("POST", "/api/v1/me/offboarding/restore"),
+  /** Restauración desde el enlace del correo, sin sesión. 410 si el enlace no vale, está usado o ha caducado. */
+  restaurarConToken: (token: string) => pedir<void>("POST", "/api/v1/public/offboarding/restore", { token }),
 };

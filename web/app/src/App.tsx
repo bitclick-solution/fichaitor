@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import logo from "../../../brand/logo.svg";
-import { api, ApiError, OAUTH_START, type Diagnosis, type Location, type Me, type Summary } from "./api";
+import { api, ApiError, OAUTH_START, type BajaPendiente, type Diagnosis, type Location, type Me, type Summary } from "./api";
+import { Ajustes, AvisoBaja, cuando } from "./Ajustes";
 import { Indice } from "./Indice";
 import { Cuenta, Seccion, SelloEstrellas } from "./movimiento";
 import { Resumen } from "./Resumen";
@@ -14,6 +15,12 @@ type Vista =
   | { tipo: "sin-fichas"; email: string }
   | { tipo: "elegir"; me: Me }
   | { tipo: "panel"; me: Me; ficha: Location }
+  // Baja programada: solo el aviso con la fecha y «Restaurar». No se piden datos (la API responde 409).
+  | { tipo: "baja"; baja: BajaPendiente }
+  // Tras confirmar el borrado de la cuenta: las sesiones ya están cerradas.
+  | { tipo: "despedida"; borrado: string }
+  // Llegada desde el enlace del correo: /app?restaurar=<token>, sin sesión.
+  | { tipo: "restaurar"; estado: "enviando" | "ok" | "error"; mensaje?: string }
   | { tipo: "error"; mensaje: string };
 
 /** Mensajes para la vuelta de Google: /app?google=... (contrato web-API). */
@@ -24,13 +31,15 @@ const AVISOS: Record<string, string> = {
   error: "No hemos podido conectar con Google. Prueba de nuevo.",
 };
 
-/** Lee ?google= y ?fichas= una vez y los quita de la barra de direcciones. */
-function leerVuelta(): { google: string | null; fichas: string | null } {
+/** Lee ?google=, ?fichas= y ?restaurar= una vez y los quita de la barra de direcciones. */
+function leerVuelta(): { google: string | null; fichas: string | null; restaurar: string | null } {
   const q = new URLSearchParams(location.search);
-  const vuelta = { google: q.get("google"), fichas: q.get("fichas") };
-  if (vuelta.google !== null || vuelta.fichas !== null) {
+  const vuelta = { google: q.get("google"), fichas: q.get("fichas"), restaurar: q.get("restaurar") };
+  if (vuelta.google !== null || vuelta.fichas !== null || vuelta.restaurar !== null) {
     q.delete("google");
     q.delete("fichas");
+    // El token de restauración no debe quedarse en la barra de direcciones ni en el historial.
+    q.delete("restaurar");
     const resto = q.toString();
     history.replaceState(null, "", location.pathname + (resto ? `?${resto}` : ""));
   }
@@ -38,6 +47,7 @@ function leerVuelta(): { google: string | null; fichas: string | null } {
 }
 
 function vistaDe(me: Me, fichasPendientes: boolean): Vista {
+  if (me.pending_deletion) return { tipo: "baja", baja: me.pending_deletion };
   if (me.locations.length === 0) return fichasPendientes ? { tipo: "pendiente" } : { tipo: "sin-fichas", email: me.email };
   const ficha = me.locations.find((l) => l.id === me.selected_location_id);
   return ficha ? { tipo: "panel", me, ficha } : { tipo: "elegir", me };
@@ -46,6 +56,7 @@ function vistaDe(me: Me, fichasPendientes: boolean): Vista {
 export function App() {
   const [vista, setVista] = useState<Vista>({ tipo: "cargando" });
   const vuelta = useRef<ReturnType<typeof leerVuelta> | null>(null);
+  const restaurando = useRef(false);
 
   const cargar = useCallback(async () => {
     setVista({ tipo: "cargando" });
@@ -60,6 +71,23 @@ export function App() {
 
   useEffect(() => {
     if (vuelta.current === null) vuelta.current = leerVuelta();
+    // Si ya se está atendiendo un enlace de restauración, este efecto no hace nada más:
+    // en desarrollo React lo ejecuta dos veces, y la segunda cargaría el panel por encima.
+    if (restaurando.current) return;
+    const token = vuelta.current.restaurar;
+    if (token) {
+      // El token se usa una sola vez.
+      restaurando.current = true;
+      vuelta.current.restaurar = null;
+      setVista({ tipo: "restaurar", estado: "enviando" });
+      api
+        .restaurarConToken(token)
+        .then(() => setVista({ tipo: "restaurar", estado: "ok" }))
+        .catch((e: unknown) =>
+          setVista({ tipo: "restaurar", estado: "error", mensaje: e instanceof Error ? e.message : "Ese enlace ya no sirve." }),
+        );
+      return;
+    }
     const aviso = vuelta.current.google ? AVISOS[vuelta.current.google] : undefined;
     if (aviso) setVista({ tipo: "conectar", aviso });
     else void cargar();
@@ -73,7 +101,8 @@ export function App() {
     }
   }, []);
 
-  const conSesion = vista.tipo !== "cargando" && vista.tipo !== "conectar" && vista.tipo !== "error";
+  const SIN_SESION: Vista["tipo"][] = ["cargando", "conectar", "error", "despedida", "restaurar"];
+  const conSesion = !SIN_SESION.includes(vista.tipo);
 
   return (
     <>
@@ -98,10 +127,61 @@ export function App() {
         {vista.tipo === "panel" && (
           <Panel
             ficha={vista.ficha}
+            email={vista.me.email}
+            onRecargar={() => void cargar()}
+            onDespedida={(borrado) => setVista({ tipo: "despedida", borrado })}
             variasFichas={vista.me.locations.length > 1}
             onCambiar={() => setVista({ tipo: "elegir", me: vista.me })}
             onSinSesion={() => setVista({ tipo: "conectar" })}
           />
+        )}
+        {vista.tipo === "baja" && (
+          <section className="pantalla">
+            <AvisoBaja baja={vista.baja} onSinSesion={() => setVista({ tipo: "conectar" })} onCambio={() => void cargar()} />
+            <p className="sec">Mientras la baja está programada, Fichaitor no lee tu ficha ni te envía avisos.</p>
+          </section>
+        )}
+        {vista.tipo === "despedida" && (
+          <section className="pantalla">
+            <h1 className="cartel">
+              Hasta aquí<Punto />
+            </h1>
+            <p className="lead">Tu cuenta se borrará el {cuando(vista.borrado)}.</p>
+            <p>Te hemos enviado un correo para restaurarla si cambias de opinión. Pasado ese momento, no se puede deshacer.</p>
+            <div className="acciones">
+              <a className="btn sec" href="/">
+                Volver al inicio
+              </a>
+            </div>
+          </section>
+        )}
+        {vista.tipo === "restaurar" && vista.estado === "enviando" && <Cargando texto="Restaurando" />}
+        {vista.tipo === "restaurar" && vista.estado === "ok" && (
+          <section className="pantalla">
+            <h1 className="cartel">
+              Restaurada<Punto />
+            </h1>
+            <p className="lead">La baja está cancelada. Todo sigue como estaba y no se ha borrado nada.</p>
+            <div className="acciones">
+              <button className="btn" type="button" onClick={() => void cargar()}>
+                Entrar en mi panel <Flecha />
+              </button>
+            </div>
+          </section>
+        )}
+        {vista.tipo === "restaurar" && vista.estado === "error" && (
+          <section className="pantalla">
+            <h1 className="cartel">
+              Ese enlace ya no sirve<Punto />
+            </h1>
+            <p className="lead">{vista.mensaje}</p>
+            <p>Si la baja sigue programada, puedes restaurarla desde tu panel. Si tienes dudas, escribe a soporte@fichaitor.es.</p>
+            <div className="acciones">
+              <button className="btn" type="button" onClick={() => void cargar()}>
+                Ir a mi panel <Flecha />
+              </button>
+            </div>
+          </section>
         )}
         {vista.tipo === "error" && (
           <section className="pantalla">
@@ -282,6 +362,7 @@ const SECCIONES = [
   { id: "opinion", nombre: "Opinión" },
   { id: "resenas", nombre: "Reseñas" },
   { id: "mejoras", nombre: "Mejoras" },
+  { id: "ajustes", nombre: "Ajustes" },
 ];
 
 const IMPACTO: Record<string, string> = { alto: "Impacto alto", medio: "Impacto medio", bajo: "Impacto bajo" };
@@ -289,11 +370,19 @@ const IMPACTO: Record<string, string> = { alto: "Impacto alto", medio: "Impacto 
 
 function Panel({
   ficha,
+  email,
+  onRecargar,
+  onDespedida,
   variasFichas,
   onCambiar,
   onSinSesion,
 }: {
   ficha: Location;
+  email: string;
+  /** Vuelve a pedir la cuenta tras una baja o una restauración. */
+  onRecargar: () => void;
+  /** Tras confirmar el borrado de la cuenta, con el momento del borrado. */
+  onDespedida: (borrado: string) => void;
   variasFichas: boolean;
   onCambiar: () => void;
   onSinSesion: () => void;
@@ -463,6 +552,7 @@ function Panel({
         </Seccion>
       )}
 
+      <Ajustes email={email} onSinSesion={onSinSesion} onCambio={onRecargar} onDespedida={onDespedida} />
     </section>
   );
 }

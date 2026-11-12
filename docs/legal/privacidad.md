@@ -26,7 +26,7 @@ Fichaitor está en pruebas. Hoy están activos la prueba con una captura, la lis
 | Prueba con una captura de pantalla de tus reseñas | La captura que subes y lo que se ve en ella: el nombre de tu negocio y las reseñas, con el nombre y la foto de perfil públicos de quienes las escribieron, su puntuación y su texto | Interés legítimo — art. 6.1.f: enseñarte cómo funciona Fichaitor con tus propias reseñas, que ya son públicas, sin guardar la imagen ni los datos de sus autores | Fichaitor procesa la imagen en memoria y no la guarda. No devuelve ni guarda los nombres ni las fotos de los autores |
 | Lista de espera: avisarte cuando Fichaitor esté disponible | Tu WhatsApp o tu correo, el canal por el que llegaste, y la fecha y la versión del texto de consentimiento que aceptaste | Consentimiento — art. 6.1.a | 12 meses desde el alta o hasta el lanzamiento, lo que ocurra antes, o hasta que te des de baja |
 | Crear y gestionar tu cuenta | Nombre, correo, teléfono vinculado, canal elegido (web, correo, Telegram o WhatsApp), plan y preferencias | Ejecución del contrato — art. 6.1.b | Mientras dure la cuenta |
-| Prestar el servicio sobre tu ficha de Google | Los datos obtenidos de las API de Google que se detallan en el apartado 3 | Ejecución del contrato — art. 6.1.b | Mientras tu ficha esté conectada. Tras desconectarla, 30 días como máximo; el registro de respuestas, 12 meses. Ver apartado 3 |
+| Prestar el servicio sobre tu ficha de Google | Los datos obtenidos de las API de Google que se detallan en el apartado 3 | Ejecución del contrato — art. 6.1.b | Mientras tu ficha esté conectada. Tras desconectarla: 48 horas para restaurarla y, después, 30 días como máximo para el borrado; el registro de respuestas, 12 meses. Ver apartado 3 |
 | Conversar contigo y proponerte acciones | Los mensajes, audios y fotos que envías al asistente, y las propuestas y confirmaciones | Ejecución del contrato — art. 6.1.b | Mientras dure la cuenta |
 | Cobro y facturación | Datos identificativos y de facturación. Los datos de la tarjeta los trata Stripe; Fichaitor no los ve ni los guarda | Ejecución del contrato — art. 6.1.b, y obligación legal — art. 6.1.c | Los plazos fiscales y mercantiles (hasta 6 años) |
 | Seguridad y registros del servidor | Dirección IP, fecha y hora, navegador, y las sesiones iniciadas | Interés legítimo en la seguridad del servicio — art. 6.1.f | Registros, 6 meses. Sesiones caducadas o cerradas, 30 días |
@@ -78,17 +78,20 @@ El uso que Fichaitor hace de la información recibida de las API de Google, y su
 
 ### Cómo revocar el acceso y borrar los datos
 
-- **Desde Fichaitor:** en Ajustes, pulsa «Desconectar Google».
+- **Desde Fichaitor:** en Ajustes, al final de tu panel, pulsa «Desconectar Google» o «Borrar mi cuenta». Para confirmarlo te enviamos un código de un solo uso al correo de tu cuenta: una sesión abierta en otro ordenador no basta.
 - **Desde Google:** en [myaccount.google.com/connections](https://myaccount.google.com/connections), elige Fichaitor y quita el acceso.
 - **Por correo:** escribe a soporte@fichaitor.es.
 
 Al desconectar tu ficha o borrar tu cuenta:
 
-- Revocamos el acceso en Google en ese momento y dejamos de leer tu ficha.
-- En un máximo de 30 días borramos todo lo obtenido de Google o derivado de ello: los tokens, los datos de la ficha, las reseñas, su clasificación, los resúmenes, el historial de notas y los borradores de respuesta.
+- Dejamos de leer tu ficha y de enviarte avisos en ese momento, y te lo comunicamos por correo.
+- Durante las 48 horas siguientes puedes restaurarla, desde tu panel o desde el enlace de ese correo. Si no has sido tú, basta un clic.
+- Pasadas las 48 horas, retiramos el acceso en Google y borramos, en un máximo de 30 días, todo lo obtenido de Google o derivado de ello: los tokens, los datos de la ficha, las reseñas, su clasificación, los resúmenes, el historial de notas y los borradores de respuesta.
 - El registro de las respuestas que confirmaste y se enviaron a Google se conserva 12 meses desde la baja y después se borra. Sirve para acreditar qué se publicó en tu nombre si hay una reclamación; la base es el interés legítimo en la defensa frente a reclamaciones — art. 6.1.f.
 
-`[REVISAR antes de publicar: los plazos de este apartado los aprobó el propietario el 12 de noviembre de 2026, pero el sistema todavía no los cumple. No existen aún «Desconectar Google» ni «Borrar mi cuenta», no se revoca el token y no hay tarea de borrado. No publicar hasta que el backend lo haya construido y verificado. Quien revise los textos debe confirmar la base jurídica del registro de respuestas.]`
+Si retiras el acceso directamente desde tu cuenta de Google, Fichaitor deja de poder leer tu ficha al momento y aplica los mismos plazos de borrado.
+
+`[REVISAR antes de publicar: el propietario aprobó el 12 de noviembre de 2026 los plazos y el procedimiento de este apartado (código de un solo uso, aviso por correo, 48 horas para restaurar), pero el sistema todavía no lo cumple. No existen aún «Desconectar Google» ni «Borrar mi cuenta» en el servidor, no se revoca el token, no hay tarea de borrado y Fichaitor todavía no envía correos. No publicar hasta que el backend lo haya construido y verificado. Quien revise los textos debe confirmar la base jurídica del registro de respuestas y qué ocurre si el dueño retira el acceso desde Google sin pasar por Fichaitor.]`
 
 ## 4. Datos de terceros en tu ficha
 

@@ -341,6 +341,25 @@ La aplicación (`/app`) es una herramienta de trabajo para alguien con prisa, de
 
 Cargando, vacío, con datos, provisional (pocos datos), error y acceso a Google caducado. Ninguna sección se entrega sin los seis.
 
+## 13. Correo
+
+Decidido por el propietario el 2026-11-12.
+
+| Campo | Valor |
+|---|---|
+| Nombre visible | Fichaitor |
+| Remitente | `avisos@fichaitor.es`, buzón solo de salida |
+| Responder a | `soporte@fichaitor.es` |
+| Contacto público | `soporte@fichaitor.es` |
+
+Reglas de los correos automáticos:
+
+- **Asunto:** qué pasa y qué hay que hacer, sin exclamaciones. «Tu código para desconectar Fichaitor», «Tu ficha se borrará el sábado 14».
+- **Cuerpo:** texto plano o HTML mínimo, tinta sobre papel, una sola acción. El código o el botón, arriba.
+- **Lo que no llevan:** imágenes de seguimiento, publicidad ni más de un enlace de acción.
+- **Seguridad:** todo correo sobre una baja dice qué se pidió, cuándo, y cómo pararlo si no has sido tú.
+- Nunca se usa `avisos@` como dirección de contacto: no se lee.
+
 ## Archivos
 
 | Pieza | Ruta |

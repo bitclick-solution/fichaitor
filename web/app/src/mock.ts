@@ -8,6 +8,7 @@ const CLAVE = "fichaitor_mock";
 interface Estado {
   sesion: boolean;
   elegida: string | null;
+  baja?: { scope: string; delete_at: string } | null;
 }
 
 const FICHAS = [
@@ -96,11 +97,20 @@ const json = (status: number, cuerpo: unknown) =>
 let llamadasResumen = 0;
 let llamadasDiagnostico = 0;
 
-const yo = (e: Estado) => ({ email: "dueno@example.com", locations: fichas(), selected_location_id: e.elegida });
+const yo = (e: Estado) => ({ email: "dueno@example.com", locations: fichas(), selected_location_id: e.elegida, pending_deletion: e.baja ?? null });
 
 export async function mockFetch(method: string, path: string, body: unknown): Promise<Response> {
   await new Promise((r) => setTimeout(r, 350));
   const e = leer();
+
+  // Restauración por el enlace del correo, sin sesión. Token válido en el simulador: «bueno»
+  if (method === "POST" && path === "/api/v1/public/offboarding/restore") {
+    if ((body as { token?: string }).token !== "bueno") return json(410, { detail: "Ese enlace ya no sirve: se ha usado o ha caducado." });
+    e.baja = null;
+    e.sesion = true;
+    guardar(e);
+    return new Response(null, { status: 204 });
+  }
 
   if (path === "/api/v1/auth/logout") {
     guardar({ sesion: false, elegida: null });
@@ -109,6 +119,26 @@ export async function mockFetch(method: string, path: string, body: unknown): Pr
   if (!e.sesion) return json(401, { detail: "No has iniciado sesión." });
 
   if (method === "GET" && path === "/api/v1/me") return json(200, yo(e));
+
+  // ── Baja con código de un solo uso (propuesta de contrato). Código válido en el simulador: 123456
+  if (method === "POST" && path === "/api/v1/me/offboarding/code") {
+    await new Promise((ok) => setTimeout(ok, 500));
+    return json(202, { sent_to: "d***o@example.com", expires_in: 600 });
+  }
+  if (method === "POST" && path === "/api/v1/me/offboarding/confirm") {
+    const { scope, code } = body as { scope?: string; code?: string };
+    if (code !== "123456") return json(422, { detail: "Ese código no es correcto. Te quedan 4 intentos." });
+    e.baja = { scope: scope ?? "ficha", delete_at: new Date(Date.now() + 48 * 3600 * 1000).toISOString() };
+    // Al borrar la cuenta se cierran todas las sesiones.
+    if (scope === "cuenta") e.sesion = false;
+    guardar(e);
+    return json(200, e.baja);
+  }
+  if (method === "POST" && path === "/api/v1/me/offboarding/restore") {
+    e.baja = null;
+    guardar(e);
+    return new Response(null, { status: 204 });
+  }
 
   if (method === "POST" && path === "/api/v1/me/location") {
     const id = (body as { location_id?: string }).location_id;
