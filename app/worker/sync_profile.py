@@ -33,6 +33,7 @@ from app.ports.google_profile import GoogleProfile, GoogleRejected, ReconnectReq
 from app.ports.worker_store import WorkerStore
 from app.worker import log
 from app.worker.analyze_sentiment import SentimentTrigger
+from app.worker.propose_review import ReviewProposals
 
 KIND = "sync_profile"
 
@@ -56,6 +57,7 @@ class SyncProfile:
         private_key: str,
         clock: Callable[[], datetime] = lambda: datetime.now(UTC),
         sentiment: SentimentTrigger | None = None,
+        proposals: ReviewProposals | None = None,
     ) -> None:
         self._store = store
         self._google = google
@@ -63,6 +65,9 @@ class SyncProfile:
         self._clock = clock
         # Asked once the reviews are stored; None: no sentiment analysis is chained.
         self._sentiment = sentiment
+        # Told of the new reviews without a reply, to propose them by the messaging
+        # channels (docs/canales.md, step 5). None: nothing is proposed.
+        self._proposals = proposals
 
     async def __call__(self, job: Job) -> None:
         google_sub, location = _target(job)
@@ -148,8 +153,11 @@ class SyncProfile:
         facts = collect_facts(details, media, attributes, now.date())
         summary = summarize(reviews, details.hours, changed, now.date(), facts)
         await self._store.save_summary(google_sub, location, summary, now)
-        await self._store.save_reviews(google_sub, location, reviews.reviews, now)
+        new_reviews = await self._store.save_reviews(google_sub, location, reviews.reviews, now)
         await self._drop_replaced(job, google_sub, connection.connection_id)
+        if self._proposals is not None:
+            # Never raises: a review that is not proposed stays in the panel.
+            await self._proposals.after_sync(new_reviews or (), now)
         if self._sentiment is not None:
             # The sentiment analysis is a job of its own, enqueued right here when one
             # is due: the first one is ready seconds after the first sync. Never raises.

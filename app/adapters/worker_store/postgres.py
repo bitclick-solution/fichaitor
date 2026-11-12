@@ -56,6 +56,7 @@ from app.ports.worker_store import (
     ClaimedAction,
     ConnectedLocation,
     EffectiveLeave,
+    NewReview,
     StoredConnection,
     TokenToRevoke,
 )
@@ -254,12 +255,13 @@ class PostgresWorkerStore:
 
     async def save_reviews(
         self, google_sub: str, location: str, reviews: Sequence[Review], at: datetime
-    ) -> None:
+    ) -> list[NewReview]:
         rows = sorted(storable_reviews(reviews), key=lambda r: r.review_id)
         ids = [r.review_id for r in rows]
         async with self._pool.acquire() as conn, conn.transaction():
-            # No column for the author exists.
-            await conn.execute(
+            # No column for the author exists. xmax = 0: the row was inserted now, not
+            # updated (what the messaging channels may propose).
+            saved = await conn.fetch(
                 """
                 INSERT INTO review
                     (google_sub, location, gbp_review_id, rating, comment, created_at,
@@ -278,6 +280,8 @@ class PostgresWorkerStore:
                     removed_at = NULL,
                     reply_text = EXCLUDED.reply_text,
                     reply_at = EXCLUDED.reply_at
+                RETURNING id, created_at, reply_text IS NULL AS unanswered,
+                          (xmax = 0) AS inserted
                 """,
                 google_sub,
                 location,
@@ -310,6 +314,9 @@ class PostgresWorkerStore:
                 location,
                 at,
             )
+        return [
+            NewReview(r["id"], r["created_at"]) for r in saved if r["inserted"] and r["unanswered"]
+        ]
 
     async def recent_replies(
         self, google_sub: str, location: str, since: datetime
@@ -713,6 +720,10 @@ class PostgresWorkerStore:
             )
             if begun is not None:
                 account_id = begun["account_id"]
+                # The messaging channels, in the same transaction: the conversation and
+                # its messages (they quote reviews) and, when the account goes, its
+                # linked addresses and codes (docs/retencion.md).
+                await _purge_channels(conn, account_id, begun["scope"] == SCOPE_ACCOUNT)
                 await conn.execute(
                     "UPDATE location SET removed_at = $2"
                     " WHERE account_id = $1 AND removed_at IS NULL",
@@ -974,6 +985,8 @@ class PostgresWorkerStore:
                     policy.code_days,
                 )
             )
+            # Messaging channels (docs/canales.md): past their term.
+            _add(counts, await _expire_channels(conn, now, policy.channel_days))
             # Counters of the caps on paid calls whose window has ended.
             counts["usage_counter"] = _deleted(
                 await conn.execute("DELETE FROM usage_counter WHERE expires_at <= $1", now)
@@ -1034,6 +1047,90 @@ class PostgresWorkerStore:
         await self._pool.execute(
             "UPDATE offboarding_code SET mail_state = $2 WHERE id = $1::uuid", code_id, state
         )
+
+
+async def _purge_channels(conn: asyncpg.Connection, account_id: object, whole: bool) -> None:
+    """Delete the conversation of an account whose leave became effective: its messages,
+    its thread and its proposals; with `whole` (the account goes), also its addresses,
+    linked or not, and its link codes. In this order, for the foreign keys."""
+    await conn.execute(
+        """
+        DELETE FROM channel_message m
+        WHERE m.conversation_id IN (SELECT id FROM conversation WHERE account_id = $1)
+           OR m.identity_id IN (SELECT id FROM channel_identity WHERE account_id = $1)
+           OR m.proposal_id IN (SELECT id FROM proposal WHERE account_id = $1)
+        """,
+        account_id,
+    )
+    await conn.execute("DELETE FROM conversation WHERE account_id = $1", account_id)
+    await conn.execute("DELETE FROM proposal WHERE account_id = $1", account_id)
+    if whole:
+        await conn.execute("DELETE FROM channel_identity WHERE account_id = $1", account_id)
+        await conn.execute("DELETE FROM link_code WHERE account_id = $1", account_id)
+
+
+async def _expire_channels(conn: asyncpg.Connection, now: datetime, days: int) -> dict[str, int]:
+    """The daily pass on the tables of the channels. Nothing here names an account:
+    every row is chosen by its age."""
+    before = await conn.fetchval("SELECT $1::timestamptz - make_interval(days => $2)", now, days)
+    counts = {
+        "channel_message": _deleted(
+            await conn.execute("DELETE FROM channel_message WHERE at <= $1", before)
+        ),
+        "channel_inbound_event": _deleted(
+            await conn.execute("DELETE FROM channel_inbound_event WHERE received_at <= $1", before)
+        ),
+    }
+    # Finished proposals (they quote the review) once nothing points at them.
+    counts["proposal"] = _deleted(
+        await conn.execute(
+            """
+            DELETE FROM proposal p
+            WHERE p.created_at <= $1
+              AND p.state NOT IN ('programada', 'enviada', 'recordada', 'recopilando',
+                                  'por_confirmar', 'ejecutando')
+              AND NOT EXISTS (SELECT 1 FROM conversation c WHERE c.active_proposal_id = p.id)
+              AND NOT EXISTS (SELECT 1 FROM channel_message m WHERE m.proposal_id = p.id)
+            """,
+            before,
+        )
+    )
+    counts["channel_identity"] = _deleted(
+        await conn.execute(
+            """
+            DELETE FROM channel_identity i
+            WHERE i.unlinked_at <= $1
+              AND NOT EXISTS (SELECT 1 FROM channel_message m WHERE m.identity_id = i.id)
+            """,
+            before,
+        )
+    )
+    # Codes: a day after they expired; nothing else needs their hash.
+    counts["link_code"] = _deleted(
+        await conn.execute(
+            "DELETE FROM link_code WHERE expires_at <= $1::timestamptz - interval '1 day'", now
+        )
+    )
+    counts["channel_sender"] = _deleted(
+        await conn.execute(
+            """
+            DELETE FROM channel_sender
+            WHERE updated_at <= $1 AND (blocked_until IS NULL OR blocked_until <= $2)
+            """,
+            before,
+            now,
+        )
+    )
+    counts["link_failure_window"] = _deleted(
+        await conn.execute(
+            """
+            DELETE FROM link_failure_window
+            WHERE window_start <= $1::timestamptz - interval '1 day'
+            """,
+            now,
+        )
+    )
+    return counts
 
 
 def _deleted(status: str) -> int:

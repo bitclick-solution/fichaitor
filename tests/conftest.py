@@ -18,6 +18,7 @@ TEST_URL_VARIABLES = (
     "FICHAITOR_TEST_DATABASE_URL",
     "FICHAITOR_TEST_OWNER_URL",
     "FICHAITOR_TEST_WORKER_URL",
+    "FICHAITOR_TEST_CONVERSATION_URL",
 )
 REQUIRED_SUFFIX = "_test"
 
@@ -47,7 +48,7 @@ def guard_message(names: list[str]) -> str:
         + f" no apunta a una base de datos cuyo nombre termine en «{REQUIRED_SUFFIX}». "
         "Las pruebas de integración crean y borran filas: nunca se ejecutan contra la base "
         "de desarrollo ni contra una con datos reales. Crea la de pruebas con "
-        "scripts/preparar_bd_pruebas.sh y usa .../fichaitor_test en las tres variables."
+        "scripts/preparar_bd_pruebas.sh y usa .../fichaitor_test en todas las variables."
     )
 
 

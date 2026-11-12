@@ -1,9 +1,13 @@
 #!/usr/bin/env bash
 # init-roles.sh — Crea los usuarios de inicio de sesión de PRODUCCIÓN de Fichaitor.
 #
-# Sustituye a db/dev-init.sql, que es solo para desarrollo. Crea dos usuarios:
-#   fichaitor_api_prod     hereda de fichaitor_api      -> FICHAITOR_DATABASE_URL en api.env
-#   fichaitor_worker_prod  hereda de fichaitor_worker   -> FICHAITOR_WORKER_DATABASE_URL en worker.env
+# Sustituye a db/dev-init.sql, que es solo para desarrollo. Crea tres usuarios:
+#   fichaitor_api_prod           hereda de fichaitor_api          -> FICHAITOR_DATABASE_URL
+#                                                                    en api.env
+#   fichaitor_worker_prod        hereda de fichaitor_worker       -> FICHAITOR_WORKER_DATABASE_URL
+#                                                                    en worker.env
+#   fichaitor_conversation_prod  hereda de fichaitor_conversation -> FICHAITOR_CONVERSATION_DATABASE_URL
+#                                                                    en conversation.env
 #
 # Cada contraseña se genera aquí, en el servidor, y va directa de openssl a
 # PostgreSQL y al archivo de entorno: no se muestra, no pasa por GitHub y no
@@ -14,11 +18,12 @@
 #
 # Uso (en el servidor):
 #   ./init-roles.sh            crea lo que falte
-#   ./init-roles.sh --rotar    genera contraseñas nuevas para los dos usuarios;
-#                              después hay que recrear la API y el worker
+#   ./init-roles.sh --rotar    genera contraseñas nuevas para los tres usuarios;
+#                              después hay que recrear la API, el worker y la conversación
 #
 # Requisitos: el contenedor fichaitor-db en marcha, el esquema aplicado (crea los
-# roles fichaitor_api y fichaitor_worker) y los archivos api.env y worker.env.
+# roles fichaitor_api, fichaitor_worker y fichaitor_conversation) y los archivos
+# api.env, worker.env y conversation.env.
 #
 # Variables opcionales:
 #   FICHAITOR_DEPLOY_DIR   carpeta del despliegue (por defecto, la de este script)
@@ -119,8 +124,10 @@ SQL
 CAMBIOS=0
 preparar_usuario fichaitor_api_prod fichaitor_api "${DEPLOY_DIR}/api.env" FICHAITOR_DATABASE_URL
 preparar_usuario fichaitor_worker_prod fichaitor_worker "${DEPLOY_DIR}/worker.env" FICHAITOR_WORKER_DATABASE_URL
+preparar_usuario fichaitor_conversation_prod fichaitor_conversation "${DEPLOY_DIR}/conversation.env" \
+    FICHAITOR_CONVERSATION_DATABASE_URL
 
 if [[ "${CAMBIOS}" == "1" && "${ROTAR}" == "1" ]]; then
-    log "Contraseñas rotadas. Recrea la API y el worker para que las lean:"
-    log "  cd ${DEPLOY_DIR} && docker compose up -d --force-recreate fichaitor-api fichaitor-worker"
+    log "Contraseñas rotadas. Recrea la API, el worker y la conversación para que las lean:"
+    log "  cd ${DEPLOY_DIR} && docker compose up -d --force-recreate fichaitor-api fichaitor-worker fichaitor-conversation"
 fi

@@ -48,6 +48,14 @@ Hay dos alcances: `ficha` (desconectar Google; la cuenta sigue existiendo, sin f
 | Token de restauración (en claro) | Carga del job `send_mail` | Hasta enviar el correo | Worker, job `send_mail` | Igual que la fila anterior |
 | Huella del código de baja | `offboarding_code` | 30 días desde que caduca | Worker, job `retention` | Pasada diaria |
 | Huella del token de restauración | `offboarding.restore_token_hash` | Hasta restaurar o hasta la baja efectiva | API (al restaurar) o worker | En esa misma escritura |
+| Mensajes del canal (lo que escribe el dueño y el extracto de la reseña) | `channel_message` | 90 días desde que se escriben; o hasta la baja efectiva | Worker, job `retention`; y `apply_offboarding` | Pasada diaria. Al hacerse efectiva la baja (de la ficha o de la cuenta), en esa misma transacción |
+| Propuestas (con el texto de la reseña y la respuesta propuesta) y el hilo de la conversación | `proposal` y `conversation` | 90 días desde que se crean, una vez terminadas; o hasta la baja efectiva | Worker, job `retention`; y `apply_offboarding` | Pasada diaria, si ningún mensaje ni hilo las nombra. Al hacerse efectiva la baja, en esa misma transacción |
+| Chats vinculados (identificador del chat de Telegram) | `channel_identity` | Hasta que se desvinculan, más 90 días; o hasta la baja efectiva de la cuenta | Worker, job `retention`; y `apply_offboarding` | Al confirmar la baja de la cuenta se desvinculan (la API, en la misma escritura). Al hacerse efectiva, se borran. Los desvinculados, en la pasada diaria a los 90 días |
+| Huellas de los códigos de vinculación | `link_code` | Un día desde que caducan; o hasta la baja efectiva de la cuenta | Worker, job `retention`; y `apply_offboarding` | Pasada diaria |
+| Eventos de canal ya vistos (canal e identificador de la actualización) | `channel_inbound_event` | 90 días | Worker, job `retention` | Pasada diaria |
+| Chats sin vincular (huella, intentos y bloqueo) | `channel_sender` | 90 días sin actividad y sin bloqueo vigente | Worker, job `retention` | Pasada diaria. Sin datos personales: solo la huella del chat |
+| Códigos incorrectos de todos los chats, por hora | `link_failure_window` | Un día | Worker, job `retention` | Pasada diaria. Sin datos personales |
+| Actualización de Telegram (puede llevar un código y lo que escribe el dueño) | Carga del job `channel_inbound` | Hasta procesarla | Conversación, job `channel_inbound` | Al terminar el job, acabe como acabe; `on_lost` vacía lo que deje un proceso caído |
 | Eventos de embudo | `funnel_event` | Sin plazo | Nadie | No llevan datos personales |
 
 Lo que queda para siempre, sin datos personales:
@@ -97,6 +105,7 @@ El borrado lo hace el worker y nadie más. La API sigue sin poder borrar nada.
 - **`audit_log`.** El worker tiene `DELETE` y una política de fila que solo deja borrar las filas de cuentas con más de 12 meses de baja. No puede leerlas ni cambiarlas. Su `DELETE` no lleva `WHERE`, porque no tiene `SELECT` sobre ninguna columna: qué filas caen lo decide la política. El suelo de 12 meses está fijo en la base; la configuración puede alargarlo, no acortarlo.
 - **`account`.** El worker fecha la desconexión y la baja. No lee el correo ni cambia `google_sub`: lo hace el disparador. La API solo puede quitar `disconnected_at`, al volver a conectar.
 - **`session` y `waitlist_entry`.** El worker lee fechas y borra. No lee la huella del token ni el contacto.
+- **Tablas de los canales.** El worker solo borra: lee las columnas de fecha y de cuenta que usan sus `WHERE`, nunca la dirección del chat ni el texto de un mensaje. La conversación (`fichaitor_conversation`) no borra nada; la API solo desvincula.
 - Nadie tiene `TRUNCATE`.
 
 ## Variables
@@ -116,13 +125,13 @@ El borrado lo hace el worker y nadie más. La API sigue sin poder borrar nada.
 | `FICHAITOR_RETENTION_WAITLIST_MONTHS` | `12` | Lista de espera. Máximo 12 |
 | `FICHAITOR_RETENTION_WAITLIST_LAUNCHED_AT` | — | Fecha del aviso de lanzamiento. Las altas anteriores se borran en la pasada siguiente |
 | `FICHAITOR_RETENTION_CODE_DAYS` | `30` | Huellas de códigos caducados |
+| `FICHAITOR_RETENTION_CHANNEL_DAYS` | `90` | Mensajes del canal, eventos vistos, propuestas terminadas y chats desvinculados. Máximo 90 |
 | `FICHAITOR_RETENTION_HOUR_UTC` | `3` | Hora de la pasada diaria |
 
 Los límites impiden configurar un plazo más largo que el que promete la política.
 
 ## Lo que no cubre
 
-- **Las tablas de los canales de mensajería** (`db/schema_channels.sql`: direcciones vinculadas, mensajes, propuestas). Guardan datos personales ligados a la cuenta y todavía no tienen baja ni retención.
 - **La baja de la lista de espera a petición** ("responde «baja»"). Hoy es manual.
 - **Los registros del servidor** (6 meses, según la política). Dependen de la rotación de logs del despliegue, no de este código.
 - **Las copias de seguridad.** Un dato borrado sigue en las copias hasta que caducan.

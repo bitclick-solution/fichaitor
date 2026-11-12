@@ -11,11 +11,12 @@ Esta guía explica cómo publicar Fichaitor en el VPS de Bitclick y cómo actual
 | `fichaitor-db` | PostgreSQL 16 | `fichaitor-interna` | `db.env` |
 | `fichaitor-api` | API (FastAPI) | `fichaitor-interna` | `api.env` |
 | `fichaitor-worker` | Worker, con la misma imagen que la API | `fichaitor-interna` | `worker.env` |
+| `fichaitor-conversation` | Conversación por Telegram (`docs/canales.md`), con la misma imagen | `fichaitor-interna` | `conversation.env` |
 | `fichaitor-web` | Sitio público, `/app` y reenvío de `/api/` | `fichaitor-interna` y `bitclick-network` | Ninguno |
 
 - Ningún contenedor publica puertos en el servidor. Nginx Proxy Manager (`bitclick-proxy`) llega a `fichaitor-web:8080` por la red `bitclick-network`. La base de datos y la API solo son visibles dentro de `fichaitor-interna`.
 - Las imágenes `fichaitor-api` y `fichaitor-web` se etiquetan con el commit. Actualizar es cambiar la etiqueta, aplicar el esquema y recrear los contenedores.
-- La clave privada de los tokens de Google solo está en `worker.env`. La API recibe la clave pública.
+- La clave privada de los tokens de Google solo está en `worker.env`. La API recibe la clave pública. La conversación no recibe ninguna: crea la acción cuando el dueño confirma, pero solo el worker la ejecuta.
 
 Archivos del repositorio:
 
@@ -26,14 +27,14 @@ Archivos del repositorio:
 | `deploy/deploy.sh` | Despliegue en el servidor: copia, esquema, recreación, salud y vuelta atrás |
 | `deploy/init-roles.sh` | Crea los usuarios de la base de datos con contraseñas generadas en el servidor |
 | `deploy/backup.sh` y `deploy/restore.md` | Copia de seguridad y restauración |
-| `deploy/env.api.example` y `deploy/env.worker.example` | Plantillas de `api.env` y `worker.env` |
+| `deploy/env.api.example`, `deploy/env.worker.example` y `deploy/env.conversation.example` | Plantillas de `api.env`, `worker.env` y `conversation.env` |
 
 Carpeta del servidor, `/opt/bitclick/fichaitor`:
 
 | Archivo | Quién lo escribe | Contiene secretos |
 |---|---|---|
 | `docker-compose.yml`, `deploy.sh`, `backup.sh`, `init-roles.sh`, `db/*.sql` | El flujo de GitHub, en cada despliegue | No |
-| `db.env`, `api.env`, `worker.env` | Tú, una vez. `init-roles.sh` añade las URL de la base de datos | Sí (modo 600) |
+| `db.env`, `api.env`, `worker.env`, `conversation.env` | Tú, una vez. `init-roles.sh` añade las URL de la base de datos | Sí (modo 600) |
 | `.env` | `deploy.sh`. Solo las dos imágenes en uso | No |
 | `.versions` | `deploy.sh`. Las últimas cinco etiquetas desplegadas | No |
 | `backups/` | `backup.sh` | Sí (modo 700) |
@@ -122,12 +123,14 @@ En GitHub solo están los secretos de acceso al servidor y a GHCR, con los mismo
    ```bash
    scp deploy/env.api.example <usuario>@<host>:/opt/bitclick/fichaitor/api.env
    scp deploy/env.worker.example <usuario>@<host>:/opt/bitclick/fichaitor/worker.env
+   scp deploy/env.conversation.example <usuario>@<host>:/opt/bitclick/fichaitor/conversation.env
    ```
 
-3. En el servidor, protege los dos archivos:
+3. En el servidor, protege los tres archivos:
 
    ```bash
-   chmod 600 /opt/bitclick/fichaitor/api.env /opt/bitclick/fichaitor/worker.env
+   chmod 600 /opt/bitclick/fichaitor/api.env /opt/bitclick/fichaitor/worker.env \
+     /opt/bitclick/fichaitor/conversation.env
    ```
 
 ### 4. Genera el par de claves
@@ -167,12 +170,23 @@ El par cifra los tokens de Google. La API cifra con la pública; el worker desci
    | `FICHAITOR_GOOGLE_CLIENT_ID` | El mismo que en `api.env` |
    | `FICHAITOR_GOOGLE_CLIENT_SECRET` | El mismo que en `api.env` |
 
-3. Deja vacías `FICHAITOR_DATABASE_URL` y `FICHAITOR_WORKER_DATABASE_URL`. Las escribe `init-roles.sh` en el primer despliegue.
+3. Edita `conversation.env` (Telegram; consulta [Webhook de Telegram](#webhook-de-telegram)):
+
+   | Variable | Valor |
+   |---|---|
+   | `FICHAITOR_TELEGRAM_BOT_TOKEN` | El token de `@FichaitorBot` que da BotFather |
+   | `FICHAITOR_LINK_CODE_PEPPER` | Genera uno con `openssl rand -hex 32` y pon **el mismo** en `api.env` |
+   | `FICHAITOR_TELEGRAM_WEBHOOK_SECRET` | Genera uno con `openssl rand -hex 32` y pon **el mismo** en `api.env` |
+   | `FICHAITOR_GEMINI_API_KEY` | La misma que en `api.env`. Sin ella, las reseñas no se proponen por Telegram |
+
+4. Deja vacías `FICHAITOR_DATABASE_URL`, `FICHAITOR_WORKER_DATABASE_URL` y `FICHAITOR_CONVERSATION_DATABASE_URL`. Las escribe `init-roles.sh` en el primer despliegue.
 
 Reglas que `deploy.sh` comprueba antes de tocar nada:
 
-- Los tres archivos tienen modo 600.
-- `api.env` no contiene `FICHAITOR_TOKEN_PRIVATE_KEY`.
+- Los cuatro archivos tienen modo 600.
+- Ni `api.env` ni `conversation.env` contienen `FICHAITOR_TOKEN_PRIVATE_KEY`.
+- `api.env` no contiene `FICHAITOR_WORKER_DATABASE_URL` ni `FICHAITOR_CONVERSATION_DATABASE_URL`.
+- `FICHAITOR_LINK_CODE_PEPPER` es igual en `api.env` y `conversation.env`.
 - Ningún archivo activa `FICHAITOR_FAKE_PLACES`, `FICHAITOR_FAKE_GOOGLE` ni `FICHAITOR_FAKE_SCREENSHOT`.
 - El identificador del cliente OAuth coincide en los dos archivos.
 
@@ -395,6 +409,60 @@ La vuelta atrás cambia las imágenes, no la base de datos. El esquema nuevo sig
 
 > **Importante:** las copias están en el mismo servidor que la base de datos y no hay copia externa. La política de copias y de retención está sin decidir.
 
+## Webhook de Telegram
+
+Telegram entrega cada mensaje del bot en `https://fichaitor.es/api/v1/webhooks/telegram`. La API solo acepta las peticiones que traen la cabecera `X-Telegram-Bot-Api-Secret-Token` con el secreto `FICHAITOR_TELEGRAM_WEBHOOK_SECRET`, comparada en tiempo constante; sin el secreto configurado, la ruta no existe. Encola cada actualización y responde 200; la conversación hace el resto.
+
+El webhook se registra **a mano, una vez**, y otra vez solo si cambian la URL o el secreto. El despliegue no lo registra.
+
+> **Precaución:** con el webhook registrado, `getUpdates` deja de funcionar. Nunca arranques en local `FICHAITOR_TELEGRAM_POLLING=true` con el token de producción: la prueba borra el webhook. Usa un bot de pruebas.
+
+1. Genera el secreto en el servidor y ponlo, **igual**, en `api.env` y en `conversation.env` como `FICHAITOR_TELEGRAM_WEBHOOK_SECRET` (de 1 a 256 caracteres de `A-Z`, `a-z`, `0-9`, `_` y `-`; `openssl rand -hex 32` cumple):
+
+   ```bash
+   openssl rand -hex 32
+   ```
+
+2. Comprueba que `conversation.env` tiene `FICHAITOR_TELEGRAM_BOT_TOKEN`.
+
+3. Recrea la API para que registre la ruta, y comprueba que existe. Sin la cabecera debe responder 403:
+
+   ```bash
+   cd /opt/bitclick/fichaitor
+   docker compose up -d --force-recreate fichaitor-api fichaitor-conversation
+   curl -s -o /dev/null -w '%{http_code}\n' -X POST https://fichaitor.es/api/v1/webhooks/telegram
+   ```
+
+4. Registra el webhook desde el contenedor de la conversación, que tiene el token y el secreto. No escribe ninguno de los dos en la pantalla:
+
+   ```bash
+   docker exec fichaitor-conversation python -m app.worker.conversation \
+     --set-webhook https://fichaitor.es/api/v1/webhooks/telegram
+   ```
+
+   La orden llama a `setWebhook` con `secret_token` y `allowed_updates` `["message", "callback_query"]`. Debe terminar con `webhook_set`.
+
+5. Comprueba el estado sin exponer el token en la línea de órdenes del servidor (lo lee del archivo y lo pasa por la entrada estándar):
+
+   ```bash
+   docker exec -i fichaitor-conversation python - <<'PY'
+   import json, os, urllib.request
+   url = f"https://api.telegram.org/bot{os.environ['FICHAITOR_TELEGRAM_BOT_TOKEN']}/getWebhookInfo"
+   info = json.load(urllib.request.urlopen(url))["result"]
+   print({k: info.get(k) for k in ("url", "pending_update_count", "last_error_message")})
+   PY
+   ```
+
+   `url` debe ser la de arriba y `last_error_message`, vacío.
+
+6. Envía `/ayuda` al bot desde tu Telegram. Debe contestar en unos segundos. Si no:
+   - `docker logs --tail 80 fichaitor-conversation`: busca `job_failed` o `telegram_disabled`.
+   - Comprueba que el job llegó: `docker exec fichaitor-db psql -U fichaitor -d fichaitor -c "SELECT state, count(*) FROM job WHERE kind = 'channel_inbound' GROUP BY state"`.
+
+**Cambiar el secreto:** genera otro, cámbialo en los dos archivos, recrea `fichaitor-api` y `fichaitor-conversation`, y repite el paso 4. Mientras tanto Telegram reintenta las entregas rechazadas durante 24 horas.
+
+**Si se filtra el token del bot:** en `@BotFather`, `/token` genera otro. Cámbialo en `conversation.env`, recrea `fichaitor-conversation` y repite el paso 4.
+
 ## Tareas habituales
 
 **Ver el estado y los registros:**
@@ -419,7 +487,7 @@ docker logs --tail 80 fichaitor-worker
 
 ```bash
 ./init-roles.sh --rotar
-docker compose up -d --force-recreate fichaitor-api fichaitor-worker
+docker compose up -d --force-recreate fichaitor-api fichaitor-worker fichaitor-conversation
 ```
 
 **Ver la cola del worker:**

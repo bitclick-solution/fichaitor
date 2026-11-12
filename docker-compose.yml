@@ -11,6 +11,7 @@ services:
       #   docker compose exec -T db psql -U fichaitor -d fichaitor < db/schema.sql
       - ./db/schema.sql:/docker-entrypoint-initdb.d/10-schema.sql:ro
       - ./db/schema_worker.sql:/docker-entrypoint-initdb.d/15-schema-worker.sql:ro
+      - ./db/schema_channels.sql:/docker-entrypoint-initdb.d/17-schema-channels.sql:ro
       - ./db/dev-init.sql:/docker-entrypoint-initdb.d/20-dev-init.sql:ro
     ports:
       - "127.0.0.1:5433:5432"
@@ -64,6 +65,30 @@ services:
     tmpfs:
       - /tmp
     stop_grace_period: 130s
+    restart: on-failure:3
+
+  # La conversación por Telegram (docs/canales.md): otro proceso con la misma imagen y
+  # su propio usuario de base de datos. No recibe la clave privada de los tokens.
+  # Con FICHAITOR_TELEGRAM_POLLING=true en .env recibe por sondeo largo, sin URL pública.
+  conversation:
+    build: .
+    command: ["python", "-m", "app.worker.conversation"]
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      FICHAITOR_CONVERSATION_DATABASE_URL: ${FICHAITOR_CONVERSATION_DATABASE_URL:-postgresql://fichaitor_conversation_dev:dev@db:5432/fichaitor}
+      # Nunca la clave privada en este proceso: se vacía aunque .env la traiga.
+      FICHAITOR_TOKEN_PRIVATE_KEY: ""
+    depends_on:
+      db:
+        condition: service_healthy
+    healthcheck:
+      disable: true
+    read_only: true
+    tmpfs:
+      - /tmp
+    stop_grace_period: 40s
     restart: on-failure:3
 
   # Sitio público y aplicación /app. Redirige /api/ a la API: mismo origen, sin CORS.

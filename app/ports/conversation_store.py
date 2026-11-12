@@ -61,16 +61,41 @@ class ConversationStore(Protocol):
         """Store a new code. The account's earlier unused codes stop being valid."""
         ...
 
-    async def get_link_code(self, code_hash: str) -> LinkCode | None: ...
+    async def get_link_code(self, code_hash: str) -> LinkCode | None:
+        """The code whose six digits OR whose token have that hash."""
+        ...
 
     async def consume_link_code(self, code_hash: str, now: datetime) -> str | None:
         """Mark the code as used and return its account, in one atomic step. None if
-        it does not exist, has expired or was already used."""
+        it does not exist, has expired or was already used. `code_hash` is the hash of
+        the six digits or of the token: either spends the code."""
         ...
 
     async def get_sender_state(self, address_hash: str) -> SenderState: ...
 
     async def save_sender_state(self, address_hash: str, state: SenderState) -> None: ...
+
+    async def take_link_attempt(self, address_hash: str, now: datetime) -> SenderState | None:
+        """Count one more code of that address before it is looked at, in one atomic
+        step (`link_codes.register_attempt`). None if the address is blocked."""
+        ...
+
+    async def clear_link_attempts(self, address_hash: str) -> None:
+        """A right code: the count of that address starts again."""
+        ...
+
+    async def claim_unlinked_reply(self, address_hash: str, now: datetime) -> bool:
+        """Whether an address that is not linked may get the generic answer now (once
+        every 24 hours, never while blocked), recording it in the same atomic step."""
+        ...
+
+    async def link_failures(self, now: datetime) -> int:
+        """Wrong codes of every address together in the current window."""
+        ...
+
+    async def count_link_failure(self, now: datetime) -> int:
+        """One more wrong code in the current window, atomically. Returns the count."""
+        ...
 
     # --- accounts ---------------------------------------------------------------
     async def get_account_info(self, account_id: str) -> AccountInfo: ...
@@ -119,4 +144,27 @@ class ConversationStore(Protocol):
 
     async def count_capped_sent_since(self, account_id: str, since: datetime) -> int:
         """Proposals that count towards the weekly cap, first sent after `since`."""
+        ...
+
+
+@dataclass(frozen=True)
+class ReviewTarget:
+    """A stored review and the accounts it may be proposed to by the channels."""
+
+    stars: int | None
+    text: str  # written by a third party: data, only ever shown
+    created_at: datetime | None
+    unanswered: bool
+    live: bool  # still returned by Google
+    accounts: tuple[str, ...]  # selected profile with it, linked before it was written
+
+
+class ReviewTargets(Protocol):
+    async def review_targets(self, review_id: str) -> ReviewTarget | None: ...
+
+
+class LinkedProfiles(Protocol):
+    async def linked_profiles(self) -> Sequence[tuple[str, str]]:
+        """(google_sub, Google location) of the selected profiles of the accounts with a
+        linked address: what the planner keeps in sync."""
         ...

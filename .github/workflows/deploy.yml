@@ -222,12 +222,13 @@ jobs:
           ssh servidor "mkdir -p '${TMP_DIR}/db' '${DEPLOY_DIR}/db'"
           scp deploy/docker-compose.prod.yml "servidor:${TMP_DIR}/docker-compose.yml"
           scp deploy/deploy.sh deploy/backup.sh deploy/init-roles.sh "servidor:${TMP_DIR}/"
-          scp db/schema.sql db/schema_worker.sql "servidor:${TMP_DIR}/db/"
+          scp db/schema.sql db/schema_worker.sql db/schema_channels.sql "servidor:${TMP_DIR}/db/"
           # shellcheck disable=SC2029
           ssh servidor "set -e
             cp '${TMP_DIR}/docker-compose.yml' '${DEPLOY_DIR}/docker-compose.yml'
             cp '${TMP_DIR}/deploy.sh' '${TMP_DIR}/backup.sh' '${TMP_DIR}/init-roles.sh' '${DEPLOY_DIR}/'
-            cp '${TMP_DIR}/db/schema.sql' '${TMP_DIR}/db/schema_worker.sql' '${DEPLOY_DIR}/db/'
+            cp '${TMP_DIR}/db/schema.sql' '${TMP_DIR}/db/schema_worker.sql' \
+              '${TMP_DIR}/db/schema_channels.sql' '${DEPLOY_DIR}/db/'
             chmod +x '${DEPLOY_DIR}/deploy.sh' '${DEPLOY_DIR}/backup.sh' '${DEPLOY_DIR}/init-roles.sh'
             rm -rf '${TMP_DIR}'"
 

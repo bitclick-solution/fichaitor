@@ -39,8 +39,10 @@ from app.domain.actions import (
     REASON_ALREADY_APPLIED,
     REPLY_REVIEW,
 )
+from app.domain.channel_jobs import CHANNEL_ACTION_RESULT, RESULT_MAX_ATTEMPTS, result_key
 from app.domain.jobs import Job, JobError, PermanentJobError
 from app.ports.google_profile import GoogleProfile, GoogleRejected, ReconnectRequired
+from app.ports.job_queue import JobEnqueuer
 from app.ports.worker_store import ClaimedAction, WorkerStore
 from app.worker import log
 
@@ -54,11 +56,15 @@ class ReplyReview:
         google: GoogleProfile,
         private_key: str,
         clock: Callable[[], datetime] = lambda: datetime.now(UTC),
+        results: JobEnqueuer | None = None,
     ) -> None:
         self._store = store
         self._google = google
         self._private_key = private_key
         self._clock = clock
+        # Where the outcome is told to the conversation (channel_action_result), so that
+        # an owner who confirmed by the channel hears how it went. None: nobody is told.
+        self._results = results
 
     async def __call__(self, job: Job) -> None:
         action_id = _action_id(job)
@@ -155,13 +161,32 @@ class ReplyReview:
             action_id=action.id,
             already_there=already_there,
         )
+        if held:
+            await self._tell(action.id, None)
 
     async def _fail(
         self, action: ClaimedAction, job: Job, reason: str, status: int | None = None
     ) -> None:
-        await self._store.finish_action(
+        held = await self._store.finish_action(
             action.id, job.id, done=False, at=self._clock(), google_status=status, reason=reason
         )
+        if held:
+            await self._tell(action.id, reason)
+
+    async def _tell(self, action_id: str, error: str | None) -> None:
+        """Enqueue the outcome for the conversation. Never raises: the action is
+        already closed, and the panel shows it either way."""
+        if self._results is None:
+            return
+        try:
+            await self._results.enqueue(
+                CHANNEL_ACTION_RESULT,
+                {"action_id": action_id, "ok": error is None, "error": error},
+                idempotency_key=result_key(action_id),
+                max_attempts=RESULT_MAX_ATTEMPTS,
+            )
+        except Exception as exc:
+            log.event("action_result_not_enqueued", logging.WARNING, error=type(exc).__name__)
 
     async def on_exhausted(self, job: Job) -> None:
         """Out of attempts: the action fails, so that the owner is told and can try again."""
@@ -169,9 +194,11 @@ class ReplyReview:
             action_id = _action_id(job)
         except PermanentJobError:
             return
-        await self._store.finish_action(
+        held = await self._store.finish_action(
             action_id, job.id, done=False, at=self._clock(), reason=ERROR_UNAVAILABLE
         )
+        if held:
+            await self._tell(action_id, ERROR_UNAVAILABLE)
 
     async def on_lost(self, kind: str) -> int:
         """Jobs closed as failed without closing their action (their worker died during

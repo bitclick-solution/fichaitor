@@ -74,6 +74,21 @@ class ChannelIdentity:
         return self.unlinked_at is None
 
 
+_CHANNEL_NAMES = {"telegram": "Telegram", "whatsapp": "WhatsApp", "email": "Correo"}
+MASK = "••••"
+
+
+def masked_address(channel: str, address: str) -> str:
+    """How the panel shows a linked address: enough to recognise it, not to use it.
+    "Telegram de ••••7342", "WhatsApp de ••••2233", "Correo de m••••@bar.es"."""
+    name = _CHANNEL_NAMES.get(channel, channel)
+    if channel == "email" and "@" in address:
+        local, domain = address.split("@", 1)
+        return f"{name} de {local[:1]}{MASK}@{domain}"
+    digits = re.sub(r"\D", "", address)
+    return f"{name} de {MASK}{digits[-4:]}"
+
+
 class LinkOutcome(StrEnum):
     NEW = "new"  # the address was free
     SAME = "same"  # already linked to that account: nothing to do, the code is kept

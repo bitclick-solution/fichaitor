@@ -28,6 +28,9 @@ class RetentionSettings(BaseSettings):
     waitlist_launched_at: datetime | None = None
     # Fingerprints of the codes of a leave: days after they expired.
     code_days: int = Field(default=30, ge=0, le=30)
+    # Messaging channels: messages, events seen, finished proposals and unlinked
+    # addresses, days after they were written or ended (docs/canales.md).
+    channel_days: int = Field(default=90, ge=1, le=90)
     # Hour (UTC) of the daily pass.
     hour_utc: int = Field(default=3, ge=0, le=23)
 
@@ -40,4 +43,5 @@ class RetentionSettings(BaseSettings):
             waitlist_months=self.waitlist_months,
             waitlist_launched_at=self.waitlist_launched_at,
             code_days=self.code_days,
+            channel_days=self.channel_days,
         )

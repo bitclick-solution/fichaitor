@@ -26,6 +26,7 @@ from typing import Any
 import httpx
 
 from app.domain.channel_messages import (
+    COMMANDS,
     TELEGRAM_LIMITS,
     InboundEvent,
     InboundKind,
@@ -51,6 +52,8 @@ ALLOWED_UPDATES = ["message", "callback_query"]
 _BOT_PATH = re.compile(r"/bot\d+:[A-Za-z0-9_\-]+")
 _START = re.compile(r"/start(?:@\w+)?(?:\s+(\S+))?\s*")
 _START_PAYLOAD = re.compile(r"[A-Za-z0-9_\-]{1,64}")
+# A command: "/name" or "/name@bot", alone or followed by words that are ignored.
+_COMMAND = re.compile(r"/([A-Za-z0-9_]{1,32})(?:@\w+)?(?:\s.*)?", re.DOTALL)
 
 
 # --- the token never reaches a log ---------------------------------------------------
@@ -124,6 +127,18 @@ def parse_update(update: object) -> InboundEvent | None:
             code = payload if _START_PAYLOAD.fullmatch(payload) else ""
             return InboundEvent(
                 CHANNEL, address, event_id, InboundKind.START, code, sender_name=name
+            )
+        command = _COMMAND.fullmatch(text.strip())
+        if command is not None and command.group(1).lower() in COMMANDS:
+            # Only /ayuda and /privacidad besides /start. Anything else that looks like
+            # a command is plain text, and is understood as any other text.
+            return InboundEvent(
+                CHANNEL,
+                address,
+                event_id,
+                InboundKind.COMMAND,
+                command.group(1).lower(),
+                sender_name=name,
             )
         return InboundEvent(CHANNEL, address, event_id, InboundKind.TEXT, text, sender_name=name)
     if isinstance(callback, dict):

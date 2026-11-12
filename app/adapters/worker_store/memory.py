@@ -18,7 +18,7 @@ from app.domain.profile_summary import (
 )
 from app.domain.sentiment import Analysis, SentimentReview, StoredClassification, Usage
 from app.ports.sentiment_store import SentimentContext
-from app.ports.worker_store import ClaimedAction, StoredConnection
+from app.ports.worker_store import ClaimedAction, NewReview, StoredConnection
 
 
 @dataclass
@@ -131,8 +131,14 @@ class MemoryWorkerStore:
 
     async def save_reviews(
         self, google_sub: str, location: str, reviews: Sequence[Review], at: datetime
-    ) -> None:
+    ) -> list[NewReview]:
+        known = set(self.tables.reviews)
         self.tables.save_reviews(google_sub, location, reviews, at)
+        return [
+            NewReview(row.id, row.created_at)
+            for row in self.tables.reviews.values()
+            if row.id not in known and row.reply_text is None
+        ]
 
     async def recent_replies(
         self, google_sub: str, location: str, since: datetime

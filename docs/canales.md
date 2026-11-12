@@ -4,7 +4,7 @@ Base de los canales por los que el agente avisa al dueño y recibe sus respuesta
 
 Este documento explica cómo funciona, qué límites aplica y cómo se integra con el resto del sistema. Los textos y botones son los de `docs/fase1/guion-conversacional.md`; los estados, los de `docs/01-flujos.md`.
 
-> **Importante:** Esta entrega no está cableada. Ninguna ruta de la API, ningún job del worker y ninguna tabla de producción la usan todavía. El [plan de integración](#9-plan-de-integración) dice qué hay que tocar y en qué orden.
+> **Importante:** Desde el 2026-11-12 está cableada de punta a punta (pasos 0 a 5, 7 y 8 del [plan de integración](#9-plan-de-integración); el 6, sin `plan_key_dates`). El dueño vincula su Telegram desde el panel y recibe y publica por Telegram las respuestas a sus reseñas. Las fechas clave siguen sin ejecutor: no se proponen.
 
 ## 1. Qué hay
 
@@ -16,7 +16,12 @@ Este documento explica cómo funciona, qué límites aplica y cómo se integra c
 | Códigos de vinculación | `app/domain/link_codes.py` | Generación, huella, caducidad e intentos |
 | Puertos | `app/ports/messaging.py`, `conversation_store.py`, `proposal_actions.py` | Canal, almacén y puerta por la que una propuesta confirmada se convierte en acción |
 | Orquestador | `app/application/conversation_service.py` | `ConversationService`: recibe eventos, aplica las reglas y envía mensajes. Solo usa puertos |
-| Telegram | `app/adapters/messaging/telegram.py` | Bot API con `httpx`, webhook y sondeo largo |
+| Telegram | `app/adapters/messaging/telegram.py` | Bot API con `httpx`, webhook y sondeo largo. Solo atiende `/start`, `/ayuda` y `/privacidad` como comandos |
+| Almacén en PostgreSQL | `app/adapters/conversation_store/postgres.py` | `PostgresConversationStore`, con el rol `fichaitor_conversation` |
+| Puerta de las acciones | `app/adapters/proposal_actions/review_replies.py` | `ReviewReplyActions`: la misma vía que el panel (`ReviewReplies.confirm`) |
+| Rutas | `app/api/channels.py` | Código de vinculación, canales vinculados, desvincular y webhook |
+| Proceso | `app/worker/conversation.py` | `python -m app.worker.conversation`: jobs de canal, planificador y sondeo largo |
+| Jobs | `app/worker/channel_inbound.py`, `conversation_tick.py`, `propose_review.py`, `channel_action_result.py`, `channel_planner.py` | Consulta `docs/worker.md` |
 | Dobles | `app/adapters/messaging/fake.py`, `app/adapters/conversation_store/memory.py`, `InMemoryProposalActions` | Para pruebas y para la prueba local |
 | Ajustes | `app/channels_config.py` | Variables `FICHAITOR_*` |
 | Esquema | `db/schema_channels.sql` | Tablas y privilegios |
@@ -121,9 +126,9 @@ El horario de silencio se aplica a todo lo que el agente envía por iniciativa p
 
 La vinculación es la misma para todos los canales. Una identidad de canal es `channel` (`telegram`, `whatsapp`, `email`) y `address` (identificador del chat, teléfono en E.164 o correo).
 
-1. La sesión web pide un código (`create_link_code`). Son 6 dígitos de un solo uso, válidos 10 minutos. Pedir otro invalida el anterior.
+1. La sesión web pide un código (`POST /api/v1/channels/link-code`). Son 6 dígitos y un testigo largo, un solo código de un solo uso, válido 10 minutos. Pedir otro invalida el anterior.
 2. El dueño envía el código desde su propio chat:
-   - Telegram: `https://t.me/FichaitorBot?start=<código>`, o el código escrito en el chat.
+   - Telegram: `https://t.me/FichaitorBot?start=<testigo>` (43 caracteres aleatorios; nunca los 6 dígitos), o los 6 dígitos escritos en el chat.
    - WhatsApp (cuando exista el adaptador): `https://wa.me/<número de Fichaitor>?text=<código>`. Enviarlo desde su teléfono demuestra que es suyo y abre la ventana de 24 horas.
 3. El orquestador valida el código y vincula la dirección a la cuenta.
 
@@ -134,9 +139,10 @@ Reglas, todas con prueba:
 - **Una dirección pertenece a una sola cuenta a la vez.** Vincularla a otra cuenta la desvincula de la anterior, con el aviso `link.moved`.
 - **Desvincular desde el panel es inmediato.** Desde ese instante no se le envía nada y sus mensajes se tratan como los de un desconocido.
 - **El código no se guarda en claro.** Se guarda su SHA-256, con el secreto `FICHAITOR_LINK_CODE_PEPPER` si está definido. Tampoco se anota en el registro de mensajes ni en los logs.
-- **Tres códigos incorrectos seguidos bloquean la dirección una hora.** Durante el bloqueo no se evalúa ningún código ni se responde.
+- **Tres códigos incorrectos seguidos bloquean la dirección una hora.** Durante el bloqueo no se evalúa ningún código ni se responde. El intento se cuenta **antes** de mirar el código y en una sola sentencia: dos códigos del mismo chat a la vez no se cuelan bajo el límite.
+- **Tope global (B3).** Los códigos incorrectos de todos los chats juntos se cuentan por hora (`link_failure_window`). Pasados `FICHAITOR_LINK_GLOBAL_MAX_FAILURES` (50), los códigos tecleados no se miran hasta la hora siguiente y el chat recibe `link.paused`. El enlace con el testigo sigue funcionando: no se puede adivinar.
 
-> **Nota:** Seis dígitos son un millón de valores. La huella no protege un código guardado frente a la fuerza bruta: lo protegen los 10 minutos, el uso único y el bloqueo. El secreto opcional cierra también ese hueco.
+> **Nota:** Seis dígitos son un millón de valores. La huella no protege un código guardado frente a la fuerza bruta: lo protegen los 10 minutos, el uso único, el bloqueo por chat y el tope global. El secreto opcional cierra también ese hueco. El testigo del enlace son 256 bits aleatorios.
 
 ## 6. Telegram
 
@@ -211,6 +217,10 @@ La Bot API lleva el token en la ruta (`/bot<token>/<método>`). Para que no salg
 
 Los límites de WhatsApp son los de `docs/fase0/whatsapp.md`.
 
+### Comandos
+
+Solo tres: `/start` (con o sin testigo), `/ayuda` y `/privacidad`. Los dos últimos tienen una respuesta fija, sin datos de ningún negocio, para cualquier chat (vinculado o no; uno bloqueado no recibe nada). Cualquier otra cosa que empiece por `/` es texto normal.
+
 ## 7. Probarlo en local con sondeo largo
 
 Con el sondeo largo no hace falta URL pública. Todo lo demás va en memoria: no se toca la base de datos ni Google.
@@ -236,29 +246,68 @@ Con el sondeo largo no hace falta URL pública. Todo lo demás va en memoria: no
 
 > **Precaución:** Si el bot tiene un webhook configurado, la prueba lo borra (`deleteWebhook`). No la ejecutes con el token de producción mientras producción reciba por webhook. Usa un bot de pruebas.
 
+### Probarlo en local con el bot real, de punta a punta
+
+Con la base de datos de desarrollo, la API, el worker y la conversación en Docker, Google y el modelo falsos, y un bot de **pruebas** (no `@FichaitorBot` si producción recibe por webhook).
+
+1. En `.env`, además de lo habitual para el modo falso (`FICHAITOR_FAKE_GOOGLE=true`, `FICHAITOR_FAKE_PLACES=true`, `FICHAITOR_FAKE_SCREENSHOT=true`, `FICHAITOR_COOKIE_SECURE=false`):
+
+   ```text
+   FICHAITOR_TELEGRAM_BOT_TOKEN=<token del bot de pruebas>
+   FICHAITOR_TELEGRAM_BOT_USERNAME=<usuario del bot de pruebas>
+   FICHAITOR_TELEGRAM_POLLING=true
+   FICHAITOR_LINK_CODE_PEPPER=<cualquier valor, el mismo para todos>
+   ```
+
+2. Aplica la migración de la base de desarrollo (una vez; consulta el informe de integración o `db/schema_channels.sql`).
+3. Arranca: `docker compose up -d --build api worker conversation web`.
+4. Abre `http://localhost:8080/app`, conecta (modo falso) y elige la ficha.
+5. Pide el código desde la consola del navegador o con la web cuando tenga la pantalla:
+
+   ```js
+   await (await fetch("/api/v1/channels/link-code", {method: "POST", headers: {"X-Requested-With": "fichaitor"}})).json()
+   ```
+
+6. Abre `telegram_url` en el móvil y pulsa **Iniciar**. El bot da la bienvenida con el nombre de la ficha. `GET /api/v1/me/channels` ya lo lista.
+7. Para que llegue una reseña: la ficha de demostración trae reseñas antiguas, así que vincula primero y fuerza una sincronización con una reseña nueva, o encola a mano un `propose_review` de una reseña existente después de marcarla reciente (como propietario de la base de desarrollo):
+
+   ```sql
+   UPDATE review SET created_at = now(), reply_text = NULL WHERE id = '<rev_…>';
+   UPDATE channel_identity SET verified_at = now() - interval '1 day' WHERE unlinked_at IS NULL;
+   INSERT INTO job (kind, payload) VALUES ('propose_review', '{"review_id": "<rev_…>"}');
+   ```
+
+8. Pulsa **Publicar**. La conversación crea la acción; el worker la "envía" a la Google falsa y el bot contesta "Respuesta enviada a Google".
+9. `/ayuda` y `/privacidad` responden siempre. Desvincula desde el panel (`DELETE /api/v1/me/channels/{id}`) y comprueba que el bot te trata como a un desconocido.
+
 Pruebas automáticas, sin red:
 
 ```bash
-uv run pytest -q tests/test_proposals.py tests/test_conversation_rules.py tests/test_conversation_service.py tests/test_channel_messages.py tests/test_channel_config.py tests/test_telegram.py tests/test_link_codes.py
+uv run pytest -q tests/test_proposals.py tests/test_conversation_rules.py tests/test_conversation_service.py tests/test_channel_messages.py tests/test_channel_config.py tests/test_telegram.py tests/test_link_codes.py tests/test_channels_linking.py tests/test_channels_api.py tests/test_channels_worker.py
+# Con la base de pruebas (las cuatro URL de tests/conftest.py):
+uv run pytest -q tests/test_conversation_store_postgres.py
 ```
 
 ## 8. Tablas
 
-`db/schema_channels.sql` es idempotente y se aplica después de `schema.sql` y `schema_worker.sql`.
+`db/schema_channels.sql` es idempotente y se aplica después de `schema.sql` y `schema_worker.sql`: en `docker-compose.yml` (al crear el volumen), `scripts/preparar_bd_pruebas.sh`, la integración continua (`scripts/ci/aplicar_esquema.sh`) y `deploy/deploy.sh` (en la misma transacción que los otros dos).
 
-| Tabla | Contenido | API | Worker |
+Tres roles. La API es la sesión web; la conversación (`fichaitor_conversation`, proceso aparte) habla con el dueño y crea la acción; el worker ejecuta y, en estas tablas, solo borra (baja y retención).
+
+| Tabla | Contenido | API | Conversación (el worker solo borra) |
 |---|---|---|---|
 | `channel_identity` | Direcciones vinculadas. Desvincular pone `unlinked_at`. Índice único: una dirección activa por canal | Lee; cambia solo `unlinked_at` | Lee, crea y anota actividad |
-| `link_code` | Huella del código, cuenta, caducidad y uso | Crea y retira los anteriores. No lee las huellas | Busca por huella y consume |
+| `link_code` | Huellas de los 6 dígitos y del testigo, cuenta, caducidad y uso | Crea y retira los anteriores. No lee las huellas | Busca por huella y consume |
+| `link_failure_window` | Códigos incorrectos de todos los chats, por hora | Nada | Lee y suma en una sentencia |
 | `channel_sender` | Direcciones sin vincular, por huella: intentos, bloqueo y última respuesta genérica | Nada | Lee y escribe |
 | `proposal` | Propuestas con su estado, paso, testigo y confirmación registrada | Lee | Crea y mueve. No puede cambiar la cuenta, el tipo, el origen ni `payload` |
 | `conversation` | Un hilo por cuenta con la propuesta activa | Nada | Lee, crea y cambia la propuesta activa |
 | `channel_inbound_event` | Eventos entrantes ya vistos: el mismo se atiende una vez | Nada | Lee y escribe |
 | `channel_message` | Mensajes en los dos sentidos. Solo se añaden | Nada | Solo inserta |
 
-Nadie tiene `DELETE`. El worker recibe además lectura de `account (id, selected_location_id)` y `location (id, account_id, title)` para el nombre del negocio en la bienvenida.
+Solo el worker tiene `DELETE`, y solo lee las columnas que usan sus `WHERE`. La conversación recibe además lo que necesita para hacer lo mismo que el panel: leer `account` (sin el correo), `location`, `offboarding` y `review`; escribir `review_draft` y el tope de borradores de `usage_counter`; crear `action` (sin poder cambiarla), su fila `reply_confirmed` de `audit_log` (política de fila) y los jobs. No lee `google_connection` ni `session`.
 
-Datos personales: la dirección en `channel_identity` y el contenido de `channel_message` (lo que escribe el dueño y el extracto de la reseña). Falta decidir el plazo de conservación de `channel_message` y de `channel_inbound_event`, y añadirlo a `docs/legal/privacidad.md`.
+Datos personales: la dirección en `channel_identity` y el contenido de `channel_message` (lo que escribe el dueño y el extracto de la reseña). Plazos en `docs/retencion.md`: 90 días para los mensajes, los eventos vistos, las propuestas terminadas y los chats desvinculados; al confirmar la baja de la cuenta se desvinculan los chats, y al hacerse efectiva se borran sus chats, mensajes, propuestas y códigos. Falta añadirlo a `docs/legal/privacidad.md` (es de la sesión de interfaz).
 
 ## 9. Plan de integración
 

@@ -550,6 +550,9 @@ def test_no_role_holds_a_privilege_that_could_rewrite_history(role):
     )
     assert [(p["policyname"], p["cmd"]) for p in policies] == [
         ("audit_log_api_insert", "INSERT"),
+        # The conversation confirms by the channel as the API does from the panel
+        # (db/schema_channels.sql): only 'reply_confirmed'.
+        ("audit_log_conversation_insert", "INSERT"),
         ("audit_log_worker_delete_expired", "DELETE"),
         ("audit_log_worker_insert", "INSERT"),
     ]

@@ -27,12 +27,19 @@ class ChannelsSettings(BaseSettings):
     telegram_polling: bool = False
 
     # Linking. A secret that is not in the database, mixed into the hash of the codes.
+    # The API (which creates the codes) and the conversation (which checks them) need
+    # the same value.
     link_code_pepper: SecretStr = SecretStr("")
+    # Wrong codes of every chat together per hour; past it, typed codes wait (B3).
+    link_global_max_failures: int = Field(default=50, ge=1, le=10_000)
+    # Codes a web session may ask for, per account and hour.
+    link_code_rate_limit: int = Field(default=5, ge=1, le=100)
 
     # Where the texts send the owner.
     channels_panel_url: str = "https://fichaitor.es/app"
     channels_signup_url: str = "https://fichaitor.es"
     channels_reconnect_url: str = "https://fichaitor.es/app"
+    channels_privacy_url: str = "https://fichaitor.es/privacidad/"
 
     # Frequency and quiet hours (docs/04-ux-conversacional.md, section 3).
     proactive_weekly_cap: int = Field(default=2, ge=0, le=50)
@@ -67,4 +74,6 @@ class ChannelsSettings(BaseSettings):
             weekly_cap=self.proactive_weekly_cap,
             quiet=QuietHours(start=self.quiet_hours_start, end=self.quiet_hours_end),
             link_code_pepper=self.link_code_pepper.get_secret_value(),
+            privacy_url=self.channels_privacy_url,
+            link_global_max_failures=self.link_global_max_failures,
         )

@@ -23,6 +23,7 @@ from app.adapters.sentiment_model.build import build_sentiment_model
 from app.adapters.store.memory import MemoryStore
 from app.adapters.store.postgres import PostgresStore
 from app.adapters.worker_store.memory import MemoryWorkerStore
+from app.api.channels import build_router as build_channels_router
 from app.api.diagnosis_out import DiagnosisResponse, to_response
 from app.api.google_oauth import build_router as build_google_router
 from app.api.me import build_router as build_me_router
@@ -36,6 +37,7 @@ from app.application.offboarding import Offboarding
 from app.application.profile_sync import ProfileSync
 from app.application.rate_limit import SlidingWindowLimiter
 from app.application.review_replies import ReviewReplies
+from app.channels_config import ChannelsSettings
 from app.config import Settings
 from app.domain.calendar import NATIONAL, Holiday
 from app.domain.jobs import Job
@@ -160,6 +162,7 @@ def create_app(
     screenshot_settings: ScreenshotSettings | None = None,
     sentiment_settings: SentimentSettings | None = None,
     mail_settings: MailSettings | None = None,
+    channels_settings: ChannelsSettings | None = None,
 ) -> FastAPI:
     settings = settings or Settings()
     screenshot_settings = screenshot_settings or ScreenshotSettings()
@@ -379,6 +382,20 @@ def create_app(
                 settings.offboarding_restore_rate_limit, 3600, clock
             ),
             client_ip=client_ip,
+            clock=clock,
+            cookie_secure=settings.cookie_secure,
+        )
+    )
+
+    # Messaging channels (docs/canales.md): link codes, linked addresses and, with
+    # FICHAITOR_TELEGRAM_WEBHOOK_SECRET, Telegram's webhook.
+    app.include_router(
+        build_channels_router(
+            store=store,
+            links=store,
+            jobs=jobs,
+            quota=quota,
+            settings=channels_settings or ChannelsSettings(),
             clock=clock,
             cookie_secure=settings.cookie_secure,
         )

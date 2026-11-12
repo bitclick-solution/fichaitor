@@ -33,7 +33,7 @@ if [ "$exists" != "1" ]; then
 fi
 
 # Los roles son del clúster: dev-init.sql crea los de desarrollo si faltan.
-for file in db/dev-init.sql db/schema.sql db/schema_worker.sql; do
+for file in db/dev-init.sql db/schema.sql db/schema_worker.sql db/schema_channels.sql; do
   $PSQL -d "$DB" -q -v ON_ERROR_STOP=1 < "$file"
 done
 
@@ -41,3 +41,4 @@ echo "Esquemas aplicados en $DB. URL de las pruebas:"
 echo "  FICHAITOR_TEST_OWNER_URL=postgresql://$OWNER:<clave>@127.0.0.1:5433/$DB"
 echo "  FICHAITOR_TEST_DATABASE_URL=postgresql://fichaitor_api_dev:dev@127.0.0.1:5433/$DB"
 echo "  FICHAITOR_TEST_WORKER_URL=postgresql://fichaitor_worker_dev:dev@127.0.0.1:5433/$DB"
+echo "  FICHAITOR_TEST_CONVERSATION_URL=postgresql://fichaitor_conversation_dev:dev@127.0.0.1:5433/$DB"

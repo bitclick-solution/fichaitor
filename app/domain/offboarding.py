@@ -116,3 +116,6 @@ class RetentionPolicy:
     waitlist_months: int = 12  # the waiting list, after signing up
     waitlist_launched_at: datetime | None = None  # entries older than the launch go too
     code_days: int = 30  # fingerprints of used or expired codes
+    # Messaging channels (docs/canales.md): the messages of a conversation, the events
+    # already seen, finished proposals, unlinked addresses and the counts of unknown chats.
+    channel_days: int = 90

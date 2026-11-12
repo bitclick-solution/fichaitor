@@ -30,6 +30,7 @@ from app.worker import (
     analyze_sentiment,
     apply_offboarding,
     log,
+    propose_review,
     reply_review,
     retention,
     send_mail,
@@ -56,9 +57,15 @@ def build_registry(
     policy = sentiment_policy or SentimentPolicy()
     trigger = analyze_sentiment.SentimentTrigger(store, jobs, policy) if jobs is not None else None
     registry = HandlerRegistry()
+    # The messaging channels (docs/canales.md): a sync proposes its new reviews, and the
+    # executor tells the conversation how each action ended. Both are jobs of the
+    # conversation process; this worker only enqueues them.
+    proposals = propose_review.ReviewProposals(jobs) if jobs is not None else None
     registry.register(
         sync_profile.KIND,
-        sync_profile.SyncProfile(store, google, settings.token_private_key, sentiment=trigger),
+        sync_profile.SyncProfile(
+            store, google, settings.token_private_key, sentiment=trigger, proposals=proposals
+        ),
     )
     registry.register(
         analyze_sentiment.KIND,
@@ -66,7 +73,7 @@ def build_registry(
     )
     registry.register(
         reply_review.KIND,
-        reply_review.ReplyReview(store, google, settings.token_private_key),
+        reply_review.ReplyReview(store, google, settings.token_private_key, results=jobs),
     )
     # Leaving: the emails, making a leave effective at its date, and the daily pass
     # that deletes what is past its term (docs/retencion.md).

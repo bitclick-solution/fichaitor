@@ -13,10 +13,11 @@
 #   1. Comprueba los archivos de entorno (nombres de variables, nunca valores).
 #   2. Descarga las dos imágenes. Si falla, no se ha tocado nada.
 #   3. Arranca la base de datos y hace una copia de seguridad.
-#   4. Aplica db/schema.sql y db/schema_worker.sql en una sola transacción.
+#   4. Aplica db/schema.sql, db/schema_worker.sql y db/schema_channels.sql en una
+#      sola transacción.
 #      Si falla, no se aplica nada y la versión anterior sigue en marcha.
 #   5. Crea los usuarios de base de datos que falten (init-roles.sh).
-#   6. Recrea la API, el worker y la web con la etiqueta nueva.
+#   6. Recrea la API, el worker, la conversación y la web con la etiqueta nueva.
 #   7. Comprueba la salud. Si falla, vuelve a la etiqueta anterior y termina con error.
 #
 # La vuelta atrás cambia las imágenes, no el esquema: el esquema solo añade, así
@@ -33,6 +34,7 @@ MAX_VERSIONS=5
 DB_CONTAINER="fichaitor-db"
 API_CONTAINER="fichaitor-api"
 WORKER_CONTAINER="fichaitor-worker"
+CONVERSATION_CONTAINER="fichaitor-conversation"
 WEB_CONTAINER="fichaitor-web"
 DB_USER="fichaitor"
 DB_NAME="fichaitor"
@@ -56,6 +58,7 @@ VERSIONS_FILE="${DEPLOY_DIR}/.versions"
 IMAGES_ENV="${DEPLOY_DIR}/.env"
 API_ENV="${DEPLOY_DIR}/api.env"
 WORKER_ENV="${DEPLOY_DIR}/worker.env"
+CONVERSATION_ENV="${DEPLOY_DIR}/conversation.env"
 DB_ENV="${DEPLOY_DIR}/db.env"
 API_IMAGE_BASE="${REGISTRY}/${OWNER}/fichaitor-api"
 WEB_IMAGE_BASE="${REGISTRY}/${OWNER}/fichaitor-web"
@@ -125,9 +128,11 @@ comprobar_entorno() {
     exigir_privado "${DB_ENV}"
     exigir_privado "${API_ENV}"
     exigir_privado "${WORKER_ENV}"
+    exigir_privado "${CONVERSATION_ENV}"
 
     exigir_variables "${DB_ENV}" POSTGRES_PASSWORD
-    # FICHAITOR_DATABASE_URL y FICHAITOR_WORKER_DATABASE_URL se comprueban después:
+    # FICHAITOR_DATABASE_URL, FICHAITOR_WORKER_DATABASE_URL y
+    # FICHAITOR_CONVERSATION_DATABASE_URL se comprueban después:
     # en la primera instalación las escribe init-roles.sh.
     exigir_variables "${API_ENV}" \
         FICHAITOR_PLACES_API_KEY FICHAITOR_GOOGLE_CLIENT_ID FICHAITOR_GOOGLE_CLIENT_SECRET \
@@ -138,6 +143,17 @@ comprobar_entorno() {
     # La clave privada solo puede existir en el entorno del worker.
     [[ -z "$(valor_env "${API_ENV}" FICHAITOR_TOKEN_PRIVATE_KEY)" ]] ||
         die "api.env contiene FICHAITOR_TOKEN_PRIVATE_KEY. Quítala: solo va en worker.env."
+    [[ -z "$(valor_env "${CONVERSATION_ENV}" FICHAITOR_TOKEN_PRIVATE_KEY)" ]] ||
+        die "conversation.env contiene FICHAITOR_TOKEN_PRIVATE_KEY. Quítala: solo va en worker.env."
+    # Cada proceso, solo su usuario de base de datos.
+    [[ -z "$(valor_env "${API_ENV}" FICHAITOR_WORKER_DATABASE_URL)" ]] ||
+        die "api.env contiene FICHAITOR_WORKER_DATABASE_URL. Quítala: solo va en worker.env."
+    [[ -z "$(valor_env "${API_ENV}" FICHAITOR_CONVERSATION_DATABASE_URL)" ]] ||
+        die "api.env contiene FICHAITOR_CONVERSATION_DATABASE_URL. Solo va en conversation.env."
+    # Los códigos de vinculación los crea la API y los comprueba la conversación: el
+    # secreto de su huella tiene que ser el mismo en los dos.
+    [[ "$(valor_env "${API_ENV}" FICHAITOR_LINK_CODE_PEPPER)" == "$(valor_env "${CONVERSATION_ENV}" FICHAITOR_LINK_CODE_PEPPER)" ]] ||
+        die "FICHAITOR_LINK_CODE_PEPPER no coincide entre api.env y conversation.env."
     [[ "$(valor_env "${API_ENV}" FICHAITOR_TOKEN_PUBLIC_KEY)" != "$(valor_env "${WORKER_ENV}" FICHAITOR_TOKEN_PRIVATE_KEY)" ]] ||
         die "La clave pública de api.env y la privada de worker.env son el mismo valor."
     [[ "$(valor_env "${API_ENV}" FICHAITOR_GOOGLE_CLIENT_ID)" == "$(valor_env "${WORKER_ENV}" FICHAITOR_GOOGLE_CLIENT_ID)" ]] ||
@@ -145,6 +161,7 @@ comprobar_entorno() {
 
     prohibir_modos_falsos "${API_ENV}"
     prohibir_modos_falsos "${WORKER_ENV}"
+    prohibir_modos_falsos "${CONVERSATION_ENV}"
 }
 
 # ── Versiones ────────────────────────────────────────────────────────────────
@@ -218,16 +235,19 @@ arrancar_db() {
 
 aplicar_esquema() {
     local archivo
-    for archivo in "${DEPLOY_DIR}/db/schema.sql" "${DEPLOY_DIR}/db/schema_worker.sql"; do
+    for archivo in "${DEPLOY_DIR}/db/schema.sql" "${DEPLOY_DIR}/db/schema_worker.sql" \
+        "${DEPLOY_DIR}/db/schema_channels.sql"; do
         [[ -s "${archivo}" ]] || die "Falta ${archivo}."
     done
-    log "Esquema: db/schema.sql y db/schema_worker.sql, en una transacción ..."
-    # Los dos archivos entran juntos por la entrada estándar: o se aplican los
-    # dos o ninguno. Con el usuario propietario, por el socket local del
-    # contenedor: no hace falta su contraseña ni un puerto abierto.
+    log "Esquema: db/schema.sql, db/schema_worker.sql y db/schema_channels.sql, en una transacción ..."
+    # Los tres archivos entran juntos por la entrada estándar: o se aplican
+    # todos o ninguno. schema_channels.sql necesita las tablas de los otros dos.
+    # Con el usuario propietario, por el socket local del contenedor: no hace
+    # falta su contraseña ni un puerto abierto.
     # lock_timeout: si la versión en marcha retiene un bloqueo, el despliegue
     # falla a los 30 s en vez de quedarse colgado.
-    cat "${DEPLOY_DIR}/db/schema.sql" "${DEPLOY_DIR}/db/schema_worker.sql" |
+    cat "${DEPLOY_DIR}/db/schema.sql" "${DEPLOY_DIR}/db/schema_worker.sql" \
+        "${DEPLOY_DIR}/db/schema_channels.sql" |
         docker exec -i -e PGOPTIONS="-c lock_timeout=30s -c client_min_messages=warning" "${DB_CONTAINER}" \
             psql -U "${DB_USER}" -d "${DB_NAME}" \
             --no-psqlrc --quiet --single-transaction --set ON_ERROR_STOP=1 ||
@@ -253,22 +273,22 @@ imagen_en_uso() {
 # sin reiniciarse: con un error de configuración o sin base de datos termina
 # enseguida y Docker lo reinicia en bucle. La imagen se comprueba en health_check.
 comprobar_worker() {
-    local reinicios_antes reinicios_despues en_marcha arrancado
-    reinicios_antes="$(docker inspect --format '{{.RestartCount}}' "${WORKER_CONTAINER}" 2>/dev/null || echo x)"
+    local contenedor="${1:-${WORKER_CONTAINER}}" reinicios_antes reinicios_despues en_marcha arrancado
+    reinicios_antes="$(docker inspect --format '{{.RestartCount}}' "${contenedor}" 2>/dev/null || echo x)"
     sleep "${WORKER_OBSERVACION}"
-    reinicios_despues="$(docker inspect --format '{{.RestartCount}}' "${WORKER_CONTAINER}" 2>/dev/null || echo y)"
-    en_marcha="$(docker inspect --format '{{.State.Running}}/{{.State.Restarting}}' "${WORKER_CONTAINER}" 2>/dev/null || echo missing)"
+    reinicios_despues="$(docker inspect --format '{{.RestartCount}}' "${contenedor}" 2>/dev/null || echo y)"
+    en_marcha="$(docker inspect --format '{{.State.Running}}/{{.State.Restarting}}' "${contenedor}" 2>/dev/null || echo missing)"
 
     if [[ "${en_marcha}" != "true/false" || "${reinicios_antes}" != "${reinicios_despues}" ]]; then
-        err "${WORKER_CONTAINER}: no se mantiene en marcha (un código de salida 2 es un error de configuración)."
+        err "${contenedor}: no se mantiene en marcha (un código de salida 2 es un error de configuración)."
         return 1
     fi
-    arrancado="$(docker logs "${WORKER_CONTAINER}" 2>&1 | grep -c 'worker_started' || true)"
+    arrancado="$(docker logs "${contenedor}" 2>&1 | grep -c 'worker_started' || true)"
     if [[ "${arrancado}" == "0" ]]; then
         # Solo aviso: tras muchos días en marcha, la línea puede haber salido del registro.
-        log "AVISO: ${WORKER_CONTAINER} no tiene worker_started en su registro."
+        log "AVISO: ${contenedor} no tiene worker_started en su registro."
     fi
-    log "${WORKER_CONTAINER}: en marcha y estable durante ${WORKER_OBSERVACION} s."
+    log "${contenedor}: en marcha y estable durante ${WORKER_OBSERVACION} s."
 }
 
 # La web tiene que servir la portada y llegar a la API por /api/. Una ruta que
@@ -297,8 +317,13 @@ health_check() {
         comprobar_worker || { mostrar_logs "${WORKER_CONTAINER}"; fallo=1; }
     fi
     if [[ "${fallo}" == "0" ]]; then
+        comprobar_worker "${CONVERSATION_CONTAINER}" ||
+            { mostrar_logs "${CONVERSATION_CONTAINER}"; fallo=1; }
+    fi
+    if [[ "${fallo}" == "0" ]]; then
         if [[ "$(imagen_en_uso "${API_CONTAINER}")" != "${API_IMAGE_BASE}:${tag}" ||
             "$(imagen_en_uso "${WORKER_CONTAINER}")" != "${API_IMAGE_BASE}:${tag}" ||
+            "$(imagen_en_uso "${CONVERSATION_CONTAINER}")" != "${API_IMAGE_BASE}:${tag}" ||
             "$(imagen_en_uso "${WEB_CONTAINER}")" != "${WEB_IMAGE_BASE}:${tag}" ]]; then
             err "Algún contenedor no usa la etiqueta ${tag}."
             fallo=1
@@ -354,6 +379,7 @@ do_rollback() {
     comprobar_entorno
     exigir_variables "${API_ENV}" FICHAITOR_DATABASE_URL
     exigir_variables "${WORKER_ENV}" FICHAITOR_WORKER_DATABASE_URL
+    exigir_variables "${CONVERSATION_ENV}" FICHAITOR_CONVERSATION_DATABASE_URL
     pull_images "${TAG}" || die "No se pueden descargar las imágenes de ${TAG}."
     arrancar_db
     # No se aplica el esquema: el del servidor ya es igual o más nuevo.
@@ -390,6 +416,7 @@ do_deploy() {
     "${DEPLOY_DIR}/init-roles.sh" || die "No se han podido preparar los usuarios de la base de datos."
     exigir_variables "${API_ENV}" FICHAITOR_DATABASE_URL
     exigir_variables "${WORKER_ENV}" FICHAITOR_WORKER_DATABASE_URL
+    exigir_variables "${CONVERSATION_ENV}" FICHAITOR_CONVERSATION_DATABASE_URL
 
     if deploy_tag "${TAG}"; then
         write_versions "${TAG}"

@@ -2,8 +2,19 @@
 -- vinculación, conversaciones, mensajes y propuestas). Consulta docs/canales.md.
 -- Idempotente. Se aplica DESPUÉS de schema.sql y schema_worker.sql, con el rol propietario:
 --   docker compose exec -T db psql -q -U fichaitor -d fichaitor -v ON_ERROR_STOP=1 < db/schema_channels.sql
--- Necesita la extensión pgcrypto y las tablas account y location de schema.sql.
--- Pendiente de fusionar en schema.sql por el responsable.
+-- Necesita la extensión pgcrypto, las tablas account, location y usage_counter de
+-- schema.sql y las tablas job, review, review_draft, action, audit_log y offboarding de
+-- schema_worker.sql.
+--
+-- Tres roles (docs/canales.md, "Paso 0", opción A):
+--   fichaitor_api           la sesión web: pide códigos, lista y desvincula direcciones,
+--                           y encola lo que llega por el webhook.
+--   fichaitor_conversation  el proceso de la conversación (python -m app.worker.conversation):
+--                           habla con el dueño, crea la acción cuando confirma (como la
+--                           API desde el panel) y no puede ejecutarla: no lee
+--                           google_connection ni tiene la clave privada.
+--   fichaitor_worker        el ejecutor: no habla con nadie y no crea acciones. En estas
+--                           tablas solo borra (baja y retención).
 
 DO $$
 BEGIN
@@ -13,6 +24,9 @@ BEGIN
     IF NOT EXISTS (SELECT FROM pg_roles WHERE rolname = 'fichaitor_worker') THEN
         CREATE ROLE fichaitor_worker NOLOGIN;
     END IF;
+    IF NOT EXISTS (SELECT FROM pg_roles WHERE rolname = 'fichaitor_conversation') THEN
+        CREATE ROLE fichaitor_conversation NOLOGIN;
+    END IF;
 END
 $$;
 
@@ -20,7 +34,10 @@ $$;
 -- WhatsApp (E.164) o un correo. Solo una dirección vinculada se atiende y puede actuar.
 -- Una cuenta puede tener varias (dueño y encargado), cada una con su propio código.
 -- Datos personales: la dirección. Desvincular no borra la fila: pone unlinked_at, y
--- desde ese instante no se le envía nada ni se le atiende.
+-- desde ese instante no se le envía nada ni se le atiende. La baja efectiva de la cuenta
+-- borra sus filas; la retención, las desvinculadas hace más de 90 días.
+-- La clave ajena a account no tiene ON DELETE: una cuenta dada de baja no se borra (queda
+-- como lápida, sin correo), y sus filas aquí se borran antes, en la misma transacción.
 CREATE TABLE IF NOT EXISTS channel_identity (
     id              text PRIMARY KEY DEFAULT 'chid_' || encode(gen_random_bytes(8), 'hex')
                     CHECK (id ~ '^chid_[0-9a-f]{8,32}$'),
@@ -41,24 +58,33 @@ CREATE UNIQUE INDEX IF NOT EXISTS channel_identity_one_active_per_address
 CREATE INDEX IF NOT EXISTS channel_identity_account
     ON channel_identity (account_id) WHERE unlinked_at IS NULL;
 
--- Códigos de vinculación: 6 dígitos de un solo uso que caducan a los 10 minutos.
--- El código no se guarda: code_hash es su SHA-256 (con el secreto del servidor
--- FICHAITOR_LINK_CODE_PEPPER si está definido). used_at lo marca quien lo consume o
--- quien lo retira al pedir otro.
+-- Códigos de vinculación: 6 dígitos para teclearlos y un testigo largo y aleatorio para
+-- el enlace t.me/<bot>?start=<testigo> (B3 de docs/seguridad/revision-2026-11-12.md).
+-- Son el mismo código: de un solo uso (el primero que llega lo gasta) y caduca a los 10
+-- minutos. Ni los dígitos ni el testigo se guardan: code_hash y token_hash son su
+-- SHA-256 (HMAC con el secreto FICHAITOR_LINK_CODE_PEPPER si está definido). used_at lo
+-- marca quien lo consume o quien lo retira al pedir otro.
 CREATE TABLE IF NOT EXISTS link_code (
     code_hash  text PRIMARY KEY CHECK (code_hash ~ '^[0-9a-f]{64}$'),
     account_id uuid NOT NULL REFERENCES account (id),
     created_at timestamptz NOT NULL DEFAULT now(),
     expires_at timestamptz NOT NULL,
     used_at    timestamptz,
+    token_hash text CHECK (token_hash ~ '^[0-9a-f]{64}$'),
     CHECK (expires_at > created_at AND expires_at <= created_at + interval '15 minutes')
 );
 
+-- Bases anteriores al 2026-11-12 (B3): el testigo del enlace.
+ALTER TABLE link_code ADD COLUMN IF NOT EXISTS token_hash text
+    CHECK (token_hash ~ '^[0-9a-f]{64}$');
+CREATE UNIQUE INDEX IF NOT EXISTS link_code_token ON link_code (token_hash)
+    WHERE token_hash IS NOT NULL;
 CREATE INDEX IF NOT EXISTS link_code_account ON link_code (account_id) WHERE used_at IS NULL;
 
 -- Lo que se recuerda de una dirección que NO está vinculada: códigos fallidos seguidos,
 -- bloqueo de una hora al tercero y cuándo se le dio la respuesta genérica (una cada 24
 -- horas). Sin datos personales: address_hash es el SHA-256 de canal y dirección.
+-- El intento se cuenta ANTES de mirar el código, con una sola sentencia (B3).
 CREATE TABLE IF NOT EXISTS channel_sender (
     address_hash           text PRIMARY KEY CHECK (address_hash ~ '^[0-9a-f]{64}$'),
     failed_attempts        smallint NOT NULL DEFAULT 0 CHECK (failed_attempts BETWEEN 0 AND 1000),
@@ -67,10 +93,18 @@ CREATE TABLE IF NOT EXISTS channel_sender (
     updated_at             timestamptz NOT NULL DEFAULT now()
 );
 
+-- Códigos incorrectos de todas las direcciones juntas, por ventana de una hora (B3).
+-- Pasado el límite, los códigos tecleados no se miran hasta la ventana siguiente; el
+-- enlace con el testigo sigue funcionando. Sin datos personales.
+CREATE TABLE IF NOT EXISTS link_failure_window (
+    window_start timestamptz PRIMARY KEY,
+    failures     integer NOT NULL DEFAULT 0 CHECK (failures >= 0)
+);
+
 -- Propuestas: todo aquello en lo que el agente toma la iniciativa. Estados y
 -- transiciones en app/domain/proposals.py (docs/01-flujos.md, sección 4).
 -- payload: con qué se creó (estrellas, texto de la reseña y respuesta propuesta, o la
--- fecha clave). No cambia nunca: el worker no tiene UPDATE sobre él.
+-- fecha clave). No cambia nunca: nadie tiene UPDATE sobre él.
 -- slots: lo que recoge la conversación (el texto del dueño, el horario).
 -- step y step_token: paso de la conversación y testigo del botón vigente.
 -- message_refs: {identidad: id del último mensaje con botones en su canal}.
@@ -147,7 +181,7 @@ CREATE TABLE IF NOT EXISTS channel_inbound_event (
 CREATE INDEX IF NOT EXISTS channel_inbound_event_at ON channel_inbound_event (received_at);
 
 -- Mensajes de la conversación, en los dos sentidos. Solo se añaden filas: son la
--- prueba de qué se mostró al dueño y qué contestó.
+-- prueba de qué se mostró al dueño y qué contestó. Se conservan 90 días.
 -- Datos personales y de terceros: body lleva lo que escribió el dueño y, en los
 -- salientes, el extracto de la reseña. Un código de vinculación nunca se guarda aquí
 -- (el mensaje que lo trae se anota como '[código]').
@@ -166,49 +200,113 @@ CREATE TABLE IF NOT EXISTS channel_message (
 );
 
 CREATE INDEX IF NOT EXISTS channel_message_conversation ON channel_message (conversation_id, id);
+CREATE INDEX IF NOT EXISTS channel_message_at ON channel_message (at);
+CREATE INDEX IF NOT EXISTS channel_message_identity ON channel_message (identity_id);
+CREATE INDEX IF NOT EXISTS channel_message_proposal ON channel_message (proposal_id);
 
+-- ---------------------------------------------------------------------------
 -- Privilegios mínimos. Se retira todo y se concede lo justo en cada aplicación.
--- Nadie borra nada en estas tablas.
-REVOKE ALL ON channel_identity, link_code, channel_sender, proposal, conversation,
-              channel_inbound_event, channel_message
-    FROM PUBLIC, fichaitor_api, fichaitor_worker;
+REVOKE ALL ON channel_identity, link_code, channel_sender, link_failure_window, proposal,
+              conversation, channel_inbound_event, channel_message
+    FROM PUBLIC, fichaitor_api, fichaitor_worker, fichaitor_conversation;
 
--- Direcciones vinculadas. El worker (que lleva la conversación) vincula y anota la
--- actividad. La API las lista en Ajustes y las desvincula; no puede crearlas ni
--- cambiarles la cuenta o la dirección: vincular exige enviar el código desde el chat.
-GRANT SELECT ON channel_identity TO fichaitor_api, fichaitor_worker;
+-- === API =====================================================================
+-- Direcciones: las lista en Ajustes y las desvincula (también al confirmar la baja de
+-- la cuenta). No puede crearlas ni cambiarles la cuenta o la dirección: vincular exige
+-- enviar el código desde el chat.
+GRANT SELECT ON channel_identity TO fichaitor_api;
 GRANT UPDATE (unlinked_at) ON channel_identity TO fichaitor_api;
-GRANT INSERT (account_id, channel, address, verified_at, last_inbound_at)
-    ON channel_identity TO fichaitor_worker;
-GRANT UPDATE (last_inbound_at, unlinked_at) ON channel_identity TO fichaitor_worker;
-
--- Códigos. La API (la sesión web) los crea y retira los anteriores de la cuenta; no
--- lee las huellas. El worker los busca por huella y los consume; no puede crearlos.
-GRANT INSERT (code_hash, account_id, created_at, expires_at) ON link_code TO fichaitor_api;
+-- Códigos: los crea y retira los anteriores de la cuenta. No lee las huellas.
+GRANT INSERT (code_hash, token_hash, account_id, created_at, expires_at)
+    ON link_code TO fichaitor_api;
 GRANT SELECT (account_id, used_at) ON link_code TO fichaitor_api;
-GRANT UPDATE (used_at) ON link_code TO fichaitor_api, fichaitor_worker;
-GRANT SELECT ON link_code TO fichaitor_worker;
+GRANT UPDATE (used_at) ON link_code TO fichaitor_api;
+-- Propuestas: solo las lee (bandeja del panel).
+GRANT SELECT ON proposal TO fichaitor_api;
 
--- Remitentes sin vincular, hilos y eventos vistos: solo el worker.
-GRANT SELECT, INSERT, UPDATE ON channel_sender, channel_inbound_event TO fichaitor_worker;
-GRANT SELECT, INSERT ON conversation TO fichaitor_worker;
-GRANT UPDATE (active_proposal_id, unknown_streak, updated_at) ON conversation TO fichaitor_worker;
+-- === Conversación ============================================================
+GRANT SELECT ON channel_identity TO fichaitor_conversation;
+GRANT INSERT (account_id, channel, address, verified_at, last_inbound_at)
+    ON channel_identity TO fichaitor_conversation;
+GRANT UPDATE (last_inbound_at, unlinked_at) ON channel_identity TO fichaitor_conversation;
 
--- Propuestas. El worker las crea y las mueve, sin poder cambiar de quién son ni con
--- qué se crearon. La API solo las lee (bandeja del panel).
-GRANT SELECT ON proposal TO fichaitor_api, fichaitor_worker;
-GRANT INSERT ON proposal TO fichaitor_worker;
+-- Códigos: los busca por huella y los consume; no puede crearlos.
+GRANT SELECT ON link_code TO fichaitor_conversation;
+GRANT UPDATE (used_at) ON link_code TO fichaitor_conversation;
+
+-- Remitentes sin vincular, contador global, hilos y eventos vistos.
+GRANT SELECT, INSERT, UPDATE ON channel_sender, link_failure_window, channel_inbound_event
+    TO fichaitor_conversation;
+GRANT SELECT, INSERT ON conversation TO fichaitor_conversation;
+GRANT UPDATE (active_proposal_id, unknown_streak, updated_at)
+    ON conversation TO fichaitor_conversation;
+
+-- Propuestas: las crea y las mueve, sin poder cambiar de quién son ni con qué se crearon.
+GRANT SELECT, INSERT ON proposal TO fichaitor_conversation;
 GRANT UPDATE (state, priority, slots, step, step_token, message_refs, scheduled_for, sent_at,
               remind_at, reminder_sent_at, expires_at, parked_at, confirmed_at,
               confirmed_event_id, confirmed_summary, action_id, outcome_reason)
-    ON proposal TO fichaitor_worker;
+    ON proposal TO fichaitor_conversation;
 
--- Mensajes: el worker añade y nada más. Sin SELECT, UPDATE ni DELETE.
+-- Mensajes: añade y nada más. Sin SELECT, UPDATE ni DELETE.
 GRANT INSERT (conversation_id, identity_id, direction, channel, channel_message_id, kind, key,
-              body, proposal_id)
-    ON channel_message TO fichaitor_worker;
+              body, proposal_id, at)
+    ON channel_message TO fichaitor_conversation;
 
--- Para el saludo de bienvenida el worker necesita el nombre de la ficha elegida.
--- De account y location lee solo eso; el correo, no.
-GRANT SELECT (id, selected_location_id) ON account TO fichaitor_worker;
-GRANT SELECT (id, account_id, title) ON location TO fichaitor_worker;
+-- Fuera de las tablas de canales, lo que necesita para hacer lo mismo que la API hace
+-- desde el panel (app/application/review_replies.py y Store.create_reply_action), con
+-- las mismas consultas: leer las reseñas de la ficha elegida de una cuenta, guardar el
+-- borrador, contar el tope de borradores y crear la acción confirmada con su fila de
+-- auditoría y su job. No lee el correo de la cuenta ni google_connection.
+REVOKE ALL ON account, location, review, review_draft, usage_counter, action, audit_log,
+              job, offboarding
+    FROM fichaitor_conversation;
+GRANT SELECT (id, google_sub, selected_location_id, deleted_at) ON account
+    TO fichaitor_conversation;
+GRANT SELECT (id, account_id, gbp_location, title, removed_at) ON location
+    TO fichaitor_conversation;
+GRANT SELECT (account_id, google_sub, restored_at, effective_at, purged_at) ON offboarding
+    TO fichaitor_conversation;
+GRANT SELECT ON review TO fichaitor_conversation;
+GRANT SELECT, INSERT, UPDATE ON review_draft TO fichaitor_conversation;
+GRANT SELECT (scope, window_start, hits) ON usage_counter TO fichaitor_conversation;
+GRANT INSERT (scope, window_start, expires_at, hits) ON usage_counter TO fichaitor_conversation;
+GRANT UPDATE (hits) ON usage_counter TO fichaitor_conversation;
+-- Acciones: las crea como la API (sin estado ni resultado) y las lee. No puede
+-- cambiarlas. Solo el ejecutor del worker escribe en Google, y antes comprueba que la
+-- cuenta, su usuario de Google, la ficha y la reseña casan (claim_action, M1).
+GRANT SELECT ON action TO fichaitor_conversation;
+GRANT INSERT (account_id, type, google_sub, location, review_id, text, confirmed_at)
+    ON action TO fichaitor_conversation;
+GRANT INSERT (event, account_id, action_id, action_type, location, review_id,
+              gbp_review_id, text, confirmed_at, google_status, reason)
+    ON audit_log TO fichaitor_conversation;
+DROP POLICY IF EXISTS audit_log_conversation_insert ON audit_log;
+CREATE POLICY audit_log_conversation_insert ON audit_log FOR INSERT TO fichaitor_conversation
+    WITH CHECK (event = 'reply_confirmed');
+-- Cola: toma y cierra sus propios jobs (los de canal), encola el job del ejecutor de
+-- cada acción que crea y las sincronizaciones periódicas, y vacía la carga de los jobs
+-- del webhook al terminarlos. No puede borrar jobs.
+GRANT SELECT, INSERT, UPDATE ON job TO fichaitor_conversation;
+
+-- === Worker ==================================================================
+-- Ya no lleva la conversación: en estas tablas solo borra, al hacer efectiva una baja y
+-- en la tarea de retención. Lee solo las columnas que usan sus WHERE.
+GRANT SELECT (id, account_id, unlinked_at) ON channel_identity TO fichaitor_worker;
+GRANT SELECT (account_id, expires_at, used_at) ON link_code TO fichaitor_worker;
+GRANT SELECT (updated_at, blocked_until) ON channel_sender TO fichaitor_worker;
+GRANT SELECT (window_start) ON link_failure_window TO fichaitor_worker;
+GRANT SELECT (id, account_id, state, created_at) ON proposal TO fichaitor_worker;
+GRANT SELECT (id, account_id, active_proposal_id) ON conversation TO fichaitor_worker;
+GRANT SELECT (received_at) ON channel_inbound_event TO fichaitor_worker;
+GRANT SELECT (id, at, conversation_id, identity_id, proposal_id) ON channel_message
+    TO fichaitor_worker;
+GRANT DELETE ON channel_identity, link_code, channel_sender, link_failure_window, proposal,
+                conversation, channel_inbound_event, channel_message
+    TO fichaitor_worker;
+-- Antes la conversación iba en el worker y leía el nombre de la ficha: ya no lo necesita.
+REVOKE SELECT (title) ON location FROM fichaitor_worker;
+
+-- ---------------------------------------------------------------------------
+-- Solo desarrollo local y pruebas: está en db/dev-init.sql.
+-- En producción el usuario fichaitor_conversation_prod lo crea deploy/init-roles.sh.

@@ -17,7 +17,17 @@ from app.domain.conversation import (
     normalize_address,
     plan_link,
 )
-from app.domain.link_codes import CodeCheck, LinkCode, SenderState, check_code
+from app.domain.link_codes import (
+    CodeCheck,
+    LinkCode,
+    SenderState,
+    check_code,
+    failure_window,
+    is_blocked,
+    may_send_unlinked_reply,
+    register_attempt,
+    register_success,
+)
 from app.domain.proposals import Proposal, counts_towards_weekly_cap
 from app.ports.conversation_store import LinkResult, MessageRecord
 
@@ -27,6 +37,7 @@ class MemoryConversationStore:
         self.identities: dict[str, ChannelIdentity] = {}
         self.link_codes: dict[str, LinkCode] = {}
         self.senders: dict[str, SenderState] = {}
+        self.failures: dict[datetime, int] = {}  # global wrong codes, by window
         self.accounts: dict[str, AccountInfo] = {}
         self.conversations: dict[str, Conversation] = {}
         self.messages: list[MessageRecord] = []
@@ -88,14 +99,20 @@ class MemoryConversationStore:
                 del self.link_codes[key]
         self.link_codes[code.code_hash] = code
 
+    def _find_code(self, code_hash: str) -> LinkCode | None:
+        record = self.link_codes.get(code_hash)
+        if record is None:
+            record = next((c for c in self.link_codes.values() if c.token_hash == code_hash), None)
+        return record
+
     async def get_link_code(self, code_hash: str) -> LinkCode | None:
-        return self.link_codes.get(code_hash)
+        return self._find_code(code_hash)
 
     async def consume_link_code(self, code_hash: str, now: datetime) -> str | None:
-        record = self.link_codes.get(code_hash)
+        record = self._find_code(code_hash)
         if record is None or check_code(record, now) is not CodeCheck.OK:
             return None
-        self.link_codes[code_hash] = replace(record, used_at=now)
+        self.link_codes[record.code_hash] = replace(record, used_at=now)
         return record.account_id
 
     async def get_sender_state(self, address_hash: str) -> SenderState:
@@ -103,6 +120,31 @@ class MemoryConversationStore:
 
     async def save_sender_state(self, address_hash: str, state: SenderState) -> None:
         self.senders[address_hash] = state
+
+    async def take_link_attempt(self, address_hash: str, now: datetime) -> SenderState | None:
+        taken = register_attempt(await self.get_sender_state(address_hash), now)
+        if taken is not None:
+            self.senders[address_hash] = taken
+        return taken
+
+    async def clear_link_attempts(self, address_hash: str) -> None:
+        state = await self.get_sender_state(address_hash)
+        self.senders[address_hash] = register_success(state)
+
+    async def claim_unlinked_reply(self, address_hash: str, now: datetime) -> bool:
+        state = await self.get_sender_state(address_hash)
+        if is_blocked(state, now) or not may_send_unlinked_reply(state, now):
+            return False
+        self.senders[address_hash] = replace(state, last_unlinked_reply_at=now)
+        return True
+
+    async def link_failures(self, now: datetime) -> int:
+        return self.failures.get(failure_window(now), 0)
+
+    async def count_link_failure(self, now: datetime) -> int:
+        window = failure_window(now)
+        self.failures[window] = self.failures.get(window, 0) + 1
+        return self.failures[window]
 
     # --- accounts ---------------------------------------------------------------
     async def get_account_info(self, account_id: str) -> AccountInfo:

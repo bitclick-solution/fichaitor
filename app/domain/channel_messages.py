@@ -155,6 +155,14 @@ class InboundKind(StrEnum):
     TEXT = "text"
     BUTTON = "button"
     START = "start"  # the channel's "open the bot" command, with or without a code
+    COMMAND = "command"  # one of COMMANDS; `text` is its name
+
+
+# The only commands besides "start". Anything else that looks like a command is not
+# attended. A command is a fixed answer: it never reaches a proposal.
+COMMAND_HELP = "ayuda"
+COMMAND_PRIVACY = "privacidad"
+COMMANDS = (COMMAND_HELP, COMMAND_PRIVACY)
 
 
 @dataclass(frozen=True)
@@ -316,6 +324,26 @@ TEXTS: dict[str, str] = {
     ),
     # NEW: what is left on the message once its buttons are removed.
     "fmt.choice": "Tu respuesta: {titulo}",
+    # NEW (2026-11-12, B3): too many wrong codes from every chat together. Typed codes
+    # wait; the link of the panel still works.
+    "link.paused": (
+        "Ahora mismo no puedo comprobar códigos escritos. Abre el enlace de vinculación "
+        "del panel desde este móvil: {enlace_panel}"
+    ),
+    # NEW: the two commands besides /start.
+    "command.help": (
+        "Soy Fichaitor. Te aviso de las reseñas nuevas de tu ficha de Google y te "
+        "propongo una respuesta. No publico nada sin que me lo confirmes.\n"
+        "Para vincular {este_chat_minusculas}, abre el enlace del panel o envíame el "
+        "código de 6 dígitos: {enlace_panel}\n"
+        "Comandos: /ayuda y /privacidad."
+    ),
+    "command.privacy": (
+        "Guardo {este_chat_minusculas} vinculado a tu cuenta y los mensajes que nos "
+        "cruzamos, 90 días. Si lo desvinculas en el panel, dejo de escribirte al momento. "
+        "Las reseñas son de quien las escribe: solo te las enseño.\n"
+        "Política de privacidad: {enlace_privacidad}"
+    ),
 }
 
 BUTTONS: dict[str, str] = {

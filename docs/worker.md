@@ -14,6 +14,13 @@ Los otros tres son los de la baja, y están en [Baja, correo y retención](#baja
 - `apply_offboarding` hace efectiva una baja cuando llega su fecha: revoca los tokens en Google y los borra.
 - `retention` es la pasada diaria que borra lo que ha superado su plazo. El worker se lo encola a sí mismo.
 
+Desde el 2026-11-12, dos jobs más enlazan con los canales de mensajería (`docs/canales.md`). Este worker solo los **encola**; los ejecuta otro proceso, el de la conversación:
+
+- Al terminar una sincronización, `sync_profile` encola un `propose_review` por cada reseña guardada por primera vez, sin respuesta y escrita en los últimos 7 días. Nunca hace fallar la sincronización.
+- Al cerrar cada acción, bien o mal, `reply_review` encola un `channel_action_result` con `{"action_id", "ok", "error"}` y la clave `channel_action_result:<acción>`, para que el dueño que confirmó por Telegram sepa cómo acabó.
+
+En las tablas de los canales este worker solo **borra**: al hacer efectiva una baja y en la pasada de retención. Consulta [El proceso de la conversación](#el-proceso-de-la-conversación).
+
 ## Cómo funciona
 
 1. La API inserta una fila en `job`. No llama al worker: la cola es el único canal entre ambos.
@@ -555,6 +562,28 @@ Y monta el esquema del worker en el servicio `db`, hasta que se fusione en `sche
 ```
 
 > **Nota:** `FICHAITOR_TOKEN_PRIVATE_KEY` no tiene valor por defecto. Si el servicio `api` y el servicio `worker` comparten `.env`, la API ignora la clave privada, pero la recibe en su entorno. En producción, usa un archivo de entorno distinto para cada servicio.
+
+## El proceso de la conversación
+
+`uv run python -m app.worker.conversation` (servicio `conversation` en Docker Compose, `fichaitor-conversation` en producción) es un segundo proceso con la misma cola y otro usuario de base de datos, `fichaitor_conversation`. Es la opción A del paso 0 de `docs/canales.md`:
+
+- Habla con el dueño por Telegram y, cuando confirma, crea la acción por la misma vía que el panel (`ReviewReplies.confirm` y `Store.create_reply_action`): acción `pendiente`, fila `reply_confirmed` y job `reply_review`, todo o nada.
+- No tiene la clave privada de los tokens (se niega a arrancar si la recibe) ni lee `google_connection`. Puede crear una acción, pero solo este worker la ejecuta, tras la comprobación de coherencia de `claim_action` (M1).
+- Solo toma sus jobs:
+
+| Job | Lo encola | Qué hace |
+|---|---|---|
+| `channel_inbound` | La API, desde el webhook de Telegram (`telegram:<update_id>`, un intento) | Pasa la actualización a la conversación. Vacía la carga al terminar, acabe como acabe |
+| `conversation_tick` | Su planificador, cada 5 minutos (`conversation_tick:<franja>`) | Recordatorios, caducidades y lo que esperaba al fin del horario de silencio |
+| `propose_review` | Este worker, tras una sincronización (`propose_review:<reseña>`, 3 intentos) | Pide el borrador como el panel (borrador guardado, tope por cuenta, `validate_reply`) y propone la reseña por Telegram a las cuentas cuya ficha elegida la tiene y que vincularon un chat antes de que se escribiera |
+| `channel_action_result` | Este worker, al cerrar una acción (`channel_action_result:<acción>`, 3 intentos) | Cuenta el resultado por el chat. Si la acción se confirmó en el panel, no hace nada |
+
+- **Planificador.** Cada minuto encola, con clave por franja, el `conversation_tick` y un `sync_profile` de cada ficha elegida de una cuenta con un chat vinculado: cada 30 minutos de 8:30 a 21:00 (hora peninsular) y cada 3 horas de noche. Varios procesos no duplican nada. Los 30 minutos están por contrastar con la cuota de la API de reseñas (`docs/fase0/matriz-api.md`).
+- **Sondeo largo.** Con `FICHAITOR_TELEGRAM_POLLING=true` recibe por `getUpdates` en lugar del webhook (solo desarrollo; borra el webhook del bot).
+- **Sin token.** Sin `FICHAITOR_TELEGRAM_BOT_TOKEN` arranca y no envía nada (`telegram_disabled` en el registro): las propuestas esperan.
+- **Registrar el webhook:** `python -m app.worker.conversation --set-webhook <url>` (`docs/despliegue.md`, "Webhook de Telegram").
+
+Variables propias: `FICHAITOR_CONVERSATION_DATABASE_URL` (obligatoria) y `FICHAITOR_PLANNER_INTERVAL_SECONDS` (60). Comparte con el worker `FICHAITOR_WORKER_POLL_INTERVAL_SECONDS`, `FICHAITOR_WORKER_JOB_TIMEOUT_SECONDS` (aquí 30 por defecto) y `FICHAITOR_WORKER_LOCK_TIMEOUT_SECONDS` (aquí 120). Las de Telegram, en `docs/canales.md`.
 
 ## Añadir un tipo de job
 

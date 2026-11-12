@@ -66,6 +66,9 @@ class ServiceConfig:
     weekly_cap: int = rules.DEFAULT_WEEKLY_CAP
     quiet: rules.QuietHours = rules.QuietHours()
     link_code_pepper: str = ""
+    privacy_url: str = "https://fichaitor.es/privacidad/"
+    # Wrong codes of every chat together per window (B3): past it, typed codes wait.
+    link_global_max_failures: int = link_codes.DEFAULT_GLOBAL_MAX_FAILURES
 
 
 @dataclass(frozen=True)
@@ -189,6 +192,9 @@ class ConversationService:
             await self._ack(event)  # seen before: handled once
             return
         identity = await self._store.get_identity(event.channel, event.address)
+        if event.kind is InboundKind.COMMAND:
+            await self._command(event, identity, now)
+            return
         if await self._is_link_attempt(event, identity):
             await self._handle_code(event, identity, now)
             return
@@ -209,7 +215,9 @@ class ConversationService:
     async def _is_link_attempt(self, event: InboundEvent, identity: ChannelIdentity | None) -> bool:
         if event.kind is InboundKind.START:
             return bool(event.text.strip())
-        if event.kind is not InboundKind.TEXT or not link_codes.is_code_shaped(event.text):
+        if event.kind is not InboundKind.TEXT or not (
+            link_codes.is_code_shaped(event.text) or link_codes.is_token_shaped(event.text)
+        ):
             return False
         if identity is None:
             return True
@@ -224,28 +232,41 @@ class ConversationService:
     async def _handle_code(
         self, event: InboundEvent, identity: ChannelIdentity | None, now: datetime
     ) -> None:
-        """A code arrives. The code is never stored nor logged."""
+        """A code arrives: six digits typed, or the token of the link. Neither is ever
+        stored nor logged.
+
+        B3 of docs/seguridad/revision-2026-11-12.md: the attempt of the chat is counted
+        before the code is looked at, in one atomic step of the store, so that codes of
+        the same chat handled at once cannot slip under the limit; and the wrong codes of
+        every chat together are counted too. Past that global limit, typed codes are not
+        looked at until the window ends; the token of the link (which cannot be guessed)
+        still works."""
         sender_key = link_codes.address_hash(event.channel, event.address)
-        sender = await self._store.get_sender_state(sender_key)
-        if link_codes.is_blocked(sender, now):
-            return  # no answer for an hour
+        attempt = await self._store.take_link_attempt(sender_key, now)
+        if attempt is None:
+            return  # blocked: no answer for an hour
         code = event.text.strip()
+        typed = link_codes.is_code_shaped(code)
+        if typed and await self._store.link_failures(now) >= self._config.link_global_max_failures:
+            log.warning("códigos escritos en pausa: demasiados códigos incorrectos")
+            await self._send_raw(event.channel, event.address, "link.paused", self._links())
+            return
         hashed = link_codes.code_hash(code, self._config.link_code_pepper)
-        record = (
-            await self._store.get_link_code(hashed) if link_codes.is_code_shaped(code) else None
-        )
+        shaped = typed or link_codes.is_token_shaped(code)
+        record = await self._store.get_link_code(hashed) if shaped else None
         account_id = None
         if link_codes.check_code(record, now) is link_codes.CodeCheck.OK:
             assert record is not None
             if identity is not None and identity.account_id == record.account_id:
                 # Already linked to that account: the code is left for another chat.
+                await self._store.clear_link_attempts(sender_key)
                 await self._reply(identity, "generic.neutral")
                 return
             account_id = await self._store.consume_link_code(hashed, now)
         if account_id is None:
-            sender = link_codes.register_failure(sender, now)
-            await self._store.save_sender_state(sender_key, sender)
-            key = "link.blocked" if link_codes.is_blocked(sender, now) else "link.code_invalid"
+            await self._store.count_link_failure(now)
+            blocked = link_codes.is_blocked(attempt, now)
+            key = "link.blocked" if blocked else "link.code_invalid"
             await self._send_raw(event.channel, event.address, key, self._links())
             return
         try:
@@ -253,7 +274,7 @@ class ConversationService:
         except rules.InvalidAddress:
             log.warning("vinculación rechazada: dirección no válida en %s", event.channel)
             return
-        await self._store.save_sender_state(sender_key, link_codes.register_success(sender))
+        await self._store.clear_link_attempts(sender_key)
         await self._record_in(event, result.identity, "[código]", now)
         await self._welcome(result, event)
         if result.previous_account_id is not None:
@@ -282,14 +303,34 @@ class ConversationService:
             await self._ack(event, cm.render("stale.inactive"))
             return
         sender_key = link_codes.address_hash(event.channel, event.address)
-        sender = await self._store.get_sender_state(sender_key)
-        if link_codes.is_blocked(sender, now):
-            return
-        if not link_codes.may_send_unlinked_reply(sender, now):
-            return
-        await self._store.save_sender_state(sender_key, replace(sender, last_unlinked_reply_at=now))
+        if not await self._store.claim_unlinked_reply(sender_key, now):
+            return  # blocked, or already answered in the last 24 hours
         values = {**self._channel_words(event.channel), "enlace_alta": self._config.signup_url}
         await self._send_raw(event.channel, event.address, "unlinked.reply", values)
+
+    async def _command(
+        self, event: InboundEvent, identity: ChannelIdentity | None, now: datetime
+    ) -> None:
+        """/ayuda and /privacidad: a fixed answer to whoever asks, linked or not. No
+        data of any business, nothing of any proposal. A blocked chat gets nothing."""
+        if identity is None:
+            sender = link_codes.address_hash(event.channel, event.address)
+            if link_codes.is_blocked(await self._store.get_sender_state(sender), now):
+                return
+        words = self._channel_words(event.channel)
+        values = {
+            "este_chat_minusculas": words["este_chat"].lower(),
+            "enlace_panel": self._config.panel_url,
+            "enlace_privacidad": self._config.privacy_url,
+        }
+        key = "command.privacy" if event.text == cm.COMMAND_PRIVACY else "command.help"
+        if identity is None:
+            await self._send_raw(event.channel, event.address, key, values)
+            return
+        async with self._store.lock(identity.account_id):
+            await self._store.touch_inbound(identity.id, now)
+            await self._record_in(event, identity, f"/{event.text}", now)
+            await self._reply(identity, key, **values)
 
     # ------------------------------------------------------------------- buttons
 
@@ -671,11 +712,13 @@ class ConversationService:
     async def create_link_code(self, account_id: str) -> str:
         """For the web session: a new code, returned once and stored only as a hash.
         The account's earlier unused codes stop being valid."""
-        code, record = link_codes.new_link_code(
-            account_id, self._clock(), self._config.link_code_pepper
-        )
-        await self._store.save_link_code(record)
-        return code
+        return (await self.create_link(account_id)).code
+
+    async def create_link(self, account_id: str) -> link_codes.IssuedLink:
+        """The same, with the token for the link (`t.me/<bot>?start=<token>`)."""
+        issued = link_codes.issue_link(account_id, self._clock(), self._config.link_code_pepper)
+        await self._store.save_link_code(issued.record)
+        return issued
 
     async def unlink(self, account_id: str, identity_id: str) -> bool:
         """From the panel. From this moment the address gets nothing and is not

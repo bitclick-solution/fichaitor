@@ -9,7 +9,8 @@
 #     tokens solo está en worker.env.
 #
 # En el servidor vive en /opt/bitclick/fichaitor/docker-compose.yml, junto a:
-#   db.env, api.env, worker.env   secretos (modo 600); nunca salen del servidor
+#   db.env, api.env, worker.env, conversation.env   secretos (modo 600); nunca salen del
+#                                                   servidor
 #   .env                          lo escribe deploy.sh: solo las dos imágenes en uso
 #
 # No lo arranques a mano con "up": usa deploy.sh, que aplica el esquema antes.
@@ -141,6 +142,41 @@ services:
       resources:
         limits:
           memory: 384M
+
+  # La conversación por Telegram (docs/canales.md): la misma imagen, otro comando y su
+  # propio usuario de base de datos (fichaitor_conversation_prod). Crea la acción cuando
+  # el dueño confirma, pero no puede ejecutarla: no tiene la clave privada ni lee
+  # google_connection. Recibe por el webhook de la API; necesita salida a Internet
+  # para llamar a api.telegram.org.
+  fichaitor-conversation:
+    image: ${FICHAITOR_API_IMAGE:?Falta FICHAITOR_API_IMAGE. La fija deploy.sh}
+    container_name: fichaitor-conversation
+    command: ["python", "-m", "app.worker.conversation"]
+    restart: unless-stopped
+    env_file:
+      - ${FICHAITOR_ENV_DIR:-.}/conversation.env
+    environment:
+      FICHAITOR_FAKE_SCREENSHOT: "false"
+      # En producción se recibe por el webhook, nunca por sondeo largo.
+      FICHAITOR_TELEGRAM_POLLING: "false"
+    depends_on:
+      fichaitor-db:
+        condition: service_healthy
+    networks:
+      - fichaitor-interna
+    healthcheck:
+      disable: true
+    read_only: true
+    tmpfs:
+      - /tmp
+    # Da tiempo a terminar el job en curso (FICHAITOR_WORKER_JOB_TIMEOUT_SECONDS, 30 s).
+    stop_grace_period: 40s
+    <<: *endurecido
+    logging: *registro
+    deploy:
+      resources:
+        limits:
+          memory: 256M
 
   # Sitio público y aplicación /app. Reenvía /api/ a la API: mismo origen, sin CORS.
   fichaitor-web:

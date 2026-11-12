@@ -925,6 +925,98 @@ Cada cuenta ve solo el sentimiento de su ficha elegida. Dos cuentas que administ
 - Sin `FICHAITOR_FAKE_SCREENSHOT` y sin `FICHAITOR_GEMINI_API_KEY`, el análisis se hace igual, solo con las estrellas: hay nota, pero `praised` y `complaints` van vacíos y los textos salen de reglas fijas.
 - Con base de datos, el análisis lo hace el worker: hacen falta los dos servicios en marcha, y el worker con esas mismas variables. Sin base de datos, la API lo resuelve en memoria al elegir la ficha.
 
+## Canales de mensajería: Telegram (2026-11-12)
+
+El dueño vincula su Telegram desde el panel y, desde ese momento, recibe por Telegram las reseñas nuevas con una respuesta propuesta y la publica con un botón. Todo el detalle del lado del servidor está en `docs/canales.md`.
+
+| Ruta | Qué hace | Cabecera `X-Requested-With` |
+|---|---|---|
+| `POST /api/v1/channels/link-code` | Pide un código de vinculación | Sí |
+| `GET /api/v1/me/channels` | Lista los canales vinculados | No |
+| `DELETE /api/v1/me/channels/{id}` | Desvincula un canal | Sí |
+
+La cuarta ruta, `POST /api/v1/webhooks/telegram`, es de Telegram, no de la web: la web no la llama nunca.
+
+### `POST /api/v1/channels/link-code`
+
+Sin cuerpo. Respuesta 200:
+
+```json
+{
+  "code": "042817",
+  "expires_at": "2026-11-12T10:14:11Z",
+  "telegram_url": "https://t.me/FichaitorBot?start=Qm3v0X5k1y2Zt8pW-aR4sLd9_fHj6cNe7uBoVgIiT0Q",
+  "whatsapp_url": null
+}
+```
+
+- **Un código para los dos canales y de un solo uso.** Sirve abriendo el enlace o tecleando los 6 dígitos en el chat; lo que llegue primero lo gasta.
+- **El enlace no lleva los 6 dígitos.** Lleva un testigo largo y aleatorio (43 caracteres de `A-Z`, `a-z`, `0-9`, `_` y `-`). Los 6 dígitos son solo para teclearlos. No construyas el enlace con `code`: usa `telegram_url` tal cual.
+- **Caduca a los 10 minutos** (`expires_at`). Muestra la cuenta atrás y ofrece pedir otro al llegar a cero.
+- **Pedir otro invalida el anterior,** enlace incluido.
+- `whatsapp_url` es `null` hasta que exista el adaptador de WhatsApp. Cuando exista, el mismo código servirá en los dos.
+- Ni la API ni la base de datos guardan el código ni el testigo: solo su huella. Si el dueño cierra la pantalla, hay que pedir otro.
+
+Qué enseñar: un botón "Abrir Telegram" con `telegram_url` (en el móvil abre la app; en el ordenador, Telegram Web o un código QR del mismo enlace) y, debajo, "o envía este código al bot: 042817".
+
+Errores, todos con `detail` en español listo para mostrar:
+
+| Código | Cuándo |
+|---|---|
+| 401 | Sin sesión |
+| 403 | Falta la cabecera `X-Requested-With` |
+| 409 | La cuenta tiene una baja programada, como el resto de rutas de la ficha |
+| 429 | Más de 5 códigos en una hora en esa cuenta (`FICHAITOR_LINK_CODE_RATE_LIMIT`) |
+| 503 | No se ha podido generar el código. Ofrece reintentar |
+
+#### Cómo saber que ya se ha vinculado
+
+La vinculación ocurre en Telegram, no en la web. Mientras la pantalla del código está abierta, consulta `GET /api/v1/me/channels` cada 3 segundos y para cuando aparezca un canal nuevo, cuando caduque el código o a los 10 minutos. El bot da la bienvenida en el chat ("Listo, Marta. Ya llevo la ficha de …").
+
+### `GET /api/v1/me/channels`
+
+Respuesta 200:
+
+```json
+{
+  "channels": [
+    {
+      "id": "chid_5f1c9a0e7b2d4c63",
+      "channel": "telegram",
+      "address": "Telegram de ••••7342",
+      "linked_at": "2026-11-12T10:05:02Z"
+    }
+  ]
+}
+```
+
+- Solo los canales **activos** de la cuenta de la sesión, el más antiguo primero. Una cuenta puede tener varios (dueño y encargado).
+- `address` ya va **enmascarada y lista para mostrar**: la web no recibe nunca el identificador completo del chat.
+- `channel` vale hoy siempre `telegram`; mañana también `whatsapp` o `email`.
+- Responde también durante una baja programada de la ficha, para poder desvincular. Tras confirmar la baja de la **cuenta**, la lista queda vacía: los canales se desvinculan en el mismo momento.
+
+Errores: 401 sin sesión.
+
+### `DELETE /api/v1/me/channels/{id}`
+
+Sin cuerpo. Respuesta **204**, sin cuerpo.
+
+- Desde ese instante el bot no envía nada a ese chat y lo trata como un desconocido.
+- 404 si el canal no existe, ya está desvinculado o es de otra cuenta: la misma respuesta en los tres casos.
+- 401 sin sesión, 403 sin la cabecera.
+
+Pide confirmación antes ("Dejarás de recibir avisos en este chat").
+
+### Lo que la web NO debe hacer con los canales
+
+- Construir el enlace de Telegram a mano o meter `code` en él.
+- Guardar el código o el enlace (en `localStorage`, en la URL o en un registro).
+- Enseñar o pedir el identificador del chat de Telegram.
+
+### Sin Telegram real
+
+En desarrollo, sin token del bot, `POST /api/v1/channels/link-code` y las dos rutas de canales funcionan igual: el código se genera y se guarda, pero nadie lo canjea. Para probarlo de punta a punta hace falta un bot de pruebas y el proceso de la conversación (`docs/canales.md`, "Probarlo en local con el bot real").
+
 ## Pantallas mínimas para tener algo visible
 
 1. **Inicio** (`/`): diagnóstico público, resultado, lista de espera y botón "Conectar con Google".

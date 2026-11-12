@@ -55,6 +55,14 @@ class ClaimedAction:
     coherent: bool = True
 
 
+@dataclass(frozen=True)
+class NewReview:
+    """A review seen for the first time, still without a reply."""
+
+    id: str  # ours: "rev_..."
+    created_at: datetime | None
+
+
 class WorkerStore(Protocol):
     async def latest_connection(self, google_sub: str) -> StoredConnection | None:
         """The most recent connection of that Google user: the only valid one."""
@@ -96,12 +104,15 @@ class WorkerStore(Protocol):
 
     async def save_reviews(
         self, google_sub: str, location: str, reviews: Sequence[Review], at: datetime
-    ) -> None:
+    ) -> Sequence["NewReview"] | None:
         """Make the stored reviews of that profile match what Google returned.
 
         Known reviews keep their id. Reviews no longer returned are marked as removed,
         never deleted. Reviews without a well-formed Google id are skipped. Nothing
         about who wrote a review is stored.
+
+        Returns the reviews stored for the first time in this call that have no reply:
+        the ones the messaging channels may propose (docs/canales.md, step 5).
         """
         ...
 

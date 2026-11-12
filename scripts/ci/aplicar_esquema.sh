@@ -3,7 +3,7 @@
 # que es idempotente: el esquema se aplica dos veces y la segunda no puede fallar.
 #
 # Orden:
-#   1. db/schema.sql y, si existe, db/schema_worker.sql
+#   1. db/schema.sql y, si existen, db/schema_worker.sql y db/schema_channels.sql
 #   2. db/dev-init.sql (usuarios de desarrollo y pruebas)
 #   3. otra vez el paso 1
 #
@@ -37,6 +37,10 @@ aplicar_esquema() {
         aplicar db/schema_worker.sql
     else
         echo "--> db/schema_worker.sql no existe todavía: se omite"
+    fi
+    # Necesita las tablas de los dos anteriores (docs/canales.md).
+    if [[ -f db/schema_channels.sql ]]; then
+        aplicar db/schema_channels.sql
     fi
 }
 
