@@ -184,3 +184,28 @@ GRANT UPDATE (email, selected_location_id, disconnected_at) ON account TO fichai
 GRANT UPDATE (gbp_account, title, place_id, verified, updated_at, removed_at)
     ON location TO fichaitor_api;
 GRANT UPDATE (revoked_at) ON session TO fichaitor_api;
+
+-- Topes de llamadas de pago (2026-11-12, B2 de docs/seguridad/revision-2026-11-12.md):
+-- las capturas y los diagnósticos públicos de cada día, para todos los clientes juntos, y
+-- los borradores de respuesta de cada cuenta. Un contador por ámbito y ventana fija.
+-- En la base, y no en la memoria de la API, para que un reinicio, un despliegue o una
+-- segunda réplica no los pongan a cero.
+-- scope: una palabra fija y, si es por cuenta, el id de la cuenta. Nunca una IP ni un texto
+-- tecleado. La tarea de retención del worker borra las ventanas vencidas.
+CREATE TABLE IF NOT EXISTS usage_counter (
+    scope        text NOT NULL CHECK (scope ~ '^[a-z_]{1,40}(:[0-9a-f-]{1,64})?$'),
+    window_start timestamptz NOT NULL,
+    expires_at   timestamptz NOT NULL,
+    hits         integer NOT NULL CHECK (hits >= 0),
+    PRIMARY KEY (scope, window_start),
+    CHECK (expires_at > window_start)
+);
+
+CREATE INDEX IF NOT EXISTS usage_counter_expires ON usage_counter (expires_at);
+
+-- La API cuenta (INSERT ... ON CONFLICT DO UPDATE en una sola sentencia) y lee la cuenta.
+-- No puede borrar un contador, cambiarle el ámbito o la ventana, ni ponerlo a cero.
+REVOKE ALL ON usage_counter FROM PUBLIC, fichaitor_api;
+GRANT SELECT (scope, window_start, hits) ON usage_counter TO fichaitor_api;
+GRANT INSERT (scope, window_start, expires_at, hits) ON usage_counter TO fichaitor_api;
+GRANT UPDATE (hits) ON usage_counter TO fichaitor_api;

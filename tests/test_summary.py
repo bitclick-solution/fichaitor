@@ -141,6 +141,27 @@ def test_summary_needs_a_session_and_a_selected_profile():
     assert world.sync_jobs() == []
 
 
+def test_a_profile_the_worker_found_without_access_says_reconnect_and_shows_nothing():
+    # B5: the worker retired the selected profile after Google refused it twice in a row.
+    world = World()
+    client = world.owner_with_profile()
+    world.store.put_summary(SUB, BAR.location, stored())
+    assert client.get(SUMMARY).json()["review_count"] is not None
+    row = next(r for r in world.store.locations if r.profile.location == BAR.location)
+    row.removed = True
+    before = len(world.sync_jobs())
+
+    body = client.get(SUMMARY).json()
+    assert body["status"] == "needs_reconnect"
+    assert (body["review_count"], body["average_rating"], body["synced_at"]) == (None, None, None)
+    diagnosis = client.get("/api/v1/me/diagnosis")
+    assert diagnosis.status_code == 404
+    assert diagnosis.json()["status"] == "needs_reconnect"
+    reviews = client.get("/api/v1/me/reviews", params={"filter": "all"}).json()
+    assert (reviews["status"], reviews["total"], reviews["reviews"]) == ("needs_reconnect", 0, [])
+    assert len(world.sync_jobs()) == before  # nothing to read until the owner reconnects
+
+
 # --- enqueuing --------------------------------------------------------------
 
 

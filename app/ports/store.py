@@ -4,7 +4,7 @@ from datetime import date, datetime
 from typing import Protocol
 
 from app.domain.offboarding import CodeCheck, PendingDeletion
-from app.domain.profile_summary import ProfileFacts
+from app.domain.profile_summary import STATUS_NEEDS_RECONNECT, ProfileFacts
 from app.domain.sentiment import Analysis
 from app.ports.google_oauth import ProfileLocation
 
@@ -82,6 +82,27 @@ class SelectedProfile:
     summary: StoredSummary | None
     title: str = ""
     place_id: str | None = None
+    # The worker found the connected user without access to it (Google refused it
+    # several syncs in a row) and retired it. Nothing stored of it is served: the
+    # summary only says 'needs_reconnect', and no sync is asked for.
+    access_lost: bool = False
+
+
+def lost_access_summary(at: datetime) -> StoredSummary:
+    """What is shown of a profile whose access was lost: that, and nothing else."""
+    return StoredSummary(
+        status=STATUS_NEEDS_RECONNECT,
+        status_at=at,
+        synced_at=None,
+        review_count=None,
+        average_rating=None,
+        unanswered_count=None,
+        unanswered_low_count=None,
+        last_review_at=None,
+        has_regular_hours=None,
+        upcoming_special_hours=None,
+        google_changed=None,
+    )
 
 
 @dataclass(frozen=True)
@@ -192,6 +213,9 @@ class Store(Protocol):
 
     async def selected_profile(self, account_id: str) -> SelectedProfile | None:
         """The selected profile of that account and its summary. None if nothing is selected.
+
+        A selected profile the worker retired for lack of access comes back with
+        access_lost and lost_access_summary, without anything that was read from Google.
 
         The summary is looked up by the Google identity of that very account and its own
         selected profile: an account never reads the summary written for another one,

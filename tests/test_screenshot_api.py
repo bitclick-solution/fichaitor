@@ -9,6 +9,7 @@ import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
+from app.adapters.quota.memory import MemoryQuota
 from app.adapters.screenshot_reader.fake import DEMO, REPLY_LOW, FakeScreenshotReader
 from app.adapters.screenshot_reader.gemini import GeminiScreenshotReader
 from app.api.screenshot import ROUTE, build_reader, build_router, build_router_from_settings
@@ -501,6 +502,46 @@ def test_daily_cap_for_all_clients_together():
     assert "Prueba mañana" in resp.json()["detail"]
     assert len(h.reader.calls) == 2
     h.now += 86401
+    assert h.post().status_code == 200
+
+
+def test_the_daily_cap_is_kept_outside_the_process():
+    # B2: the count lives in the quota store (PostgreSQL in production), not in the
+    # service: a restart or a second process does not start it from zero.
+    quota = MemoryQuota()
+    assert Harness(daily_limit=1, quota=quota).post().status_code == 200
+    restarted = Harness(daily_limit=1, quota=quota)
+    restarted.ip = "198.51.100.9"
+    assert restarted.post().status_code == 503
+    assert restarted.reader.calls == []
+
+
+def test_a_client_over_its_limit_is_refused_before_the_upload_is_read():
+    # M3: the limit is checked, without counting, before a byte of the body is read.
+    h = Harness(rate_limit=1)
+    assert h.post().status_code == 200
+    # Not even a form: had it been read, the answer would be a 422.
+    resp = h.client.post(ROUTE, content=b"x" * 10, headers={"content-type": "text/plain"})
+    assert resp.status_code == 429
+    assert resp.json() == {"detail": "Has enviado muchas capturas. Prueba dentro de un rato."}
+
+
+def test_once_the_daily_cap_is_reached_uploads_are_refused_before_they_are_read():
+    h = Harness(daily_limit=1)
+    assert h.post().status_code == 200
+    h.ip = "198.51.100.9"
+    resp = h.client.post(ROUTE, content=b"x" * 10, headers={"content-type": "text/plain"})
+    assert resp.status_code == 503
+    assert "Prueba mañana" in resp.json()["detail"]
+
+
+def test_asking_before_reading_does_not_use_up_the_limit():
+    h = Harness(rate_limit=1)
+    for _ in range(3):  # refused for being empty: checked, never counted
+        assert (
+            h.client.post(ROUTE, content=b"", headers={"content-type": "text/plain"}).status_code
+            == 422
+        )
     assert h.post().status_code == 200
 
 

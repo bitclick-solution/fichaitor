@@ -301,3 +301,29 @@ def test_rate_limit_stops_requests_before_they_reach_google():
         assert client.post(URL, json={"query": "bar la parra"}).status_code == 200
     assert client.post(URL, json={"query": "bar la parra"}).status_code == 429
     assert google.counts() == (1, 2)
+
+
+def test_daily_cap_for_all_clients_together_stops_requests_before_google():
+    # M2 (docs/seguridad/revision-2026-11-12.md): rotating addresses goes round the
+    # limit per IP, not round this one.
+    google = Google()
+    settings = Settings(_env_file=None, diagnosis_rate_limit=100, diagnosis_daily_limit=2)
+    app = create_app(settings, google.gateway(), MemoryStore())
+    ips = iter(f"198.51.100.{n}" for n in range(1, 10))
+
+    def post():
+        client = TestClient(app, client=(next(ips), 50000))
+        return client.post(URL, json={"query": "bar la parra"})
+
+    assert post().status_code == 200
+    assert post().status_code == 200
+    r = post()
+    assert r.status_code == 503
+    assert r.json() == {
+        "detail": "Hoy hemos recibido muchas consultas y no podemos hacer más. Prueba mañana."
+    }
+    assert google.counts() == (1, 2)  # the third one never reached Google
+
+
+def test_the_daily_cap_of_the_diagnosis_is_configurable_and_bounded_by_default():
+    assert Settings(_env_file=None).diagnosis_daily_limit == 500

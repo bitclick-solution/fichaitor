@@ -90,9 +90,10 @@ def build_router(
     restore_limiter: SlidingWindowLimiter,
     client_ip: Callable[[Request], str],
     clock: Callable[[], float],
+    cookie_secure: bool = True,
 ) -> APIRouter:
     router = APIRouter()
-    current_account = account_guard(store, clock)
+    current_account = account_guard(store, clock, cookie_secure)
 
     @router.post(
         "/api/v1/me/offboarding/code",

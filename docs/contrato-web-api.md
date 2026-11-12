@@ -25,7 +25,10 @@ Las dos sesiones trabajan en la **misma carpeta y la misma rama** (`main`). Cada
 
 - Prefijo `/api/v1`. JSON en UTF-8.
 - Errores: `{"detail": "texto en español listo para mostrar"}` con el código HTTP correspondiente. En los 422 de validación automática, `detail` puede ser una lista: muestra un mensaje genérico.
-- Sesión: cookie `fichaitor_session`, HttpOnly, `SameSite=Lax`, `Path=/`, 30 días. La web no la lee ni la escribe; solo envía las peticiones con `credentials: "same-origin"`.
+- Sesión: cookie `__Host-fichaitor_session`, HttpOnly, `Secure`, `SameSite=Lax`, `Path=/`, sin `Domain`, 30 días. La web no la lee ni la escribe; solo envía las peticiones con `credentials: "same-origin"`.
+  - **Cambio del 2026-11-12 (B6 de la revisión de seguridad).** Antes se llamaba `fichaitor_session`. El prefijo `__Host-` impide que otro sitio bajo `fichaitor.es` la fije. La API ya no lee el nombre anterior: **al desplegar, todas las sesiones abiertas se cierran** y cada dueño ve la pantalla de conectar (un 401) una vez. No hay nada que cambiar en la web.
+  - La cookie del `state` de OAuth pasa a `__Secure-fichaitor_oauth_state` (ruta `/api/v1/google/oauth`, 10 minutos). Una conexión a medias durante el despliegue responde 400 en la vuelta de Google: basta con volver a empezar.
+  - En desarrollo por http (`FICHAITOR_COOKIE_SECURE=false`) los nombres van sin prefijo (`fichaitor_session`, `fichaitor_oauth_state`): los navegadores rechazan esos prefijos sin `Secure`.
 - Toda petición que cambie algo (`POST`, `PATCH`, `DELETE`) con sesión lleva la cabecera `X-Requested-With: fichaitor`. Sin ella, la API responde 403, haya sesión o no: la cabecera se comprueba antes que la sesión.
 - 401 significa "sin sesión" (no hay cookie, o la sesión ha caducado o se ha cerrado): la web lleva a la pantalla de conectar.
 
@@ -64,7 +67,8 @@ Respuesta 200:
 - `impact`: `alto`, `medio`, `bajo`. Hasta 5 `findings`, ya ordenados.
 - `locked_checks`: lo que solo se puede comprobar conectando la ficha. Es el gancho hacia "Conectar con Google".
 - `attribution`: origen de los datos. Consulta [Atribución de Google Maps](#atribución-de-google-maps-cambio-del-2026-11-11).
-- Errores: 404 (no encontrado), 422, 429 (límite), 503 (Google no responde).
+- Errores: 404 (no encontrado), 422, 429 (límite), 503 (Google no responde, o se ha alcanzado el tope diario).
+- **Tope diario (cambio del 2026-11-12).** Además del límite por IP, hay un tope de diagnósticos por día para todos los visitantes juntos (`FICHAITOR_DIAGNOSIS_DAILY_LIMIT`, 500 por defecto; el día es el de UTC). Al alcanzarlo, 503 con `detail` "Hoy hemos recibido muchas consultas y no podemos hacer más. Prueba mañana." Muestra `detail` tal cual y no reintentes.
 
 #### Atribución de Google Maps (cambio del 2026-11-11)
 
@@ -345,10 +349,23 @@ Un subcampo, como `phoneNumbers.primaryPhone`, lleva la etiqueta de su campo. Un
 |---|---|---|
 | `pendiente` | Todavía no hay resumen: la sincronización se ha pedido y el worker no ha terminado. Todos los demás campos van a `null` y `stale` a `false` | Muestra las tarjetas cargando y vuelve a preguntar |
 | `ok` | Cifras de la última sincronización | Muestra las tarjetas |
-| `needs_reconnect` | Google ha retirado el permiso, o no hay ninguna conexión guardada para esa cuenta. Las cifras son las de la última lectura correcta, o `null` si nunca la hubo | Pide volver a conectar con Google. Si hay cifras, muéstralas con su fecha |
+| `needs_reconnect` | Google ha retirado el permiso, o no hay ninguna conexión guardada para esa cuenta, o la cuenta ha perdido el acceso a esa ficha (ver abajo). Las cifras son las de la última lectura correcta, o `null` si nunca la hubo o se ha perdido el acceso | Pide volver a conectar con Google. Si hay cifras, muéstralas con su fecha |
 | `error` | La última sincronización falló: Google no respondió o rechazó la lectura, o la ficha ya no está en la conexión más reciente. Las cifras son las de la última lectura correcta, o `null` si nunca la hubo | Si hay cifras, muéstralas con su fecha. Si no, "No hemos podido leer tu ficha. Prueba más tarde" |
 
 Con `needs_reconnect` y `error`, `google_changed_fields` y `google_changed_labels` son listas, vacías si nunca hubo una lectura correcta.
+
+#### Sin acceso a la ficha (cambio del 2026-11-12)
+
+Si Google rechaza la lectura de la ficha (403 o 404) en **dos sincronizaciones seguidas**, el worker entiende que ese usuario de Google ya no tiene acceso: por ejemplo, el dueño le ha quitado de gestor. Desde ese momento, y hasta que vuelva a conectar:
+
+- `GET /api/v1/me/summary` responde 200 con `status: "needs_reconnect"`, todas las cifras a `null` y `synced_at: null`. Ya no se sirven las cifras de la última lectura correcta.
+- `GET /api/v1/me/reviews` responde `status: "needs_reconnect"`, `total: 0` y la lista vacía. El borrador y la respuesta de una reseña responden 404.
+- `GET /api/v1/me/diagnosis` responde 404 con `status: "needs_reconnect"`.
+- `GET /api/v1/me/sentiment` responde `status: "error"` con todo a `null`; el aviso del resumen basta.
+- `GET /api/v1/me` sigue devolviendo `selected_location_id`, pero esa ficha ya no está en `locations`.
+- No se pide ninguna sincronización. Lo guardado de esa ficha se borra a los 30 días, como el de las fichas que Google deja de listar.
+
+Al volver a conectar, si Google vuelve a listar la ficha, se vuelve a ver lo guardado y se pide una lectura nueva. Si no la lista, deja de estar elegida (`selected_location_id: null`) y la web pide elegir otra.
 
 `pendiente` no es un estado en el que una ficha se quede: toda sincronización que falla deja `needs_reconnect` o `error`. Si el worker está parado, `pendiente` dura hasta que vuelve a arrancar.
 

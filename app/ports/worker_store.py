@@ -20,6 +20,7 @@ class StoredConnection:
     refresh_token_enc: str
     key_version: int
     locations: tuple[ConnectedLocation, ...]
+    connection_id: str = ""  # the row it came from
 
 
 @dataclass(frozen=True)
@@ -46,14 +47,24 @@ class ClaimedAction:
     id: str
     google_sub: str
     location: str  # "locations/456"
-    gbp_review_id: str  # Google's reviewId
+    gbp_review_id: str  # Google's reviewId; empty when the action is not coherent
     text: str
     attempts: int  # counts this one
+    # The account, its Google identity, its profile and the review agree with one
+    # another. An action that does not (only a forged row can) is never sent.
+    coherent: bool = True
 
 
 class WorkerStore(Protocol):
     async def latest_connection(self, google_sub: str) -> StoredConnection | None:
         """The most recent connection of that Google user: the only valid one."""
+        ...
+
+    async def drop_replaced_connections(self, google_sub: str, connection_id: str) -> int:
+        """Delete, token included, every stored connection of that Google user older
+        than `connection_id`: those a reconnection replaced. A newer one is kept.
+        Returns how many went. Nothing is revoked at Google: Google revokes the whole
+        grant, and that would cut the connection that is kept."""
         ...
 
     async def save_summary(
@@ -64,6 +75,17 @@ class WorkerStore(Protocol):
 
     async def save_status(self, google_sub: str, location: str, status: str, at: datetime) -> None:
         """Set only the status; the figures and facts of the last good sync are kept."""
+        ...
+
+    async def record_denied(
+        self, google_sub: str, location: str, at: datetime, lost_after: int
+    ) -> bool:
+        """Google refused to read that profile (403 or 404). Status 'error', and one
+        more refusal in a row; a good sync (save_summary) starts the count again.
+        At `lost_after` in a row the user has lost access: the status becomes
+        'needs_reconnect' and the profile is retired (location.removed_at) in every
+        account of that Google user, so that the API stops serving what is stored and
+        the retention task deletes it 30 days later. True when that happened now."""
         ...
 
     async def mark_lost_syncs(self, kind: str) -> int:
@@ -96,6 +118,10 @@ class WorkerStore(Protocol):
         None when there is nothing for this job to do: the action does not exist, is
         already finished, or belongs to another job. The same job can claim it again
         (a retry).
+
+        `coherent` is False unless the review exists with the action's Google user and
+        profile, and the action's account has that Google user and that profile (not
+        retired, the account not deleted). The executor fails such an action.
         """
         ...
 

@@ -1,5 +1,6 @@
 """Summary of a Business Profile: what the owner should look at today. No I/O."""
 
+import re
 from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import date, datetime
@@ -10,6 +11,19 @@ STATUS_NEEDS_RECONNECT = "needs_reconnect"
 STATUS_ERROR = "error"
 
 LOW_RATING_MAX = 2
+
+# Google refusing to read a profile (403 or 404) this many syncs in a row means the
+# connected user has lost access to it (the owner removed them, or the profile is
+# gone): it is retired and nothing stored of it is served until they connect again.
+# One refusal alone may be a blip.
+ACCESS_LOST_AFTER = 2
+ACCESS_LOST_STATUSES = frozenset({403, 404})
+
+# Shapes a job payload must have before the worker touches anything with it. The
+# location is the one the Google adapter accepts in a URL (Google's ids are digits; the
+# test fixtures use letters too). The Google user id is printable ASCII, no spaces.
+GBP_LOCATION = re.compile(r"locations/[A-Za-z0-9_-]{1,64}")
+GOOGLE_SUB = re.compile(r"[!-~]{1,255}")
 TRANSLATED_MARK = "(Translated by Google)"
 ORIGINAL_MARK = "(Original)"
 _STARS = {"ONE": 1, "TWO": 2, "THREE": 3, "FOUR": 4, "FIVE": 5}

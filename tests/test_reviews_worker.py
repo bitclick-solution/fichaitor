@@ -131,6 +131,123 @@ class World:
         return [j for j in self.queue.jobs.values() if j.kind == kind]
 
 
+# --- an action that does not agree with its review (M1) --------------------
+
+
+def test_an_action_whose_review_is_of_another_profile_is_failed_without_calling_google():
+    async def go():
+        world = await World().synced()
+        action = world.confirm()
+        # As a forged row would say: same review, another Google user.
+        action.google_sub = "pytest-otro"
+        world.store.add_connection(
+            "pytest-otro",
+            StoredConnection(seal(PUBLIC, REFRESH), 1, (ConnectedLocation(GBP_ACCOUNT, LOCATION),)),
+        )
+        await world.enqueue(action.id)
+        await world.drain()
+        return world, action
+
+    world, action = run(go())
+    assert world.google.replies == []
+    assert (action.state, action.error_code) == (actions.FAILED, actions.ERROR_INTERNAL)
+    assert [e.event for e in world.tables.audit][-1] == actions.EVENT_FAILED
+
+
+def test_a_good_sync_keeps_only_the_connection_it_used():
+    # B4: the connections a reconnection replaced are deleted, never revoked.
+    async def go():
+        world = World()
+        newer = StoredConnection(
+            seal(PUBLIC, "1//token-nuevo"), 1, (ConnectedLocation(GBP_ACCOUNT, LOCATION),)
+        )
+        world.store.add_connection(SUB, newer)
+        await world.synced()
+        return world, newer
+
+    world, newer = run(go())
+    assert world.store.connections[SUB] == [newer]
+    assert world.google.refreshed_with == ["1//token-nuevo"]
+    assert world.google.revoked == []
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        {"google_sub": SUB, "location": "locations/" + "2" * 300},
+        {"google_sub": SUB, "location": "accounts/111/locations/222"},
+        {"google_sub": SUB, "location": "locations/22 2"},
+        {"google_sub": SUB, "location": 222},
+        {"google_sub": "x" * 300, "location": LOCATION},
+        {"google_sub": "con espacio", "location": LOCATION},
+    ],
+)
+def test_a_sync_with_a_malformed_payload_fails_at_once_and_writes_nothing(payload):
+    # B8: the shape is checked before anything is read or written.
+    async def go():
+        world = World()
+        await world.queue.enqueue(SYNC_KIND, payload)
+        await world.drain()
+        return world
+
+    world = run(go())
+    assert world.store.summaries == {}
+    assert world.google.refreshed_with == []
+    (job,) = world.jobs(SYNC_KIND)
+    assert (job.state, job.attempts) == (FAILED, 1)
+
+
+async def _sync_once(world) -> None:
+    await world.queue.enqueue(SYNC_KIND, {"google_sub": SUB, "location": LOCATION})
+    await world.drain()
+
+
+@pytest.mark.parametrize("status", [403, 404])
+def test_google_refusing_the_profile_twice_in_a_row_leaves_it_without_access(status):
+    # B5: a manager the owner removed from the profile keeps the session; what was
+    # stored must stop being served. One refusal may be a blip: two in a row is not.
+    async def go():
+        world = await World().synced()
+        world.google.read_error = GoogleRejected(f"sin acceso (estado {status})", status)
+        await _sync_once(world)
+        after_one = (world.store.summaries[(SUB, LOCATION)].status, set(world.store.lost_access))
+        await _sync_once(world)
+        return world, after_one
+
+    world, (status_one, lost_one) = run(go())
+    assert (status_one, lost_one) == ("error", set())
+    assert world.store.summaries[(SUB, LOCATION)].status == "needs_reconnect"
+    assert world.store.lost_access == {(SUB, LOCATION)}
+
+
+def test_a_good_sync_in_between_starts_the_count_again():
+    async def go():
+        world = await World().synced()
+        world.google.read_error = GoogleRejected("sin acceso (estado 403)", 403)
+        await _sync_once(world)
+        world.google.read_error = None
+        await _sync_once(world)
+        world.google.read_error = GoogleRejected("sin acceso (estado 403)", 403)
+        await _sync_once(world)
+        return world
+
+    world = run(go())
+    assert world.store.lost_access == set()
+    assert world.store.summaries[(SUB, LOCATION)].status == "error"
+
+
+@pytest.mark.parametrize("status", [400, 409, None])
+def test_other_refusals_do_not_count_as_losing_access(status):
+    async def go():
+        world = await World().synced()
+        world.google.read_error = GoogleRejected("rechazada", status)
+        for _ in range(3):
+            await _sync_once(world)
+        return world
+
+    assert run(go()).store.lost_access == set()
+
+
 # --- what a sync stores --------------------
 
 

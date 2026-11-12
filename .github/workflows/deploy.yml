@@ -9,8 +9,9 @@
 # Secretos del entorno "production" (Settings > Environments > production):
 #   SSH_HOST, SSH_USER, SSH_PRIVATE_KEY   acceso al servidor
 #   SSH_PORT                              opcional; por defecto, 22
-#   SSH_KNOWN_HOSTS                       opcional pero recomendado: la clave pública del
-#                                         servidor (salida de "ssh-keyscan -p <puerto> <host>")
+#   SSH_KNOWN_HOSTS                       obligatorio: la clave pública del servidor (salida
+#                                         de "ssh-keyscan -p <puerto> <host>"). Sin él, no
+#                                         se despliega
 #   GHCR_TOKEN                            token de larga duración con read:packages, para
 #                                         que el servidor descargue las imágenes
 #
@@ -189,17 +190,16 @@ jobs:
             echo "::error::Faltan SSH_HOST, SSH_USER o SSH_PRIVATE_KEY en el entorno production."
             exit 1
           fi
+          # Sin la huella del servidor no se despliega: se le pasaría el GHCR_TOKEN y los
+          # archivos del despliegue a quien conteste en esa dirección.
+          # Obtenla desde una red de confianza con: ssh-keyscan -p <puerto> <servidor>
+          if [[ -z "${SSH_KNOWN_HOSTS}" ]]; then
+            echo "::error::Falta SSH_KNOWN_HOSTS en el entorno production: no se puede verificar la identidad del servidor."
+            exit 1
+          fi
           install -m 700 -d "${HOME}/.ssh"
           ( umask 077; printf '%s\n' "${SSH_PRIVATE_KEY}" >"${HOME}/.ssh/id_despliegue" )
-          if [[ -n "${SSH_KNOWN_HOSTS}" ]]; then
-            printf '%s\n' "${SSH_KNOWN_HOSTS}" >"${HOME}/.ssh/known_hosts"
-            comprobacion="yes"
-          else
-            # Como en los demás flujos de Bitclick. Define SSH_KNOWN_HOSTS para
-            # que la identidad del servidor sí se verifique.
-            echo "::warning::SSH_KNOWN_HOSTS no está definido: no se verifica la identidad del servidor."
-            comprobacion="no"
-          fi
+          printf '%s\n' "${SSH_KNOWN_HOSTS}" >"${HOME}/.ssh/known_hosts"
           {
             echo "Host servidor"
             echo "  HostName ${SSH_HOST}"
@@ -207,7 +207,7 @@ jobs:
             echo "  Port ${SSH_PORT}"
             echo "  IdentityFile ${HOME}/.ssh/id_despliegue"
             echo "  IdentitiesOnly yes"
-            echo "  StrictHostKeyChecking ${comprobacion}"
+            echo "  StrictHostKeyChecking yes"
             echo "  BatchMode yes"
             echo "  ServerAliveInterval 30"
           } >"${HOME}/.ssh/config"

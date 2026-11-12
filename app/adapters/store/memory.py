@@ -4,9 +4,10 @@ import secrets
 import uuid
 from collections.abc import Sequence
 from dataclasses import dataclass, replace
-from datetime import datetime
+from datetime import UTC, datetime
 
 from app.adapters.memory_tables import ActionRow, MemoryTables, ReviewRow
+from app.adapters.quota.memory import MemoryQuota
 from app.domain.actions import REPLY_REVIEW
 from app.domain.offboarding import (
     APPLY_KIND,
@@ -38,6 +39,7 @@ from app.ports.store import (
     StoredSentiment,
     StoredSummary,
     WaitlistSignup,
+    lost_access_summary,
 )
 
 REPLY_MAX_ATTEMPTS = 3
@@ -117,11 +119,20 @@ class MemoryStore:
         self.summaries: dict[tuple[str, str], StoredSummary] = {}
         self.codes: list[CodeRow] = []  # fingerprints only, never a code
         self.offboardings: list[OffboardingRow] = []
+        self.quota = MemoryQuota()
         self._fail = fail
 
     def _check(self) -> None:
         if self._fail:
             raise RuntimeError("fallo simulado")
+
+    # Caps on paid calls: kept by the store, as PostgreSQL keeps them, so that a new
+    # app on the same store (a restart) finds them where they were.
+    async def take_quota(self, scope: str, limit: int, window_seconds: int, now: datetime) -> bool:
+        return await self.quota.take_quota(scope, limit, window_seconds, now)
+
+    async def quota_left(self, scope: str, limit: int, window_seconds: int, now: datetime) -> bool:
+        return await self.quota.quota_left(scope, limit, window_seconds, now)
 
     async def add_signup(self, signup: WaitlistSignup) -> None:
         self._check()
@@ -227,7 +238,7 @@ class MemoryStore:
             None,
         )
         if row is None or self._pending(account_id) is not None:
-            return None
+            return self._lost_profile(account)
         key = (account.google_sub, row.profile.location)
         summary = self.summaries.get(key)
         synced_at = self.tables.reviews_synced_at.get(key)
@@ -248,6 +259,19 @@ class MemoryStore:
             row.profile.title,
             row.profile.place_id or None,
         )
+
+    def _lost_profile(self, account: AccountRow) -> SelectedProfile | None:
+        """The selected profile retired by the worker for lack of access, if that is it."""
+        if self._pending(account.id) is not None:
+            return None
+        for row in self.locations:
+            if row.id == account.selected_location_id and row.account_id == account.id:
+                if row.removed:
+                    summary = lost_access_summary(datetime.now(UTC))
+                    return SelectedProfile(
+                        account.google_sub, row.profile.location, summary, access_lost=True
+                    )
+        return None
 
     # --- reviews and replies ------------------------------------------------------
 

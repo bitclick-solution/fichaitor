@@ -115,7 +115,7 @@ Te llega este correo porque se ha confirmado una baja con un código enviado a e
 
 ### 3. Baja cancelada
 
-Opcional.
+Se envía al restaurar, desde el panel o desde el enlace.
 
 | Campo | Valor |
 |---|---|
@@ -139,7 +139,7 @@ Te llega este correo porque se ha cancelado una baja de tu cuenta de Fichaitor.
 
 ### 4. Baja completada
 
-Opcional también: la política de privacidad no lo exige.
+**No se envía** (decisión del backend, 2026-11-12): con la baja de la cuenta, la dirección de correo se borra en ese mismo momento y habría que guardarla solo para este aviso. La política de privacidad no lo exige. Se conserva el diseño por si cambia.
 
 | Campo | Ficha | Cuenta |
 |---|---|---|

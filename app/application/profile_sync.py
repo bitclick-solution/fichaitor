@@ -94,7 +94,7 @@ class ProfileSync:
         except Exception as exc:
             log.warning("sincronización de la ficha no encolada: %s", type(exc).__name__)
             return
-        if profile is not None:
+        if profile is not None and not profile.access_lost:
             await self._enqueue(profile.google_sub, profile.location, reconnected=reconnected)
 
     async def view(self, account_id: str, *, need_reviews: bool = False) -> SummaryView | None:
@@ -106,6 +106,9 @@ class ProfileSync:
         profile = await self._store.selected_profile(account_id)
         if profile is None:
             return None
+        if profile.access_lost:
+            # Nothing to read until the owner connects again: that is all the panel says.
+            return SummaryView(profile.summary, False)
         summary = profile.summary
         if summary is None:
             await self._enqueue(profile.google_sub, profile.location)

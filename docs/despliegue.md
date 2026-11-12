@@ -79,7 +79,7 @@ En GitHub solo están los secretos de acceso al servidor y a GHCR, con los mismo
    | `SSH_USER` | Usuario de despliegue |
    | `SSH_PRIVATE_KEY` | Clave privada SSH de ese usuario |
    | `SSH_PORT` | Puerto SSH. Opcional; por defecto, 22 |
-   | `SSH_KNOWN_HOSTS` | Salida de `ssh-keyscan -p <puerto> <host>`. Opcional, pero recomendado: sin él, el flujo no verifica la identidad del servidor |
+   | `SSH_KNOWN_HOSTS` | Salida de `ssh-keyscan -p <puerto> <host>`, obtenida desde una red de confianza. Obligatorio: sin él, el flujo se detiene antes de conectar |
    | `GHCR_TOKEN` | Token personal clásico con el permiso `read:packages`. El servidor lo usa para descargar las imágenes |
 
    Los cuatro primeros y `GHCR_TOKEN` son los mismos que usa el repositorio de Bitclick. Los secretos no se comparten entre repositorios: hay que crearlos de nuevo aquí.
@@ -492,7 +492,7 @@ grep -n -E "\[PENDIENTE\]|\[REVISAR\]" docs/legal/*.md
 | Punto | Estado |
 |---|---|
 | Repositorio en GitHub, entorno `production` y secretos | Pendiente (paso 1) |
-| `SSH_KNOWN_HOSTS` | Recomendado. Sin él, el flujo no verifica la identidad del servidor |
+| `SSH_KNOWN_HOSTS` | Obligatorio. Sin él, el flujo se detiene: no despliega sin verificar la identidad del servidor |
 | DNS de `fichaitor.es` | Apunta a IONOS (paso 7) |
 | Host y certificado en Nginx Proxy Manager | Pendiente (paso 8) |
 | Primer despliegue real | Sin hacer. `deploy.sh` y el flujo no se han ejecutado nunca contra un servidor |

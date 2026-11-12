@@ -237,6 +237,16 @@ class MemoryTables:
         self._audit(action, EVENT_CONFIRMED, "api", now)
         return action
 
+    def coherent_review(self, action: ActionRow) -> ReviewRow | None:
+        """The review of that action, if it is of the action's own Google user and profile."""
+        review = self.reviews.get(action.review_id)
+        if review is None or (review.google_sub, review.location) != (
+            action.google_sub,
+            action.location,
+        ):
+            return None
+        return review
+
     def claim_action(self, action_id: str, job_id: str, at: datetime) -> ActionRow | None:
         action = self.actions.get(action_id)
         if action is None:
@@ -295,7 +305,7 @@ class MemoryTables:
                 action_type=action.type,
                 location=action.location,
                 review_id=action.review_id,
-                gbp_review_id=self.reviews[action.review_id].gbp_review_id,
+                gbp_review_id=getattr(self.coherent_review(action), "gbp_review_id", ""),
                 text=action.text,
                 confirmed_at=action.confirmed_at,
                 google_status=action.google_status,

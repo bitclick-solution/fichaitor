@@ -11,6 +11,9 @@ class Settings(BaseSettings):
     # included. The diagnosis behind a session reads stored facts and has no limit.
     diagnosis_rate_limit: int = 10  # per client IP
     diagnosis_rate_window_seconds: int = 3600
+    # All clients together, per UTC day: what bounds the bill when someone rotates
+    # addresses. Each diagnosis is paid to Places (docs/fase0/places-coste.md).
+    diagnosis_daily_limit: int = Field(default=500, ge=0)
     # How long "search text -> place_id" is remembered. Only the identifier is kept:
     # Google's terms allow storing it; the content of the place is asked for every time.
     place_id_cache_seconds: int = 30 * 86400

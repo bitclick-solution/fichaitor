@@ -8,7 +8,7 @@ from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import RedirectResponse
 
 from app.adapters.crypto.sealed import seal
-from app.api.session import SESSION_COOKIE, set_session_cookie, utc
+from app.api.session import session_cookie_name, set_session_cookie, utc
 from app.application.profile_sync import ProfileSync
 from app.application.rate_limit import SlidingWindowLimiter
 from app.domain.oauth_state import InvalidState, make_state, verify_state
@@ -18,9 +18,17 @@ from app.ports.store import GoogleConnection, Store
 
 log = logging.getLogger("fichaitor.google_oauth")
 
+# The name without its prefix: the one used over plain http in local development.
 STATE_COOKIE = "fichaitor_oauth_state"
 COOKIE_PATH = "/api/v1/google/oauth"
 STATE_MAX_AGE = 600
+
+
+def state_cookie_name(secure: bool) -> str:
+    """With Secure, the name carries __Secure-: a site under the same domain without
+    https cannot set it. Not __Host-: that prefix needs Path=/, and this cookie only
+    travels to the OAuth routes. Browsers refuse the prefix without Secure."""
+    return f"__Secure-{STATE_COOKIE}" if secure else STATE_COOKIE
 
 
 def build_router(
@@ -38,12 +46,14 @@ def build_router(
     sync: ProfileSync | None = None,
 ) -> APIRouter:
     router = APIRouter()
+    state_cookie = state_cookie_name(cookie_secure)
+    session_cookie = session_cookie_name(cookie_secure)
 
     def back(result: str, **extra: str | int) -> RedirectResponse:
         sep = "&" if "?" in post_connect_url else "?"
         url = f"{post_connect_url}{sep}{urlencode({'google': result, **extra})}"
         resp = RedirectResponse(url, status_code=303)
-        resp.delete_cookie(STATE_COOKIE, path=COOKIE_PATH)
+        resp.delete_cookie(state_cookie, path=COOKIE_PATH, secure=cookie_secure)
         return resp
 
     @router.get("/api/v1/google/oauth/start")
@@ -54,7 +64,7 @@ def build_router(
         resp = RedirectResponse(google.authorization_url(state), status_code=302)
         # Lax: the cookie must travel on Google's top-level redirect back to us.
         resp.set_cookie(
-            STATE_COOKIE,
+            state_cookie,
             state,
             max_age=STATE_MAX_AGE,
             httponly=True,
@@ -72,7 +82,7 @@ def build_router(
         error: str | None = None,
     ) -> RedirectResponse:
         try:
-            verify_state(state_secret, state or "", request.cookies.get(STATE_COOKIE), clock())
+            verify_state(state_secret, state or "", request.cookies.get(state_cookie), clock())
         except InvalidState as exc:
             raise HTTPException(400, "La conexión ha caducado. Vuelve a empezar.") from exc
         if error or not code:
@@ -119,7 +129,7 @@ def build_router(
             account_id = await store.upsert_account(identity.sub, identity.email)
             if locations is not None:  # not listed: keep whatever the account already had
                 await store.sync_locations(account_id, locations, utc(now))
-            previous = request.cookies.get(SESSION_COOKIE)
+            previous = request.cookies.get(session_cookie)
             if previous:
                 await store.revoke_session(hash_token(previous), utc(now))
             await store.create_session(

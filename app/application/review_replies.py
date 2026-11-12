@@ -19,7 +19,8 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime
 
-from app.application.rate_limit import SlidingWindowLimiter
+from app.adapters.quota.memory import MemoryQuota
+from app.domain.quota import draft_scope
 from app.domain.review_reply import (
     DRAFT_REVIEW_MAX_LENGTH,
     check_owner_reply,
@@ -27,6 +28,7 @@ from app.domain.review_reply import (
     draft_source_hash,
     validate_reply,
 )
+from app.ports.quota import Quota
 from app.ports.reply_writer import ReplyWriter, ReplyWriterUnavailable
 from app.ports.store import Store
 
@@ -67,10 +69,15 @@ class ReviewReplies:
         draft_timeout_seconds: float,
         clock: Callable[[], float],
         prompt_version: str = "",
+        quota: Quota | None = None,
     ) -> None:
         self._store = store
         self._writer = writer
-        self._limiter = SlidingWindowLimiter(draft_limit, draft_window_seconds, clock)
+        # Per account, counted in the quota store (PostgreSQL in production): a restart
+        # or a second API process does not give an account its drafts back.
+        self._quota = quota if quota is not None else MemoryQuota()
+        self._draft_limit = draft_limit
+        self._draft_window = draft_window_seconds
         self._timeout = draft_timeout_seconds
         self._clock = clock
         self._prompt_version = prompt_version
@@ -100,7 +107,14 @@ class ReviewReplies:
 
         if self._writer is None:
             raise DraftUnavailable
-        if not self._limiter.allow(account_id):
+        try:
+            taken = await self._quota.take_quota(
+                draft_scope(account_id), self._draft_limit, self._draft_window, self._now()
+            )
+        except Exception as exc:  # no paid call without a working cap
+            log.warning("tope de borradores no disponible: %s", type(exc).__name__)
+            raise DraftUnavailable from None
+        if not taken:
             raise DraftRateLimited
         try:
             async with asyncio.timeout(self._timeout):

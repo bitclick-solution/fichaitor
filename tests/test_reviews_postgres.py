@@ -14,6 +14,7 @@ same database never takes them. Google is the fake adapter: nothing is ever sent
 """
 
 import asyncio
+import contextlib
 import os
 import uuid
 from datetime import UTC, datetime, timedelta
@@ -35,10 +36,11 @@ from app.adapters.worker_store.postgres import PostgresWorkerStore
 from app.api.main import create_app
 from app.config import Settings
 from app.domain import actions
-from app.domain.jobs import Job
+from app.domain.jobs import Job, PermanentJobError
+from app.domain.offboarding import RetentionPolicy
 from app.domain.profile_summary import Review, ReviewSet
 from app.ports.google_oauth import Identity, ProfileLocation
-from app.ports.google_profile import ReconnectRequired
+from app.ports.google_profile import GoogleRejected, ReconnectRequired
 from app.ports.store import ReplyInProgress
 from app.screenshot_config import ScreenshotSettings
 from app.worker.loop import Worker
@@ -122,6 +124,7 @@ async def cleanup():
     await owner(f"DELETE FROM location WHERE account_id IN {mine}")  # noqa: S608
     await owner("DELETE FROM account WHERE google_sub LIKE 'pytest-%'")
     await owner("DELETE FROM profile_summary WHERE google_sub LIKE 'pytest-%'")
+    await owner("DELETE FROM sentiment_analysis WHERE google_sub LIKE 'pytest-%'")
     await owner("DELETE FROM google_connection WHERE google_sub LIKE 'pytest-%'")
 
 
@@ -693,6 +696,131 @@ def test_the_executor_sends_exactly_the_confirmed_text_and_records_everything(ki
     assert (seen["after"].unanswered_count, seen["after"].unanswered_low_count) == (3, 1)
     assert seen["pending"].total == 3
     assert "pytest-low" not in str(seen["pending"])
+
+
+@pytest.mark.parametrize("forged", ["other_account", "other_review"])
+def test_an_action_the_api_role_forged_for_someone_else_is_never_sent(kind, forged):
+    # M1 (docs/seguridad/revision-2026-11-12.md): the API role can insert any action
+    # and its job. The worker checks, when it takes it, that the account, the Google
+    # identity, the profile and the review agree; otherwise nothing reaches Google.
+    async def scenario(s: Scene):
+        ana = await s.account(ANA)
+        luis = await s.account(LUIS, locations=(SHARED, OTHER), selected=OTHER)
+        await s.sync(ANA)
+        await s.sync(LUIS, OTHER.location)
+        ana_review = await s.review_id(ANA, "pytest-low")
+        luis_review = await s.review_id(LUIS, "pytest-low", OTHER.location)
+        if forged == "other_account":  # Luis's account with Ana's identity and review
+            row = (luis, ANA, SHARED.location, ana_review)
+        else:  # Ana's account and identity with a review of another profile
+            row = (ana, ANA, SHARED.location, luis_review)
+        inserted = await _as(
+            API_URL,
+            "INSERT INTO action (account_id, type, google_sub, location, review_id, text)"
+            " VALUES ($1::uuid, 'reply_review', $2, $3, $4, 'Texto del atacante.')"
+            " RETURNING id",
+            *row,
+        )
+        action_id = inserted[0]["id"]
+        await _as(
+            API_URL,
+            "INSERT INTO job (kind, payload) VALUES ($1, $2::jsonb)",
+            s.kind,
+            f'{{"action_id": "{action_id}"}}',
+        )
+        await s.work()
+        return s.google, await s.action(action_id), await s.audit(action_id)
+
+    google, action, audit = scene(kind, scenario)
+    assert google.write_attempts == 0 and google.replies == []
+    assert (action["state"], action["error_code"]) == ("failed", "internal")
+    assert [e["event"] for e in audit] == ["reply_failed"]
+
+
+async def _sync_refused(s: "Scene", sub: str, at: datetime) -> None:
+    s.now = at
+    with contextlib.suppress(PermanentJobError):
+        await s.sync(sub)
+
+
+@pytest.mark.parametrize("status", [403, 404])
+def test_a_profile_google_keeps_refusing_is_retired_and_its_data_no_longer_served(kind, status):
+    # B5 (docs/seguridad/revision-2026-11-12.md): two syncs in a row refused by Google
+    # retire the profile; the API answers "reconnect" and serves nothing stored of it.
+    async def scenario(s: Scene):
+        ana = await s.account(ANA)
+        luis = await s.account(LUIS)  # the same profile, still with access
+        await s.sync(ANA)
+        await s.sync(LUIS)
+        rid = await s.review_id(ANA, "pytest-low")
+        await owner(
+            "INSERT INTO sentiment_analysis (google_sub, location, status, generated_at,"
+            " based_on, score, overall) VALUES ($1, $2, 'ok', $3, 2, 50, 'mixto')",
+            ANA,
+            SHARED.location,
+            NOW,
+        )
+        s.google.read_error = GoogleRejected(f"sin acceso (estado {status})", status)
+        seen = []
+        for hour in (1, 2):
+            await _sync_refused(s, ANA, NOW + timedelta(hours=hour))
+            seen.append(
+                (
+                    await s.store.selected_profile(ana),
+                    (await s.store.list_reviews(ana, unanswered_only=False, limit=50)).total,
+                    await s.store.get_review(ana, rid),
+                    await s.store.sentiment(ana, NOW),
+                )
+            )
+        retired = await owner(
+            "SELECT account_id::text AS account, removed_at FROM location"
+            " WHERE account_id IN ($1::uuid, $2::uuid)",
+            ana,
+            luis,
+        )
+        return ana, seen, {r["account"]: r["removed_at"] for r in retired}, s
+
+    ana, seen, retired, s = scene(kind, scenario)
+    (first, total1, review1, sentiment1), (second, total2, review2, sentiment2) = seen
+    # One refusal may be a blip: everything is still there.
+    assert first.summary.status == "error" and first.summary.review_count is not None
+    assert total1 == 5 and review1 is not None and sentiment1 is not None
+    # Two in a row: "reconnect", and nothing that was read from Google.
+    assert second.summary.status == "needs_reconnect"
+    assert second.summary.review_count is None and second.summary.facts is None
+    assert (second.title, second.place_id) == ("", None)
+    assert total2 == 0 and review2 is None and sentiment2 is None
+    assert retired[ana] == NOW + timedelta(hours=2)
+    assert list(retired.values()).count(None) == 1  # Luis keeps his access
+    assert s.google.write_attempts == 0
+
+
+def test_the_retention_deletes_a_profile_retired_for_lack_of_access_after_30_days(kind):
+    async def scenario(s: Scene):
+        ana = await s.account(ANA)
+        await s.sync(ANA)
+        s.google.read_error = GoogleRejected("sin acceso (estado 403)", 403)
+        for hour in (1, 2):
+            await _sync_refused(s, ANA, NOW + timedelta(hours=hour))
+        policy = RetentionPolicy()
+        early = await s.worker_store.run_retention(NOW + timedelta(days=29), policy)
+        left_early = await owner("SELECT count(*) AS n FROM review WHERE google_sub = $1", ANA)
+        # Still the selected profile of the account: the retention lets go of it first.
+        await s.worker_store.run_retention(NOW + timedelta(days=31), policy)
+        left = await owner(
+            "SELECT (SELECT count(*) FROM review WHERE google_sub = $1) AS reviews,"
+            " (SELECT count(*) FROM profile_summary WHERE google_sub = $1) AS summaries,"
+            " (SELECT count(*) FROM location WHERE account_id = $2::uuid) AS locations,"
+            " (SELECT selected_location_id FROM account WHERE id = $2::uuid) AS selected",
+            ANA,
+            ana,
+        )
+        return early, left_early[0]["n"], left[0]
+
+    early, left_early, left = scene(kind, scenario)
+    assert left_early == 5 and early.get("location", 0) == 0
+    assert (left["reviews"], left["summaries"], left["locations"]) == (0, 0, 0)
+    assert left["selected"] is None
 
 
 def test_running_or_duplicating_the_job_sends_one_reply(kind):

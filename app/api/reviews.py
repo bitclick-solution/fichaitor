@@ -130,10 +130,11 @@ def build_router(
     sync: ProfileSync,
     replies: ReviewReplies,
     clock: Callable[[], float],
+    cookie_secure: bool = True,
 ) -> APIRouter:
     router = APIRouter()
     # Closed while a leave is scheduled: nothing is listed, drafted or published.
-    current_account = active_account_guard(store, clock)
+    current_account = active_account_guard(store, clock, cookie_secure)
 
     def review_id_or_404(review_id: str) -> str:
         # The shape is checked before anything is looked up.

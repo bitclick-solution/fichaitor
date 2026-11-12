@@ -22,6 +22,7 @@ import httpx
 
 from app.domain.actions import GBP_REVIEW_ID
 from app.domain.profile_summary import (
+    GBP_LOCATION,
     MediaSummary,
     ProfileDetails,
     ProfileHours,
@@ -65,7 +66,7 @@ MAX_SPECIAL_PERIOD_DAYS = 31  # a longer special-hours period counts up to here
 CLOSED_STATUSES = frozenset({"CLOSED_PERMANENTLY", "CLOSED_TEMPORARILY"})
 
 _ACCOUNT = re.compile(r"accounts/[A-Za-z0-9_-]{1,64}")
-_LOCATION = re.compile(r"locations/[A-Za-z0-9_-]{1,64}")
+_LOCATION = GBP_LOCATION
 _OAUTH_ERROR = re.compile(r"[a-z_]{1,40}")
 
 

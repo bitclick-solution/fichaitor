@@ -10,8 +10,11 @@ import logging
 import time
 from collections.abc import Callable
 from dataclasses import dataclass
+from datetime import UTC, datetime
 
+from app.adapters.quota.memory import MemoryQuota
 from app.application.rate_limit import SlidingWindowLimiter
+from app.domain.quota import DAY_SECONDS, SCREENSHOT_DAY
 from app.domain.screenshot_diagnosis import (
     DEFAULT_MIN_CONFIDENCE,
     ReviewsSummary,
@@ -21,11 +24,11 @@ from app.domain.screenshot_diagnosis import (
     summarize,
     validate_reply,
 )
+from app.ports.quota import Quota
 from app.ports.screenshot_reader import ScreenshotReader, ScreenshotReaderUnavailable
 
 log = logging.getLogger("fichaitor.screenshot")
 
-_ALL_CLIENTS = "*"
 # Below this much time left, the suggested reply is not even asked for.
 _MIN_SECONDS_FOR_REPLY = 1.0
 
@@ -82,13 +85,37 @@ class ScreenshotService:
         timeout_seconds: float = 30.0,
         min_confidence: float = DEFAULT_MIN_CONFIDENCE,
         clock: Callable[[], float] = time.time,
+        quota: Quota | None = None,
     ) -> None:
         self._reader = reader
         self.max_bytes = max_bytes
+        # Per client: in memory. For all clients together, per day: in the quota store
+        # (PostgreSQL in production), so that a restart does not start it from zero.
         self._per_client = SlidingWindowLimiter(rate_limit, rate_window_seconds, clock)
-        self._per_day = SlidingWindowLimiter(daily_limit, 86400, clock)
+        self._quota = quota if quota is not None else MemoryQuota()
+        self._daily_limit = daily_limit
+        self._clock = clock
         self._timeout = timeout_seconds
         self._min_confidence = min_confidence
+
+    def _now(self) -> datetime:
+        return datetime.fromtimestamp(self._clock(), UTC)
+
+    async def precheck(self, client_key: str) -> None:
+        """Whether this client may send a capture now, asked before its upload is read.
+        Counts nothing. Raises RateLimited, DailyLimitReached or
+        ScreenshotReaderUnavailable (the counter could not be read)."""
+        if not self._per_client.peek(client_key):
+            raise RateLimited
+        try:
+            left = await self._quota.quota_left(
+                SCREENSHOT_DAY, self._daily_limit, DAY_SECONDS, self._now()
+            )
+        except Exception as exc:  # no paid call without a working cap
+            log.warning("tope diario de capturas no disponible: %s", type(exc).__name__)
+            raise ScreenshotReaderUnavailable("quota") from None
+        if not left:
+            raise DailyLimitReached
 
     async def run(self, image: bytes, client_key: str) -> ScreenshotResult:
         """Raises ImageTooLarge, UnsupportedImage, RateLimited, DailyLimitReached,
@@ -103,7 +130,14 @@ class ScreenshotService:
         # From here on every request is a paid call to the model.
         if not self._per_client.allow(client_key):
             raise RateLimited
-        if not self._per_day.allow(_ALL_CLIENTS):
+        try:
+            taken = await self._quota.take_quota(
+                SCREENSHOT_DAY, self._daily_limit, DAY_SECONDS, self._now()
+            )
+        except Exception as exc:  # no paid call without a working cap
+            log.warning("tope diario de capturas no disponible: %s", type(exc).__name__)
+            raise ScreenshotReaderUnavailable("quota") from None
+        if not taken:
             log.warning("límite diario de capturas alcanzado")
             raise DailyLimitReached
         deadline = time.monotonic() + self._timeout

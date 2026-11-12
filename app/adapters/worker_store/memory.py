@@ -11,6 +11,7 @@ from app.domain.jobs import FAILED
 from app.domain.profile_summary import (
     LOW_RATING_MAX,
     STATUS_ERROR,
+    STATUS_NEEDS_RECONNECT,
     STATUS_OK,
     ProfileSummary,
     Review,
@@ -39,6 +40,9 @@ class MemoryWorkerStore:
         self.summaries: dict[tuple[str, str], StoredSummary] = {}
         self.categories: dict[tuple[str, str], str] = {}  # set by tests and the demo
         self.suspended: set[str] = set()  # Google users with a scheduled leave
+        self.denied: dict[tuple[str, str], int] = {}  # refusals in a row, by profile
+        # Profiles retired for lack of access (the real store sets location.removed_at).
+        self.lost_access: set[tuple[str, str]] = set()
 
     # --- sentiment -------------------------------------------------------------
 
@@ -73,10 +77,32 @@ class MemoryWorkerStore:
         history = self.connections.get(google_sub)
         return history[-1] if history else None
 
+    async def drop_replaced_connections(self, google_sub: str, connection_id: str) -> int:
+        history = self.connections.get(google_sub, [])
+        used = [i for i, c in enumerate(history) if c.connection_id == connection_id]
+        if not used:
+            return 0
+        self.connections[google_sub] = history[used[-1] :]
+        return used[-1]
+
     async def save_summary(
         self, google_sub: str, location: str, summary: ProfileSummary, at: datetime
     ) -> None:
         self.summaries[(google_sub, location)] = StoredSummary(STATUS_OK, at, at, summary)
+        self.denied.pop((google_sub, location), None)
+
+    async def record_denied(
+        self, google_sub: str, location: str, at: datetime, lost_after: int
+    ) -> bool:
+        key = (google_sub, location)
+        await self.save_status(google_sub, location, STATUS_ERROR, at)
+        self.denied[key] = self.denied.get(key, 0) + 1
+        if self.denied[key] < lost_after:
+            return False
+        self.denied[key] = 0
+        self.summaries[key].status = STATUS_NEEDS_RECONNECT
+        self.lost_access.add(key)
+        return True
 
     async def save_status(self, google_sub: str, location: str, status: str, at: datetime) -> None:
         current = self.summaries.get((google_sub, location))
@@ -117,13 +143,16 @@ class MemoryWorkerStore:
         action = self.tables.claim_action(action_id, job_id, at)
         if action is None:
             return None
+        # The accounts are not in these tables: only the review side of the check.
+        review = self.tables.coherent_review(action)
         return ClaimedAction(
             id=action.id,
             google_sub=action.google_sub,
             location=action.location,
-            gbp_review_id=self.tables.reviews[action.review_id].gbp_review_id,
+            gbp_review_id=review.gbp_review_id if review is not None else "",
             text=action.text,
             attempts=action.attempts,
+            coherent=review is not None,
         )
 
     async def finish_action(

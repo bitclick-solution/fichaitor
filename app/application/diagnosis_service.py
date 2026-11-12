@@ -9,21 +9,37 @@ the place identifier it led to. Name, address, figures and the diagnosis built f
 them are never kept (docs/fase0/places-coste.md, section 5). Every diagnosis is
 therefore a paid request, and every diagnosis counts towards the client's limit.
 
-The identifiers and the counters live in process memory for now. They move to
-PostgreSQL when the service runs with more than one API process.
+Two limits, both checked before Google is asked: one per client IP (in process memory)
+and a cap per day for all clients together (in the quota store, PostgreSQL in
+production), which is what bounds the bill when someone rotates addresses.
+
+The identifiers live in process memory for now. They move to PostgreSQL when the
+service runs with more than one API process.
 """
 
+import logging
 import time
 from collections.abc import Callable
+from datetime import UTC, datetime
 
+from app.adapters.quota.memory import MemoryQuota
+from app.application.rate_limit import SlidingWindowLimiter
 from app.domain.diagnosis import Diagnosis, PlaceSnapshot, diagnose
-from app.ports.places import PlacesGateway
+from app.domain.quota import DAY_SECONDS, DIAGNOSIS_DAY
+from app.ports.places import PlacesGateway, PlacesUnavailable
+from app.ports.quota import Quota
+
+log = logging.getLogger("fichaitor.diagnosis")
 
 MAX_REMEMBERED_SEARCHES = 10_000
 
 
 class RateLimited(Exception):
     pass
+
+
+class DailyLimitReached(Exception):
+    """The cap on paid diagnoses per day, for all clients together, has been hit."""
 
 
 class DiagnosisService:
@@ -34,25 +50,31 @@ class DiagnosisService:
         rate_limit: int,
         rate_window_seconds: int,
         place_id_cache_seconds: int,
+        daily_limit: int = 500,
+        quota: Quota | None = None,
         clock: Callable[[], float] = time.time,
     ) -> None:
         self._places = places
-        self._rate_limit = rate_limit
-        self._rate_window = rate_window_seconds
+        self._per_client = SlidingWindowLimiter(rate_limit, rate_window_seconds, clock)
+        self._daily_limit = daily_limit
+        self._quota = quota if quota is not None else MemoryQuota()
         self._place_id_seconds = place_id_cache_seconds
         self._clock = clock
-        self._hits: dict[str, list[float]] = {}
         # search text -> (when it was resolved, place identifier). Nothing else from Google.
         self._place_ids: dict[str, tuple[float, str]] = {}
 
-    def _check_rate(self, client: str) -> None:
-        now = self._clock()
-        recent = [t for t in self._hits.get(client, []) if now - t < self._rate_window]
-        if len(recent) >= self._rate_limit:
-            self._hits[client] = recent
+    async def _check_limits(self, client: str) -> None:
+        if not self._per_client.allow(client):
             raise RateLimited
-        recent.append(now)
-        self._hits[client] = recent
+        now = datetime.fromtimestamp(self._clock(), UTC)
+        try:
+            taken = await self._quota.take_quota(DIAGNOSIS_DAY, self._daily_limit, DAY_SECONDS, now)
+        except Exception as exc:  # no paid call without a working cap
+            log.warning("tope diario de diagnósticos no disponible: %s", type(exc).__name__)
+            raise PlacesUnavailable("quota") from None
+        if not taken:
+            log.warning("límite diario de diagnósticos alcanzado")
+            raise DailyLimitReached
 
     def _remembered_id(self, text: str) -> str | None:
         entry = self._place_ids.get(text)
@@ -86,6 +108,6 @@ class DiagnosisService:
         return place
 
     async def run(self, query: str, client: str) -> Diagnosis | None:
-        self._check_rate(client)
+        await self._check_limits(client)
         place = await self._place_by_text(query)
         return diagnose(place) if place else None

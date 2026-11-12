@@ -28,6 +28,7 @@ from app.domain.offboarding import SCOPE_ACCOUNT, RetentionPolicy
 from app.domain.profile_summary import (
     LOW_RATING_MAX,
     STATUS_ERROR,
+    STATUS_NEEDS_RECONNECT,
     STATUS_OK,
     ProfileSummary,
     Review,
@@ -59,13 +60,18 @@ from app.ports.worker_store import (
     TokenToRevoke,
 )
 
+# The review of an action, only if it is of the action's own Google user and profile:
+# a forged action never borrows the Google id of somebody else's review. Without it the
+# audit row still gets written, with an empty review id.
 _AUDIT_FROM_ACTION = """
     INSERT INTO audit_log
         (event, account_id, action_id, action_type, location, review_id, gbp_review_id,
          text, confirmed_at, google_status, reason)
-    SELECT $2, a.account_id, a.id, a.type, a.location, a.review_id, r.gbp_review_id,
-           a.text, a.confirmed_at, $3, $4
-    FROM action a JOIN review r ON r.id = a.review_id
+    SELECT $2, a.account_id, a.id, a.type, a.location, a.review_id,
+           coalesce(r.gbp_review_id, ''), a.text, a.confirmed_at, $3, $4
+    FROM action a
+    LEFT JOIN review r
+      ON r.id = a.review_id AND r.google_sub = a.google_sub AND r.location = a.location
     WHERE a.id = $1
 """
 
@@ -77,7 +83,7 @@ class PostgresWorkerStore:
     async def latest_connection(self, google_sub: str) -> StoredConnection | None:
         row = await self._pool.fetchrow(
             """
-            SELECT refresh_token_enc, key_version, locations::text AS locations
+            SELECT id::text AS id, refresh_token_enc, key_version, locations::text AS locations
             FROM google_connection
             WHERE google_sub = $1
             ORDER BY connected_at DESC, id DESC
@@ -99,7 +105,23 @@ class PostgresWorkerStore:
             refresh_token_enc=row["refresh_token_enc"],
             key_version=row["key_version"],
             locations=locations,
+            connection_id=row["id"],
         )
+
+    async def drop_replaced_connections(self, google_sub: str, connection_id: str) -> int:
+        # Older in the same order latest_connection uses. A connection stored while the
+        # sync ran is newer and stays.
+        status = await self._pool.execute(
+            """
+            DELETE FROM google_connection c
+            USING google_connection kept
+            WHERE kept.id = $2::uuid AND kept.google_sub = $1 AND c.google_sub = $1
+              AND (c.connected_at, c.id) < (kept.connected_at, kept.id)
+            """,
+            google_sub,
+            connection_id,
+        )
+        return _deleted(status)
 
     async def save_summary(
         self, google_sub: str, location: str, summary: ProfileSummary, at: datetime
@@ -110,9 +132,10 @@ class PostgresWorkerStore:
                 (google_sub, location, status, status_at, synced_at, review_count,
                  average_rating, unanswered_count, unanswered_low_count, last_review_at,
                  has_regular_hours, upcoming_special_hours, google_changed,
-                 google_changed_fields, facts)
-            VALUES ($1, $2, $3, $4, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14::jsonb)
+                 google_changed_fields, facts, denied_count)
+            VALUES ($1, $2, $3, $4, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14::jsonb, 0)
             ON CONFLICT (google_sub, location) DO UPDATE SET
+                denied_count = 0,
                 status = EXCLUDED.status,
                 status_at = EXCLUDED.status_at,
                 synced_at = EXCLUDED.synced_at,
@@ -156,6 +179,49 @@ class PostgresWorkerStore:
             status,
             at,
         )
+
+    async def record_denied(
+        self, google_sub: str, location: str, at: datetime, lost_after: int
+    ) -> bool:
+        async with self._pool.acquire() as conn, conn.transaction():
+            denied = await conn.fetchval(
+                """
+                INSERT INTO profile_summary (google_sub, location, status, status_at, denied_count)
+                VALUES ($1, $2, $3, $4, 1)
+                ON CONFLICT (google_sub, location) DO UPDATE SET
+                    status = EXCLUDED.status,
+                    status_at = EXCLUDED.status_at,
+                    denied_count = least(profile_summary.denied_count + 1, 1000)
+                RETURNING denied_count
+                """,
+                google_sub,
+                location,
+                STATUS_ERROR,
+                at,
+            )
+            if denied < lost_after:
+                return False
+            # The count starts again: after a reconnection it takes as many refusals.
+            await conn.execute(
+                """
+                UPDATE profile_summary SET status = $3, denied_count = 0
+                WHERE google_sub = $1 AND location = $2
+                """,
+                google_sub,
+                location,
+                STATUS_NEEDS_RECONNECT,
+            )
+            await conn.execute(
+                """
+                UPDATE location SET removed_at = $3
+                WHERE gbp_location = $2 AND removed_at IS NULL
+                  AND account_id IN (SELECT id FROM account WHERE google_sub = $1)
+                """,
+                google_sub,
+                location,
+                at,
+            )
+        return True
 
     async def mark_lost_syncs(self, kind: str) -> int:
         # The status takes the time the job was closed and is written only over an
@@ -263,14 +329,24 @@ class PostgresWorkerStore:
     async def claim_action(self, action_id: str, job_id: str, at: datetime) -> ClaimedAction | None:
         # One statement: a pending action is taken by this job, and a running one only
         # by the job that already holds it. Two jobs can never both get it.
+        # The API role can insert any action (M1 of docs/seguridad/revision-2026-11-12.md):
+        # the same statement checks that the account, its Google identity, its profile
+        # and the review agree. There is no foreign key for this on purpose: the action
+        # outlives its review (12 months against 30 days).
         row = await self._pool.fetchrow(
             """
             UPDATE action a
             SET state = 'running', job_id = $2, attempts = a.attempts + 1, started_at = $3
-            FROM review r
-            WHERE a.id = $1 AND r.id = a.review_id
+            WHERE a.id = $1
               AND (a.state = 'pending' OR (a.state = 'running' AND a.job_id = $2))
-            RETURNING a.id, a.google_sub, a.location, r.gbp_review_id, a.text, a.attempts
+            RETURNING a.id, a.google_sub, a.location, a.text, a.attempts,
+                (SELECT r.gbp_review_id FROM review r
+                 WHERE r.id = a.review_id AND r.google_sub = a.google_sub
+                   AND r.location = a.location) AS gbp_review_id,
+                EXISTS (SELECT 1 FROM account c JOIN location l ON l.account_id = c.id
+                        WHERE c.id = a.account_id AND c.google_sub = a.google_sub
+                          AND c.deleted_at IS NULL AND l.gbp_location = a.location
+                          AND l.removed_at IS NULL) AS owned
             """,
             action_id,
             job_id,
@@ -282,9 +358,10 @@ class PostgresWorkerStore:
             id=row["id"],
             google_sub=row["google_sub"],
             location=row["location"],
-            gbp_review_id=row["gbp_review_id"],
+            gbp_review_id=row["gbp_review_id"] or "",
             text=row["text"],
             attempts=row["attempts"],
+            coherent=row["gbp_review_id"] is not None and row["owned"],
         )
 
     async def finish_action(
@@ -375,15 +452,17 @@ class PostgresWorkerStore:
                   AND j.finished_at > now() - interval '1 day'
                   AND j.payload->>'action_id' = a.id
                   AND a.state IN ('pending', 'running')
-                RETURNING a.id, a.account_id, a.type, a.location, a.review_id, a.text,
-                          a.confirmed_at
+                RETURNING a.id, a.account_id, a.type, a.google_sub, a.location, a.review_id,
+                          a.text, a.confirmed_at
             )
             INSERT INTO audit_log
                 (event, account_id, action_id, action_type, location, review_id,
                  gbp_review_id, text, confirmed_at, reason)
-            SELECT $3, c.account_id, c.id, c.type, c.location, c.review_id, r.gbp_review_id,
-                   c.text, c.confirmed_at, $2
-            FROM closed c JOIN review r ON r.id = c.review_id
+            SELECT $3, c.account_id, c.id, c.type, c.location, c.review_id,
+                   coalesce(r.gbp_review_id, ''), c.text, c.confirmed_at, $2
+            FROM closed c
+            LEFT JOIN review r
+              ON r.id = c.review_id AND r.google_sub = c.google_sub AND r.location = c.location
             """,
             kind,
             ERROR_UNAVAILABLE,
@@ -838,6 +917,17 @@ class PostgresWorkerStore:
                         )
                     },
                 )
+            # A retired profile may still be the selected one of its account (the
+            # worker retires it when the access is lost): it stops being so first.
+            await conn.execute(
+                f"""
+                UPDATE account SET selected_location_id = NULL
+                WHERE selected_location_id IN (
+                    SELECT id FROM location WHERE removed_at <= {removed_before})
+                """,  # noqa: S608
+                now,
+                policy.removed_days,
+            )
             _add(
                 counts,
                 {
@@ -883,6 +973,10 @@ class PostgresWorkerStore:
                     now,
                     policy.code_days,
                 )
+            )
+            # Counters of the caps on paid calls whose window has ended.
+            counts["usage_counter"] = _deleted(
+                await conn.execute("DELETE FROM usage_counter WHERE expires_at <= $1", now)
             )
             launched = policy.waitlist_launched_at
             counts["waitlist_entry"] = _deleted(

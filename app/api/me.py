@@ -24,11 +24,11 @@ from app.api.diagnosis_out import (
 )
 from app.api.sentiment_out import SentimentResponse, empty_response, to_sentiment_response
 from app.api.session import (
-    SESSION_COOKIE,
     account_guard,
     active_account_guard,
     clear_session_cookie,
     require_csrf_header,
+    session_cookie_name,
     utc,
 )
 from app.api.summary_out import SummaryResponse, seconds, to_summary_response
@@ -78,9 +78,9 @@ def build_router(
     sentiment_policy: SentimentPolicy | None = None,
 ) -> APIRouter:
     router = APIRouter()
-    current_account = account_guard(store, clock)
+    current_account = account_guard(store, clock, cookie_secure)
     # Every route that reads the profile or works on it: closed while a leave is scheduled.
-    active_account = active_account_guard(store, clock)
+    active_account = active_account_guard(store, clock, cookie_secure)
     sentiment_policy = sentiment_policy or SentimentPolicy()
 
     async def me_of(account: Account) -> MeResponse:
@@ -177,7 +177,7 @@ def build_router(
         "/api/v1/auth/logout", status_code=204, dependencies=[Depends(require_csrf_header)]
     )
     async def logout(request: Request) -> Response:
-        token = request.cookies.get(SESSION_COOKIE)
+        token = request.cookies.get(session_cookie_name(cookie_secure))
         if token:
             try:
                 await store.revoke_session(hash_token(token), utc(clock()))

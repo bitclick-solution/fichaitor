@@ -91,6 +91,13 @@ GRANT SELECT (id, google_sub, connected_at, refresh_token_enc, key_version, loca
 -- Reseñas y respuestas (2026-11-12): la primera escritura en Google.
 -- Necesita las tablas account y location de schema.sql.
 
+-- Bases anteriores (2026-11-12, B5 de docs/seguridad/revision-2026-11-12.md): cuántas
+-- sincronizaciones seguidas ha rechazado Google con 403 o 404. A las 2, el usuario ha
+-- perdido el acceso: la ficha se retira (location.removed_at) y la API deja de servirla.
+-- Una sincronización correcta lo pone a 0.
+ALTER TABLE profile_summary ADD COLUMN IF NOT EXISTS denied_count smallint NOT NULL DEFAULT 0
+    CHECK (denied_count BETWEEN 0 AND 1000);
+
 -- Bases anteriores: cuándo se guardaron por última vez las reseñas de la ficha.
 -- NULL = el worker todavía no las ha guardado (la API responde "pendiente").
 ALTER TABLE profile_summary ADD COLUMN IF NOT EXISTS reviews_synced_at timestamptz;
@@ -454,9 +461,12 @@ GRANT SELECT (google_sub, location) ON sentiment_usage TO fichaitor_worker;
 REVOKE ALL ON session, waitlist_entry FROM fichaitor_worker;
 -- Cuenta: fechar la desconexión y la baja. El correo y el google_sub no se cambian
 -- (el disparador account_baja_guard los vacía al dar de baja la cuenta).
-GRANT SELECT (id, google_sub, disconnected_at, deleted_at) ON account TO fichaitor_worker;
+-- selected_location_id: para dejar de tener elegida una ficha retirada antes de borrarla.
+GRANT SELECT (id, google_sub, disconnected_at, deleted_at, selected_location_id)
+    ON account TO fichaitor_worker;
 GRANT UPDATE (disconnected_at, deleted_at, selected_location_id) ON account TO fichaitor_worker;
--- Fichas: retirarlas y, vencido el plazo, borrarlas.
+-- Fichas: retirarlas (en la baja, y cuando Google niega el acceso a la ficha dos
+-- sincronizaciones seguidas) y, vencido el plazo, borrarlas.
 GRANT SELECT (id, account_id, gbp_location, removed_at) ON location TO fichaitor_worker;
 GRANT UPDATE (removed_at) ON location TO fichaitor_worker;
 GRANT DELETE ON location TO fichaitor_worker;
@@ -468,6 +478,12 @@ GRANT DELETE ON session TO fichaitor_worker;
 -- Lista de espera: borrar por antigüedad. El contacto no se lee.
 GRANT SELECT (id, created_at) ON waitlist_entry TO fichaitor_worker;
 GRANT DELETE ON waitlist_entry TO fichaitor_worker;
+
+-- Topes de llamadas de pago (usage_counter, en schema.sql): borrar las ventanas vencidas.
+-- Solo lee la fecha de fin; no cuenta ni cambia nada.
+REVOKE ALL ON usage_counter FROM fichaitor_worker;
+GRANT SELECT (expires_at) ON usage_counter TO fichaitor_worker;
+GRANT DELETE ON usage_counter TO fichaitor_worker;
 
 -- Registro de auditoría: el worker puede borrar, y solo, las filas de una cuenta que
 -- lleva más de 12 meses sin conexión con Google (baja de la ficha o de la cuenta).

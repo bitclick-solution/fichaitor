@@ -17,6 +17,7 @@ from app.adapters.job_queue.memory import MemoryJobQueue
 from app.adapters.mailer.fake import FakeMailer
 from app.adapters.places.fake import FakePlaces
 from app.adapters.places.google import GooglePlaces
+from app.adapters.quota.memory import MemoryQuota
 from app.adapters.screenshot_reader.prompt import PROMPT_VERSION
 from app.adapters.sentiment_model.build import build_sentiment_model
 from app.adapters.store.memory import MemoryStore
@@ -30,7 +31,7 @@ from app.api.reviews import build_router as build_reviews_router
 from app.api.screenshot import build_reader as build_reply_writer
 from app.api.screenshot import build_router_from_settings as build_screenshot_router
 from app.api.waitlist import SOURCE_PATTERN, build_router
-from app.application.diagnosis_service import DiagnosisService, RateLimited
+from app.application.diagnosis_service import DailyLimitReached, DiagnosisService, RateLimited
 from app.application.offboarding import Offboarding
 from app.application.profile_sync import ProfileSync
 from app.application.rate_limit import SlidingWindowLimiter
@@ -43,6 +44,7 @@ from app.mail_config import MailSettings
 from app.ports.google_oauth import GoogleOAuth
 from app.ports.job_queue import JobEnqueuer
 from app.ports.places import PlacesGateway, PlacesUnavailable
+from app.ports.quota import Quota
 from app.ports.reply_writer import ReplyWriter
 from app.ports.store import Store
 from app.screenshot_config import ScreenshotSettings
@@ -241,11 +243,18 @@ def create_app(
             raise RuntimeError(
                 "Falta FICHAITOR_PLACES_API_KEY (o FICHAITOR_FAKE_PLACES=true para desarrollo)"
             )
+    # The caps on paid calls (public diagnoses and screenshots per day, drafts per
+    # account) are kept by the store: in PostgreSQL they survive a restart and are
+    # shared by every API process. The limits per client IP stay in memory.
+    quota: Quota = store if hasattr(store, "take_quota") else MemoryQuota()
     service = DiagnosisService(
         places,
         rate_limit=settings.diagnosis_rate_limit,
         rate_window_seconds=settings.diagnosis_rate_window_seconds,
         place_id_cache_seconds=settings.place_id_cache_seconds,
+        daily_limit=settings.diagnosis_daily_limit,
+        quota=quota,
+        clock=clock,
     )
 
     @asynccontextmanager
@@ -275,7 +284,7 @@ def create_app(
     # One model client for the demo and for the drafts of replies; None if not configured.
     model = build_reply_writer(screenshot_settings)
     screenshot_router = build_screenshot_router(
-        client_ip, track, settings=screenshot_settings, reader=model, clock=clock
+        client_ip, track, settings=screenshot_settings, reader=model, clock=clock, quota=quota
     )
     if screenshot_router is not None:
         app.include_router(screenshot_router)
@@ -342,8 +351,10 @@ def create_app(
                 draft_timeout_seconds=settings.review_draft_timeout_seconds,
                 clock=clock,
                 prompt_version=PROMPT_VERSION,
+                quota=quota,
             ),
             clock=clock,
+            cookie_secure=settings.cookie_secure,
         )
     )
 
@@ -369,6 +380,7 @@ def create_app(
             ),
             client_ip=client_ip,
             clock=clock,
+            cookie_secure=settings.cookie_secure,
         )
     )
 
@@ -384,6 +396,10 @@ def create_app(
         except RateLimited as exc:
             raise HTTPException(
                 429, "Has hecho muchas consultas. Prueba dentro de un rato."
+            ) from exc
+        except DailyLimitReached as exc:
+            raise HTTPException(
+                503, "Hoy hemos recibido muchas consultas y no podemos hacer más. Prueba mañana."
             ) from exc
         except PlacesUnavailable as exc:
             raise HTTPException(

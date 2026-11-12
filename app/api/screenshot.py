@@ -35,6 +35,7 @@ from app.domain.screenshot_diagnosis import (
     NotABusinessProfile,
     NotReviewsTab,
 )
+from app.ports.quota import Quota
 from app.ports.screenshot_reader import ScreenshotReader, ScreenshotReaderUnavailable
 from app.screenshot_config import ScreenshotSettings
 
@@ -212,6 +213,16 @@ def build_router(
         },
     )
     async def screenshot_diagnosis(request: Request) -> ScreenshotReviewsResponse:
+        # The limits are asked, without counting, before a byte of the upload is read:
+        # a client over its limit does not get to fill the memory of the API.
+        try:
+            await service.precheck(client_ip(request))
+        except RateLimited as exc:
+            raise HTTPException(429, MSG_RATE_LIMITED) from exc
+        except DailyLimitReached as exc:
+            raise HTTPException(503, MSG_DAILY_LIMIT) from exc
+        except ScreenshotReaderUnavailable:
+            raise HTTPException(503, MSG_UNAVAILABLE) from None
         image, source = await _read_form(request, service.max_bytes)
         try:
             result = await service.run(image, client_ip(request))
@@ -265,6 +276,7 @@ def build_router_from_settings(
     settings: ScreenshotSettings | None = None,
     reader: ScreenshotReader | None = None,
     clock: Callable[[], float] = time.time,
+    quota: Quota | None = None,
 ) -> APIRouter | None:
     """Router ready to mount, or None: without a key and without the fake mode the route
     does not exist (404). The rest of the API does not depend on this feature, so a
@@ -286,5 +298,6 @@ def build_router_from_settings(
         timeout_seconds=settings.screenshot_timeout_seconds,
         min_confidence=settings.screenshot_min_confidence,
         clock=clock,
+        quota=quota,
     )
     return build_router(service, client_ip, track)

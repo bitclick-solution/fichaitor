@@ -27,7 +27,7 @@ Hay dos alcances: `ficha` (desconectar Google; la cuenta sigue existiendo, sin f
 
 | Dato | Tabla | Plazo | Quién lo borra | Cuándo |
 |---|---|---|---|---|
-| Tokens de Google (cifrados) y el correo de la conexión | `google_connection` | Hasta la baja efectiva | Worker, job `apply_offboarding` | En el momento de la baja efectiva, tras revocar cada token en Google o agotar los intentos |
+| Tokens de Google (cifrados) y el correo de la conexión | `google_connection` | Hasta la baja efectiva, o hasta que una conexión más reciente del mismo usuario funciona | Worker, job `apply_offboarding`; y `sync_profile` | En el momento de la baja efectiva, tras revocar cada token en Google o agotar los intentos. Tras una reconexión, en la primera sincronización correcta con la conexión nueva: las anteriores se borran sin revocarlas (Google revocaría la concesión entera y cortaría la nueva) |
 | Datos de la ficha y hechos (`facts`) | `profile_summary` | 30 días desde la baja efectiva | Worker, job `retention` | En la primera pasada diaria tras cumplirse el plazo, o al volver a conectar |
 | Reseñas | `review` | 30 días desde la baja efectiva | Worker, job `retention` | Igual que la fila anterior |
 | Clasificación de cada reseña | `review_sentiment` | Con su reseña | La base (`ON DELETE CASCADE`) | Al borrarse la reseña |
@@ -38,7 +38,8 @@ Hay dos alcances: `ficha` (desconectar Google; la cuenta sigue existiendo, sin f
 | Fichas guardadas | `location` | 30 días desde la baja efectiva | Worker, job `retention` | Igual que las reseñas |
 | Jobs que nombran al usuario de Google y la ficha | `job` | 30 días desde la baja efectiva | Worker, job `retention` | Igual que las reseñas. Solo los anteriores a la baja y que no estén en curso |
 | Reseñas que Google deja de devolver | `review` | 30 días desde que se marcan (`removed_at`) | Worker, job `retention` | Pasada diaria |
-| Fichas que Google deja de listar, con sus datos | `location` y las de arriba | 30 días desde que se retiran (`removed_at`) | Worker, job `retention` | Pasada diaria |
+| Fichas que Google deja de listar, o cuya lectura rechaza (403 o 404) dos sincronizaciones seguidas, con sus datos | `location` y las de arriba | 30 días desde que se retiran (`removed_at`) | Worker, job `retention` | Pasada diaria. Desde que se retiran, la API no sirve nada de ellas |
+| Topes de llamadas de pago: contadores por ámbito y ventana (el id de la cuenta en los borradores) | `usage_counter` | Hasta que acaba su ventana (un día) | Worker, job `retention` | Pasada diaria |
 | Registro de respuestas publicadas | `audit_log` y `action` (con su texto) | 12 meses desde la baja efectiva | Worker, job `retention` | Pasada diaria. En `audit_log` la base impone los 12 meses con una política |
 | Sesiones | `session` | 30 días desde que caducan o se cierran | Worker, job `retention` | Pasada diaria |
 | Correo de la cuenta | `account.email` | Hasta la baja efectiva de la cuenta | La base (disparador `account_baja_guard`) | En la misma escritura que da de baja la cuenta |

@@ -25,6 +25,7 @@ HEADER = {"X-Requested-With": "fichaitor"}
 PUBLIC, _ = generate_keypair()
 T0 = 1_800_000_000.0
 DAY = 86400
+HOST_SESSION = "__Host-fichaitor_session="
 
 LA_PARRA = ProfileLocation(
     "accounts/1", "locations/1", "Bar La Parra (ejemplo)", DEMO.place_id, True
@@ -105,8 +106,36 @@ def test_connecting_sets_the_session_cookie_and_returns_to_app_by_default():
     world = World(cookie_secure=True)
     https = TestClient(world.app, base_url="https://testserver", follow_redirects=False)
     _, r = world.connect(https)
-    cookie = next(c for c in r.headers.get_list("set-cookie") if c.startswith(SESSION_COOKIE))
+    cookie = next(c for c in r.headers.get_list("set-cookie") if c.startswith(HOST_SESSION))
     assert "; secure" in cookie.lower()
+
+
+def test_over_https_the_cookies_carry_the_host_and_secure_prefixes():
+    # B6 (docs/seguridad/revision-2026-11-12.md): another site under fichaitor.es cannot
+    # plant either cookie for the main domain.
+    world = World(cookie_secure=True)
+    https = TestClient(world.app, base_url="https://testserver", follow_redirects=False)
+    state_cookie = https.get(START).headers["set-cookie"]
+    assert state_cookie.startswith("__Secure-fichaitor_oauth_state=")
+    assert "; secure" in state_cookie.lower()
+
+    _, r = world.connect(https)
+    cookie = next(c for c in r.headers.get_list("set-cookie") if c.startswith(HOST_SESSION))
+    lowered = cookie.lower()
+    assert "; secure" in lowered and "path=/" in lowered and "domain=" not in lowered
+    assert not any(c.startswith(f"{SESSION_COOKIE}=") for c in r.headers.get_list("set-cookie"))
+    assert https.get(ME).status_code == 200
+
+    # The same token under the name without the prefix, as a subdomain could set it,
+    # opens nothing.
+    token = https.cookies.get(HOST_SESSION.rstrip("="))
+    planted = TestClient(world.app, base_url="https://testserver")
+    planted.cookies.set(SESSION_COOKIE, token)
+    assert planted.get(ME).status_code == 401
+
+    out = https.post(LOGOUT, headers=HEADER)
+    assert any(c.startswith(f'{HOST_SESSION}""') for c in out.headers.get_list("set-cookie"))
+    assert https.get(ME).status_code == 401
 
 
 def test_failed_connections_do_not_open_a_session():

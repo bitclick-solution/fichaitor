@@ -11,6 +11,9 @@ Rules:
 - No action, no write. The job can only carry out an action that exists, is still
   pending and has not been taken by another job. Running the job twice, or two jobs for
   the same action, sends one reply.
+- No incoherent action either. Its account must have its Google user and its profile,
+  and its review must be of that user and profile; otherwise it fails without calling
+  Google (the API role can insert any row: docs/02-hld.md, residual risk).
 - The text is sent exactly as confirmed. Nothing here edits it.
 - A retry first reads the review back: if Google already has that very text (the
   earlier attempt arrived and only its answer was lost), nothing is sent again.
@@ -20,6 +23,7 @@ Rules:
   appear in a log or in an error message.
 """
 
+import logging
 from collections.abc import Callable
 from datetime import UTC, datetime
 
@@ -63,6 +67,14 @@ class ReplyReview:
             # Finished already, taken by another job, or never created: nothing to send.
             log.event("action_skipped", job_id=job.id, action_id=action_id)
             return
+
+        if not action.coherent:
+            # The account, the Google user, the profile and the review do not agree:
+            # only a row written outside the API's own route looks like this. Nothing
+            # is sent, not even with the token of the Google user it names.
+            await self._fail(action, job, ERROR_INTERNAL)
+            log.event("action_incoherent", logging.WARNING, job_id=job.id, action_id=action.id)
+            raise PermanentJobError("la acción no casa con su cuenta, su ficha o su reseña")
 
         if await self._store.is_suspended(action.google_sub):
             # A scheduled leave: nothing is sent to Google for that account.

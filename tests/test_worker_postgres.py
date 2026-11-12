@@ -22,7 +22,7 @@ from datetime import UTC, date, datetime, timedelta
 import asyncpg
 import pytest
 
-from app.adapters.crypto.sealed import generate_keypair, seal
+from app.adapters.crypto.sealed import generate_keypair, seal, unseal
 from app.adapters.google_profile.fake import FakeGoogleProfile
 from app.adapters.job_queue.postgres import PostgresJobQueue
 from app.adapters.worker_store.postgres import PostgresWorkerStore
@@ -493,6 +493,63 @@ def test_sync_profile_stores_the_summary_and_updates_the_same_row(kind, sub):
     assert (second["google_changed"], second["google_changed_fields"]) == (False, [])
     assert second["synced_at"] >= first["synced_at"]
     assert {r["state"] for r in run(job_rows(kind))} == {"done"}
+
+
+def test_a_good_sync_deletes_the_connections_the_newest_one_replaced(kind, sub):
+    # B4: each reconnection stores a new token and the old ones stayed, still valid at
+    # Google. They go after the first good sync with the new one. They are deleted, not
+    # revoked: Google revokes the whole grant, which would cut the new connection.
+    google = FakeGoogleProfile(reviews=reviews_fixture(), access_token=ACCESS)
+
+    async def scenario():
+        await add_connection(sub, token="pytest-token-1", age_minutes=120)
+        await add_connection(sub, token="pytest-token-2", age_minutes=60)
+        await add_connection(sub)  # the reconnection
+        google.refresh_error = ReconnectRequired("permiso revocado")
+        await run_sync(kind, sub, google)  # a failed sync deletes nothing
+        after_failure = await owner(
+            "SELECT count(*) AS n FROM google_connection WHERE google_sub = $1", sub
+        )
+        google.refresh_error = None
+        await run_sync(kind, sub, google)
+        left = await owner(
+            "SELECT refresh_token_enc FROM google_connection WHERE google_sub = $1", sub
+        )
+        return after_failure[0]["n"], [unseal(PRIVATE, r["refresh_token_enc"]) for r in left]
+
+    after_failure, left = run(scenario())
+    assert after_failure == 3
+    assert left == [REFRESH]  # only the one the good sync used
+    assert google.revoked == []
+
+
+def test_a_sync_whose_location_is_malformed_writes_no_row_and_is_not_retried(kind, sub):
+    # B8: a job inserted by the API role with a location of more than 200 characters
+    # used to fail five times on the CHECK of profile_summary.
+    google = FakeGoogleProfile(reviews=reviews_fixture())
+    bad = "locations/" + "9" * 300
+
+    async def scenario():
+        api_pool = await asyncpg.create_pool(API_URL, min_size=1, max_size=1)
+        worker_pool = await asyncpg.create_pool(WORKER_URL, min_size=1, max_size=2)
+        try:
+            await PostgresJobQueue(api_pool).enqueue(kind, {"google_sub": sub, "location": bad})
+            registry = HandlerRegistry()
+            registry.register(kind, SyncProfile(PostgresWorkerStore(worker_pool), google, PRIVATE))
+            worker = Worker(PostgresJobQueue(worker_pool), registry, worker_id="pytest-b8")
+            for _ in range(3):
+                await owner("UPDATE job SET run_at = now() WHERE kind = $1", kind)
+                await worker.run_once()
+        finally:
+            await api_pool.close()
+            await worker_pool.close()
+        return await owner("SELECT count(*) AS n FROM profile_summary WHERE google_sub = $1", sub)
+
+    rows = run(scenario())
+    assert rows[0]["n"] == 0
+    (job,) = run(job_rows(kind))
+    assert (job["state"], job["attempts"]) == ("failed", 1)
+    assert google.refreshed_with == []
 
 
 def test_a_temporary_failure_is_retried_until_it_works(kind, sub):

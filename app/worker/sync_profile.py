@@ -19,6 +19,10 @@ from datetime import UTC, datetime
 from app.adapters.crypto.sealed import unseal
 from app.domain.jobs import Job, JobError, PermanentJobError, safe_error
 from app.domain.profile_summary import (
+    ACCESS_LOST_AFTER,
+    ACCESS_LOST_STATUSES,
+    GBP_LOCATION,
+    GOOGLE_SUB,
     STATUS_ERROR,
     STATUS_NEEDS_RECONNECT,
     collect_facts,
@@ -98,8 +102,10 @@ class SyncProfile:
             ) from None
 
         secrets = [refresh_token]
+        have_access = False
         try:
             access_token = await self._google.refresh_access_token(refresh_token)
+            have_access = True
             secrets.append(access_token)
             reviews = await self._google.reviews(access_token, target.account, target.location)
             details = await self._google.details(access_token, target.location)
@@ -116,7 +122,17 @@ class SyncProfile:
             )
             raise PermanentJobError("el dueño tiene que volver a conectar con Google") from None
         except GoogleRejected as exc:
-            await self._store.save_status(google_sub, location, STATUS_ERROR, self._clock())
+            if have_access and exc.status in ACCESS_LOST_STATUSES:
+                # Google says this user may no longer read the profile. Twice in a row,
+                # and what is stored of it stops being served (B5 of
+                # docs/seguridad/revision-2026-11-12.md).
+                lost = await self._store.record_denied(
+                    google_sub, location, self._clock(), ACCESS_LOST_AFTER
+                )
+                if lost:
+                    log.event("profile_access_lost", logging.WARNING, job_id=job.id)
+            else:
+                await self._store.save_status(google_sub, location, STATUS_ERROR, self._clock())
             raise PermanentJobError(safe_error(str(exc), secrets)) from None
         except Exception as exc:
             # Temporary (5xx, network) or unexpected: the queue retries it.
@@ -133,10 +149,24 @@ class SyncProfile:
         summary = summarize(reviews, details.hours, changed, now.date(), facts)
         await self._store.save_summary(google_sub, location, summary, now)
         await self._store.save_reviews(google_sub, location, reviews.reviews, now)
+        await self._drop_replaced(job, google_sub, connection.connection_id)
         if self._sentiment is not None:
             # The sentiment analysis is a job of its own, enqueued right here when one
             # is due: the first one is ready seconds after the first sync. Never raises.
             await self._sentiment.after_sync(google_sub, location, now)
+
+    async def _drop_replaced(self, job: Job, google_sub: str, connection_id: str) -> None:
+        """The connection just worked: the ones it replaced, each with a refresh token
+        still valid at Google, are deleted (B4 of docs/seguridad/revision-2026-11-12.md).
+        Not revoked: Google revokes the whole grant, and that would cut this one too.
+        Never fails the sync: the next good one tries again."""
+        try:
+            dropped = await self._store.drop_replaced_connections(google_sub, connection_id)
+        except Exception as exc:
+            log.event("replaced_connections_kept", logging.WARNING, error=type(exc).__name__)
+            return
+        if dropped:
+            log.event("replaced_connections_deleted", job_id=job.id, deleted=dropped)
 
     async def on_exhausted(self, job: Job) -> None:
         """Out of attempts: say so in the summary, keeping the last good figures."""
@@ -153,8 +183,13 @@ class SyncProfile:
 
 
 def _target(job: Job) -> tuple[str, str]:
+    """The Google user and the profile of the job, checked before anything is read or
+    written: a malformed one (only a row inserted outside the API's routes can be) fails
+    at once, without a summary row and without retries."""
     google_sub = job.payload.get("google_sub")
     location = job.payload.get("location")
-    if not (isinstance(google_sub, str) and google_sub and isinstance(location, str) and location):
+    if not (isinstance(google_sub, str) and isinstance(location, str)):
         raise PermanentJobError("payload no válido: faltan google_sub o location")
+    if not (GOOGLE_SUB.fullmatch(google_sub) and GBP_LOCATION.fullmatch(location)):
+        raise PermanentJobError("payload no válido: google_sub o location mal formados")
     return google_sub, location

@@ -60,7 +60,7 @@ Puesta en marcha de la conexión:
 3. Da de alta la URI de redirección en el cliente OAuth de Google, exactamente igual que en el `.env`.
 4. Reinicia la API y abre `http://localhost:8000/api/v1/google/oauth/start`.
 
-Cuarto bloque: **cuentas y sesiones**. La cuenta es la identidad de Google: no hay contraseñas. Al conectar, la API crea o recupera la cuenta, guarda sus fichas, abre una sesión de 30 días y pone la cookie `fichaitor_session` (HttpOnly, `SameSite=Lax`). En la base solo se guarda el SHA-256 del token de la cookie.
+Cuarto bloque: **cuentas y sesiones**. La cuenta es la identidad de Google: no hay contraseñas. Al conectar, la API crea o recupera la cuenta, guarda sus fichas, abre una sesión de 30 días y pone la cookie `__Host-fichaitor_session` (HttpOnly, `Secure`, `SameSite=Lax`; en desarrollo por http, `fichaitor_session`). En la base solo se guarda el SHA-256 del token de la cookie.
 
 | Ruta | Qué hace |
 |---|---|

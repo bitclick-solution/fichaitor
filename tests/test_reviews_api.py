@@ -596,6 +596,25 @@ def test_drafts_are_limited_per_account_and_stored_ones_do_not_count():
     assert ana.post(draft_url(five), headers=HEADER).status_code == 200
 
 
+def test_the_draft_cap_is_kept_by_the_store_and_survives_a_restart():
+    # B2: the count is in the store (PostgreSQL in production), not in the process.
+    world = World(review_draft_rate_limit=1, review_draft_rate_window_seconds=86400)
+    ana = world.connect_as(SUB, "ana@example.com")
+    world.select(ana)
+    world.synced(SUB)
+    low, two = (world.review_id(g) for g in ("g-low", "g-two"))
+    assert ana.post(draft_url(low), headers=HEADER).status_code == 200
+
+    # The API restarts: a new app on the same store, the same session.
+    again = World(
+        store=world.store, review_draft_rate_limit=1, review_draft_rate_window_seconds=86400
+    )
+    again.clock.now = world.clock.now
+    client = TestClient(again.app, follow_redirects=False)
+    client.cookies = ana.cookies
+    assert client.post(draft_url(two), headers=HEADER).status_code == 429
+
+
 class SlowWriter:
     async def write_reply(self, stars: int, review_text: str) -> str:
         await asyncio.sleep(5)

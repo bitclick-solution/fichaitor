@@ -34,8 +34,10 @@ from app.domain.offboarding import (
     same_hash,
 )
 from app.domain.profile_summary import ProfileFacts, facts_from_json
+from app.domain.quota import window
 from app.domain.sentiment import Analysis, Figures, TopicCount, first_history_month
 from app.ports.google_oauth import ProfileLocation
+from app.ports.quota import QuotaUnavailable
 from app.ports.store import (
     Account,
     GoogleConnection,
@@ -49,6 +51,7 @@ from app.ports.store import (
     StoredSentiment,
     StoredSummary,
     WaitlistSignup,
+    lost_access_summary,
 )
 
 REPLY_MAX_ATTEMPTS = 3  # 30 s and 60 s of waiting: the owner is looking at the screen
@@ -112,6 +115,47 @@ class PostgresStore:
         if self._pool is None:
             raise RuntimeError("PostgresStore sin conectar")
         return self._pool
+
+    # --- caps on paid calls (app/ports/quota.py) ---------------------------------
+    # The API can count and read the count, nothing else: it cannot delete a counter,
+    # move it to another window or set it back. The worker deletes past windows.
+
+    async def take_quota(self, scope: str, limit: int, window_seconds: int, now: datetime) -> bool:
+        if limit <= 0:
+            return False
+        start, end = window(now, window_seconds)
+        try:
+            # One statement: the first use creates the counter, the next ones add one
+            # while below the limit. Two processes at once never go over it.
+            hits = await self._require_pool().fetchval(
+                """
+                INSERT INTO usage_counter AS u (scope, window_start, expires_at, hits)
+                VALUES ($1, $2, $3, 1)
+                ON CONFLICT (scope, window_start) DO UPDATE SET hits = u.hits + 1
+                WHERE u.hits < $4
+                RETURNING hits
+                """,
+                scope,
+                start,
+                end,
+                limit,
+            )
+        except Exception as exc:
+            raise QuotaUnavailable(type(exc).__name__) from None
+        return hits is not None
+
+    async def quota_left(self, scope: str, limit: int, window_seconds: int, now: datetime) -> bool:
+        if limit <= 0:
+            return False
+        try:
+            hits = await self._require_pool().fetchval(
+                "SELECT hits FROM usage_counter WHERE scope = $1 AND window_start = $2",
+                scope,
+                window(now, window_seconds)[0],
+            )
+        except Exception as exc:
+            raise QuotaUnavailable(type(exc).__name__) from None
+        return (hits or 0) < limit
 
     async def add_signup(self, signup: WaitlistSignup) -> None:
         # ON CONFLICT without a target needs only INSERT privilege.
@@ -330,7 +374,7 @@ class PostgresStore:
             account_id,
         )
         if row is None:
-            return None
+            return await self._lost_profile(account_id)
         summary = None
         if row["status"] is not None:
             rating = row["average_rating"]
@@ -352,6 +396,30 @@ class PostgresStore:
             )
         return SelectedProfile(
             row["google_sub"], row["gbp_location"], summary, row["title"], row["place_id"]
+        )
+
+    async def _lost_profile(self, account_id: str) -> SelectedProfile | None:
+        """The selected profile when the worker retired it for lack of access. Only its
+        Google name, for the account's own Google identity: nothing read from Google."""
+        row = await self._require_pool().fetchrow(
+            """
+            SELECT a.google_sub, l.gbp_location, l.removed_at
+            FROM account a
+            JOIN location l ON l.id = a.selected_location_id AND l.account_id = a.id
+            WHERE a.id = $1::uuid AND a.deleted_at IS NULL AND l.removed_at IS NOT NULL
+              AND NOT EXISTS (SELECT 1 FROM offboarding o
+                              WHERE o.account_id = a.id
+                                AND o.restored_at IS NULL AND o.effective_at IS NULL)
+            """,
+            account_id,
+        )
+        if row is None:
+            return None
+        return SelectedProfile(
+            row["google_sub"],
+            row["gbp_location"],
+            lost_access_summary(row["removed_at"]),
+            access_lost=True,
         )
 
     # --- reviews and replies ------------------------------------------------------

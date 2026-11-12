@@ -222,9 +222,11 @@ class Scene:
         history and usage, a published reply with its audit rows, and a finished job.
         Returns (account id, session token hash)."""
         account_id = await self.connect(sub, f"refresh-old-{sub}")
-        await self.connect(sub, f"refresh-new-{sub}")
         await self.select(account_id)
         await self.sync(sub)
+        # Connected again and not synced since: a good sync deletes the connections the
+        # newest one replaced (test_worker_postgres.py), so both are still stored here.
+        await self.connect(sub, f"refresh-new-{sub}")
         reviews = await owner("SELECT id, gbp_review_id FROM review WHERE google_sub = $1", sub)
         for review in reviews:
             await owner(
