@@ -230,7 +230,7 @@
     const u = new URLSearchParams(location.search).get("s") || "web";
     return /^[A-Za-z0-9_\-.]{1,60}$/.test(u) ? u : "web";
   };
-  let ficha = {}; // place_id, business_name y score del último diagnóstico, para la lista de espera
+  let ficha = {}; // place_id, business_query (lo que escribió el usuario) y score del último diagnóstico, para la lista de espera
 
   /* ── Diagnóstico público ── */
   const diag = $("#diag"), panel = $("#resultado");

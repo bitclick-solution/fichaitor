@@ -129,7 +129,7 @@ export function Resumen({
       {s.status === "needs_reconnect" && (
         <div className="reconectar" role="alert">
           <p>
-            <strong>El acceso a Google ha caducado.</strong> Fichaitor no puede ver tu ficha hasta que vuelvas a conectarla.
+            <strong>Ya no tenemos acceso a tu ficha en Google.</strong> Fichaitor no puede verla hasta que vuelvas a conectar.
             {!sinCifras && " Estas son las últimas cifras que leyó."}
           </p>
           <a className="btn" href={OAUTH_START}>

@@ -104,6 +104,9 @@ let llamadasDiagnostico = 0;
 const yo = (e: Estado) => {
   // Con la baja de la ficha efectiva, el backend responde sin fichas y con connected: false.
   const desconectada = escenario() === "desconectada";
+  // «sin-acceso»: Google niega la ficha elegida; sigue elegida, pero desaparece de la lista.
+  if (escenario() === "sin-acceso")
+    return { email: "dueno@example.com", locations: FICHAS.slice(1), selected_location_id: FICHAS[0]!.id, pending_deletion: null, connected: true };
   return { email: "dueno@example.com", locations: desconectada ? [] : fichas(), selected_location_id: desconectada ? null : e.elegida, pending_deletion: e.baja ?? null, connected: !desconectada };
 };
 

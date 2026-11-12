@@ -24,7 +24,7 @@ Fichaitor está en pruebas. Hoy están activos la prueba con una captura, la lis
 | Finalidad | Datos | Base jurídica | Conservación |
 |---|---|---|---|
 | Prueba con una captura de pantalla de tus reseñas | La captura que subes y lo que se ve en ella: el nombre de tu negocio y las reseñas, con el nombre y la foto de perfil públicos de quienes las escribieron, su puntuación y su texto | Interés legítimo — art. 6.1.f: enseñarte cómo funciona Fichaitor con tus propias reseñas, que ya son públicas, sin guardar la imagen ni los datos de sus autores | Fichaitor procesa la imagen en memoria y no la guarda. No devuelve ni guarda los nombres ni las fotos de los autores |
-| Lista de espera: avisarte cuando Fichaitor esté disponible | Tu WhatsApp o tu correo, el canal por el que llegaste, y la fecha y la versión del texto de consentimiento que aceptaste | Consentimiento — art. 6.1.a | 12 meses desde el alta o hasta el lanzamiento, lo que ocurra antes, o hasta que te des de baja |
+| Lista de espera: avisarte cuando Fichaitor esté disponible | Tu WhatsApp o tu correo; si probaste el diagnóstico antes de apuntarte, el negocio que buscaste (el texto que escribiste y el identificador de la ficha en Google) y la nota que obtuvo; el canal por el que llegaste, y la fecha y la versión del texto de consentimiento que aceptaste. Antes del primer aviso te pediremos que confirmes que el contacto es tuyo. `[REVISAR: indicar para qué se guardan el negocio y la nota junto al contacto]` | Consentimiento — art. 6.1.a | 12 meses desde el alta o hasta el lanzamiento, lo que ocurra antes, o hasta que te des de baja |
 | Crear y gestionar tu cuenta | Nombre, correo, teléfono vinculado, canal elegido (web, correo, Telegram o WhatsApp), plan y preferencias | Ejecución del contrato — art. 6.1.b | Mientras dure la cuenta |
 | Prestar el servicio sobre tu ficha de Google | Los datos obtenidos de las API de Google que se detallan en el apartado 3 | Ejecución del contrato — art. 6.1.b | Mientras tu ficha esté conectada. Tras desconectarla: 48 horas para restaurarla y, desde que la baja es efectiva, 30 días como máximo para el borrado; el registro de respuestas, 12 meses. Ver apartado 3 |
 | Conversar contigo y proponerte acciones | Los mensajes, audios y fotos que envías al asistente, y las propuestas y confirmaciones | Ejecución del contrato — art. 6.1.b | 90 días desde cada mensaje; después se borra `[REVISAR: los canales de mensajería aún no tienen baja ni borrado automático]` |
@@ -49,7 +49,9 @@ Un único permiso: `https://www.googleapis.com/auth/business.manage`, que permit
 - **Publicaciones y fotos** de la ficha.
 - **Métricas de rendimiento:** búsquedas, visualizaciones, llamadas, solicitudes de ruta y clics al sitio web.
 - **Avisos** de reseñas nuevas y de cambios en la ficha.
-- **Identificadores** de la cuenta y de las fichas a las que tienes acceso, y los tokens de acceso que emite Google, que guardamos cifrados.
+- **Identificadores** de la cuenta y de las fichas a las que tienes acceso, y los tokens de acceso que emite Google, que guardamos cifrados. Si vuelves a conectar, borramos los tokens anteriores en cuanto los nuevos leen tu ficha correctamente.
+
+Si Google deja de darnos acceso a una ficha, por ejemplo porque te han quitado como gestor, la ficha deja de mostrarse en tu panel y lo guardado de ella se borra a los 30 días, salvo que vuelvas a conectar antes con una cuenta que la gestione.
 
 ### Para qué los usamos
 

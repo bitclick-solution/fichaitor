@@ -22,6 +22,8 @@ type Vista =
   | { tipo: "baja"; baja: BajaPendiente }
   // La baja de la ficha ya es efectiva y la cuenta sigue: solo un estado vacío, sin pedir datos.
   | { tipo: "desconectada"; me: Me }
+  // Google niega el acceso a la ficha elegida: sigue elegida, pero ya no está en `locations`.
+  | { tipo: "sin-acceso"; me: Me }
   // Tras confirmar el borrado de la cuenta: las sesiones ya están cerradas.
   | { tipo: "despedida"; borrado: string }
   // Llegada desde el enlace del correo: /app?restaurar=<token>, sin sesión.
@@ -60,8 +62,10 @@ function leerVuelta(): { google: string | null; fichas: string | null; restaurar
 function vistaDe(me: Me, fichasPendientes: boolean): Vista {
   if (me.pending_deletion) return { tipo: "baja", baja: me.pending_deletion };
   if (me.connected === false) return { tipo: "desconectada", me };
-  if (me.locations.length === 0) return fichasPendientes ? { tipo: "pendiente" } : { tipo: "sin-fichas", email: me.email };
   const ficha = me.locations.find((l) => l.id === me.selected_location_id);
+  // Antes que «sin fichas»: si era la única, `locations` llega vacía pero la ficha sigue elegida.
+  if (me.selected_location_id !== null && !ficha) return { tipo: "sin-acceso", me };
+  if (me.locations.length === 0) return fichasPendientes ? { tipo: "pendiente" } : { tipo: "sin-fichas", email: me.email };
   return ficha ? { tipo: "panel", me, ficha } : { tipo: "elegir", me };
 }
 
@@ -161,6 +165,34 @@ export function App() {
             onCambiar={() => setVista({ tipo: "elegir", me: vista.me })}
             onSinSesion={() => setVista({ tipo: "conectar" })}
           />
+        )}
+        {vista.tipo === "sin-acceso" && (
+          <section className="pantalla">
+            <h1 className="cartel">
+              Ya no tenemos acceso a esta ficha en Google<Punto />
+            </h1>
+            <p className="lead">
+              Suele pasar cuando alguien te quita como gestor de la ficha. Vuelve a conectar con una cuenta de Google que la gestione.
+            </p>
+            <div className="acciones">
+              <a className="btn" href={OAUTH_START}>
+                Conectar con Google <Flecha />
+              </a>
+              {vista.me.locations.length > 0 && (
+                <button className="btn sec" type="button" onClick={() => setVista({ tipo: "elegir", me: vista.me })}>
+                  Elegir otra ficha
+                </button>
+              )}
+            </div>
+            <p className="sec">Si no vuelves a conectarla, borraremos lo guardado de esta ficha a los 30 días.</p>
+            <Ajustes
+              email={vista.me.email}
+              soloCuenta
+              onSinSesion={() => setVista({ tipo: "conectar" })}
+              onCambio={() => void cargar()}
+              onDespedida={(borrado) => setVista({ tipo: "despedida", borrado })}
+            />
+          </section>
         )}
         {vista.tipo === "desconectada" && (
           <section className="pantalla">
