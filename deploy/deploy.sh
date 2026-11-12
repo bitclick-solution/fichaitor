@@ -434,7 +434,16 @@ do_deploy() {
     # La copia va ANTES del esquema. Si no se puede copiar, no se despliega.
     "${DEPLOY_DIR}/backup.sh" "pre-${TAG:0:12}" || die "La copia de seguridad ha fallado: no se aplica el esquema."
 
-    aplicar_esquema || die "El esquema no se ha aplicado (la transacción se ha deshecho). La versión anterior sigue en marcha."
+    # La conversación se para antes del esquema: schema_channels.sql mueve la propuesta
+    # abierta de cada hilo a su carril, y el código anterior podría volver a escribir en
+    # el hilo después del relleno. Se arranca con la versión nueva más abajo (o con la
+    # anterior si hay vuelta atrás).
+    compose stop fichaitor-conversation >/dev/null 2>&1 || true
+
+    if ! aplicar_esquema; then
+        compose start fichaitor-conversation >/dev/null 2>&1 || true
+        die "El esquema no se ha aplicado (la transacción se ha deshecho). La versión anterior sigue en marcha."
+    fi
 
     "${DEPLOY_DIR}/init-roles.sh" || die "No se han podido preparar los usuarios de la base de datos."
     exigir_variables "${API_ENV}" FICHAITOR_DATABASE_URL

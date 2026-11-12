@@ -1,0 +1,56 @@
+# Fichaitor — Compose de PRODUCCIÓN, modo «solo web». Se explica en docs/despliegue.md.
+#
+# Publica solo la portada y las páginas legales, sin API, base de datos, worker ni
+# conversación. Sirve para tener fichaitor.es en línea (pantalla de consentimiento de
+# Google, Search Console) antes de abrir el producto. Con FICHAITOR_SOLO_WEB=true la
+# imagen sirve «Muy pronto» en /app y responde 503 en /api/ sin intentar el proxy.
+#
+# En el servidor vive en /opt/bitclick/fichaitor/docker-compose.web.yml. Lo usa
+# deploy-web.sh. El mismo nombre de proyecto y de contenedor que el Compose completo:
+# el primer despliegue completo sustituye este contenedor sin pasos a mano.
+#
+# No necesita db.env, api.env, worker.env ni conversation.env.
+
+name: fichaitor
+
+x-registro: &registro
+  driver: json-file
+  options:
+    max-size: "10m"
+    max-file: "5"
+
+services:
+  fichaitor-web:
+    image: ${FICHAITOR_WEB_IMAGE:?Falta FICHAITOR_WEB_IMAGE. La fija deploy-web.sh}
+    container_name: fichaitor-web
+    restart: unless-stopped
+    environment:
+      FICHAITOR_SOLO_WEB: "true"
+      # No hay API: el nombre no se resuelve nunca porque /api/ responde 503 antes.
+      API_UPSTREAM: fichaitor-api:8000
+    networks:
+      - bitclick-network
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O /dev/null http://127.0.0.1:8080/ || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+    read_only: true
+    tmpfs:
+      - /tmp:uid=101,gid=101
+      - /etc/nginx/conf.d:uid=101,gid=101
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    logging: *registro
+    deploy:
+      resources:
+        limits:
+          memory: 96M
+
+networks:
+  bitclick-network:
+    external: true
+    name: bitclick-network

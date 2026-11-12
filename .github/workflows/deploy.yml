@@ -33,6 +33,11 @@ on:
         type: choice
         options: ["1", "0"]
         default: "1"
+      solo_web:
+        description: "1 = desplegar solo la web (portada y páginas legales, sin API ni base de datos). 0 = todo el producto"
+        type: choice
+        options: ["0", "1"]
+        default: "0"
   push:
     tags:
       - "v[0-9]+.[0-9]+.[0-9]+"
@@ -62,6 +67,7 @@ jobs:
     outputs:
       propietario: ${{ steps.datos.outputs.propietario }}
       legal_estricto: ${{ steps.datos.outputs.legal_estricto }}
+      solo_web: ${{ steps.datos.outputs.solo_web }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -92,7 +98,13 @@ jobs:
         name: Datos del despliegue
         env:
           LEGAL_ESTRICTO: ${{ inputs.legal_estricto || vars.FICHAITOR_LEGAL_ESTRICTO || '1' }}
+          SOLO_WEB: ${{ inputs.solo_web || '0' }}
         run: |
+          if [[ "${SOLO_WEB}" != "0" && "${SOLO_WEB}" != "1" ]]; then
+            echo "::error::SOLO_WEB debe ser 0 o 1."
+            exit 1
+          fi
+          echo "solo_web=${SOLO_WEB}" >>"${GITHUB_OUTPUT}"
           # GHCR solo admite nombres en minúsculas.
           echo "propietario=${GITHUB_REPOSITORY_OWNER,,}" >>"${GITHUB_OUTPUT}"
           if [[ "${LEGAL_ESTRICTO}" != "0" && "${LEGAL_ESTRICTO}" != "1" ]]; then
@@ -116,6 +128,7 @@ jobs:
       API_IMAGE: ghcr.io/${{ needs.comprobar.outputs.propietario }}/fichaitor-api
       WEB_IMAGE: ghcr.io/${{ needs.comprobar.outputs.propietario }}/fichaitor-web
       LEGAL_ESTRICTO: ${{ needs.comprobar.outputs.legal_estricto }}
+      SOLO_WEB: ${{ needs.comprobar.outputs.solo_web }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -127,6 +140,7 @@ jobs:
         run: printf '%s' "${GHCR_PASSWORD}" | docker login "${REGISTRY}" --username "${GITHUB_ACTOR}" --password-stdin
 
       - name: Construir la imagen de la API y del worker
+        if: env.SOLO_WEB != '1'
         run: |
           docker build --pull \
             --label "org.opencontainers.image.source=${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}" \
@@ -147,10 +161,11 @@ jobs:
       # siempre el commit; la de versión es una ayuda para las personas.
       - name: Subir las imágenes
         run: |
-          docker push "${API_IMAGE}:${GITHUB_SHA}"
-          docker push "${WEB_IMAGE}:${GITHUB_SHA}"
+          imagenes=("${WEB_IMAGE}")
+          if [[ "${SOLO_WEB}" != "1" ]]; then imagenes+=("${API_IMAGE}"); fi
+          for imagen in "${imagenes[@]}"; do docker push "${imagen}:${GITHUB_SHA}"; done
           if [[ "${GITHUB_REF_TYPE}" == "tag" ]]; then
-            for imagen in "${API_IMAGE}" "${WEB_IMAGE}"; do
+            for imagen in "${imagenes[@]}"; do
               docker tag "${imagen}:${GITHUB_SHA}" "${imagen}:${GITHUB_REF_NAME}"
               docker push "${imagen}:${GITHUB_REF_NAME}"
             done
@@ -171,6 +186,7 @@ jobs:
       contents: read
     env:
       PROPIETARIO: ${{ needs.comprobar.outputs.propietario }}
+      SOLO_WEB: ${{ needs.comprobar.outputs.solo_web }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -215,7 +231,20 @@ jobs:
 
       # Se copia a una carpeta temporal y de ahí a la definitiva, como en los
       # demás servicios. Nunca se tocan db.env, api.env, worker.env ni backups/.
+      - name: Copiar los archivos del despliegue (solo web)
+        if: env.SOLO_WEB == '1'
+        run: |
+          # shellcheck disable=SC2029
+          ssh servidor "mkdir -p '${TMP_DIR}' '${DEPLOY_DIR}'"
+          scp deploy/docker-compose.web.yml deploy/deploy-web.sh "servidor:${TMP_DIR}/"
+          # shellcheck disable=SC2029
+          ssh servidor "set -e
+            cp '${TMP_DIR}/docker-compose.web.yml' '${TMP_DIR}/deploy-web.sh' '${DEPLOY_DIR}/'
+            chmod +x '${DEPLOY_DIR}/deploy-web.sh'
+            rm -rf '${TMP_DIR}'"
+
       - name: Copiar los archivos del despliegue
+        if: env.SOLO_WEB != '1'
         run: |
           # Las variables se expanden aquí, en el ejecutor, a propósito.
           # shellcheck disable=SC2029
@@ -249,8 +278,13 @@ jobs:
       - name: Desplegar
         run: |
           # Las variables se expanden aquí, en el ejecutor, a propósito.
-          # shellcheck disable=SC2029
-          ssh servidor "'${DEPLOY_DIR}/deploy.sh' '${GITHUB_SHA}' '${PROPIETARIO}' '${DEPLOY_DIR}'"
+          if [[ "${SOLO_WEB}" == "1" ]]; then
+            # shellcheck disable=SC2029
+            ssh servidor "'${DEPLOY_DIR}/deploy-web.sh' '${GITHUB_SHA}' '${PROPIETARIO}' '${DEPLOY_DIR}'"
+          else
+            # shellcheck disable=SC2029
+            ssh servidor "'${DEPLOY_DIR}/deploy.sh' '${GITHUB_SHA}' '${PROPIETARIO}' '${DEPLOY_DIR}'"
+          fi
 
       - name: Comprobar la dirección pública
         env:
@@ -286,6 +320,7 @@ jobs:
             echo "| Referencia | \`${GITHUB_REF_NAME}\` |"
             echo "| Imágenes | \`ghcr.io/${PROPIETARIO}/fichaitor-api\` y \`fichaitor-web\` |"
             echo "| LEGAL_ESTRICTO | ${LEGAL_ESTRICTO} |"
+            echo "| Solo web | ${SOLO_WEB} |"
             echo "| Entorno | production |"
             echo ""
             echo "### Vuelta atrás"

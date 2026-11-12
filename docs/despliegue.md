@@ -338,6 +338,27 @@ El estado del proyecto de Google y los trámites pendientes están en [fase0/goo
 
 6. Envía el mapa del sitio en Google Search Console: propiedad `fichaitor.es`, **Sitemaps**, añade `https://fichaitor.es/sitemap.xml`. Comprueba también que `https://www.fichaitor.es/` redirige a `https://fichaitor.es/` (paso 8).
 
+## Publicar solo la web
+
+Sirve para tener `fichaitor.es` en línea, con la portada y las páginas legales, antes de abrir el producto: la pantalla de consentimiento de Google y Search Console necesitan la página principal y la política publicadas. No necesita base de datos ni archivos de secretos.
+
+Con este modo, `/app` enseña «Muy pronto» y `/api/` responde 503. El primer despliegue completo sustituye el contenedor `fichaitor-web` sin pasos a mano (mismo nombre de proyecto y de contenedor).
+
+1. Haz los pasos 1 (GitHub) y 2 (carpeta en el VPS) de la primera instalación. Los pasos 3 a 6 no hacen falta.
+2. Haz los pasos 7 (DNS) y 8 (host en Nginx Proxy Manager, con la redirección de `www`).
+3. En GitHub, **Actions > Desplegar > Run workflow**, con `solo_web = 1` y `legal_estricto = 1`. Si los textos legales tienen marcas abiertas, el flujo se detiene antes de publicar.
+4. Comprueba la portada y las páginas legales:
+
+   ```bash
+   for ruta in / /privacidad/ /condiciones-de-uso/; do curl -s -o /dev/null -w "%{http_code} $ruta
+" "https://fichaitor.es$ruta"; done
+   ```
+
+   Las tres deben responder 200.
+5. Pon las URL en la pantalla de consentimiento (paso 9 y `docs/fase0/google-acceso.md`) y envía el mapa del sitio en Search Console.
+
+Lo hace `deploy/deploy-web.sh` con `deploy/docker-compose.web.yml`. Si la web nueva no pasa la comprobación de salud, vuelve a la anterior.
+
 ## Desplegar una versión nueva
 
 Hay dos formas. Las dos exigen que el commit esté en `main` y que su integración continua haya terminado bien.
