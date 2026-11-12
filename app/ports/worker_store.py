@@ -73,7 +73,16 @@ class NewReview:
 
 class WorkerStore(Protocol):
     async def latest_connection(self, google_sub: str) -> StoredConnection | None:
-        """The most recent connection of that Google user: the only valid one."""
+        """The most recent connection of that Google user that still has its token: the
+        only valid one. A connection revoked by the owner at Google is never returned."""
+        ...
+
+    async def revoke_connection(self, google_sub: str, connection_id: str, at: datetime) -> bool:
+        """Google answered `invalid_grant`: the owner removed the access (or it expired).
+        Mark that connection as revoked at `at` and delete its encrypted token, and
+        delete the older ones it had replaced. Returns True when that Google user is
+        left without any valid connection: from then on the countdown to delete what
+        was obtained from Google runs (`run_retention`). Safe to repeat."""
         ...
 
     async def drop_replaced_connections(self, google_sub: str, connection_id: str) -> int:
@@ -222,6 +231,11 @@ class WorkerStore(Protocol):
     async def run_retention(self, now: datetime, policy: RetentionPolicy) -> dict[str, int]:
         """Delete everything past its term, and nothing else, and record how many rows
         went from each table. Safe to repeat and to run from several workers.
+
+        Revoked at Google: a Google user whose connections are all revoked, the last
+        one `policy.google_data_days` ago or more, loses what was obtained from Google of
+        all their profiles, as with an effective leave of the profile. A valid
+        connection (the owner connected again) cancels it.
 
         Multinegocio: what was obtained from Google of a profile deactivated for
         `policy.inactive_days` (and not reactivated) goes too, but not the profile row;

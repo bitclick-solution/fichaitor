@@ -9,6 +9,8 @@ RUN uv sync --frozen --no-dev --no-install-project
 
 COPY app ./app
 COPY data ./data
+# Herramienta de soporte para las bajas pedidas por correo (docs/despliegue.md).
+COPY scripts/baja_manual.py ./scripts/baja_manual.py
 
 RUN useradd --system --uid 10001 fichaitor
 USER fichaitor

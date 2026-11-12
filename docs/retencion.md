@@ -8,6 +8,8 @@ Los plazos los aprobó el propietario el 2026-11-12. Todos están en configuraci
 
 Hay dos alcances: `ficha` (desconectar Google; la cuenta sigue existiendo, sin fichas) y `cuenta` (borrar la cuenta).
 
+Hay tres formas de llegar al borrado: la baja desde el panel (este apartado), la baja por correo que tramita soporte ([Baja por correo](#baja-por-correo)) y retirar el acceso desde la cuenta de Google ([Retirar el acceso desde Google](#retirar-el-acceso-desde-google)).
+
 1. **Código.** El dueño pide la baja desde su sesión. La API genera un código de 6 cifras, guarda solo su huella y encola el correo que lo lleva.
 2. **Confirmación.** Con el código correcto, la baja queda **programada** a 48 horas (`FICHAITOR_OFFBOARDING_GRACE_HOURS`, nunca menos de 48). La base de datos no admite una baja programada a menos de 47 horas ni una cuyo usuario de Google no sea el de esa cuenta (disparador `offboarding_guard`), y el worker no hace efectiva una baja que no cumpla eso. Desde ese instante:
    - Ninguna ruta devuelve datos de la ficha: responden 409.
@@ -28,7 +30,8 @@ Hay dos alcances: `ficha` (desconectar Google; la cuenta sigue existiendo, sin f
 
 | Dato | Tabla | Plazo | Quién lo borra | Cuándo |
 |---|---|---|---|---|
-| Tokens de Google (cifrados) y el correo de la conexión | `google_connection` | Hasta la baja efectiva, o hasta que una conexión más reciente del mismo usuario funciona | Worker, job `apply_offboarding`; y `sync_profile` | En el momento de la baja efectiva, tras revocar cada token en Google o agotar los intentos. Tras una reconexión, en la primera sincronización correcta con la conexión nueva: las anteriores se borran sin revocarlas (Google revocaría la concesión entera y cortaría la nueva) |
+| Tokens de Google (cifrados) y el correo de la conexión | `google_connection` | Hasta la baja efectiva, o hasta que una conexión más reciente del mismo usuario funciona, o hasta que Google responde `invalid_grant` | Worker, job `apply_offboarding`; y `sync_profile`, `reply_review` y `set_special_hours` | En el momento de la baja efectiva, tras revocar cada token en Google o agotar los intentos. Tras una reconexión, en la primera sincronización correcta con la conexión nueva: las anteriores se borran sin revocarlas (Google revocaría la concesión entera y cortaría la nueva). Con `invalid_grant`, el token se borra en ese momento y la fila queda, sin token y con `revoked_at`, hasta el borrado de los 30 días |
+| Lo obtenido de Google de **todas** las fichas de un usuario que retiró el acceso desde Google: las mismas tablas que en la baja efectiva de la ficha (resumen y hechos, reseñas con su clasificación y su borrador, análisis, historia y uso del modelo, fichas guardadas, jobs que lo nombran, conversación y propuestas) y la conexión revocada | `profile_summary`, `review`, `review_sentiment`, `review_draft`, `sentiment_analysis`, `sentiment_history`, `sentiment_usage`, `location`, `job`, `proposal`, `conversation`, `channel_message`, `google_connection` | 30 días desde el último `revoked_at` de sus conexiones (`FICHAITOR_RETENTION_GOOGLE_DATA_DAYS`), si en ese tiempo no vuelve a conectar | Worker, job `retention` | Pasada diaria. Volver a conectar lo cancela. Consulta [Retirar el acceso desde Google](#retirar-el-acceso-desde-google) |
 | Datos de la ficha y hechos (`facts`) | `profile_summary` | 30 días desde la baja efectiva | Worker, job `retention` | En la primera pasada diaria tras cumplirse el plazo, o al volver a conectar |
 | Reseñas | `review` | 30 días desde la baja efectiva | Worker, job `retention` | Igual que la fila anterior |
 | Clasificación de cada reseña | `review_sentiment` | Con su reseña | La base (`ON DELETE CASCADE`) | Al borrarse la reseña |
@@ -69,7 +72,7 @@ Hay dos alcances: `ficha` (desconectar Google; la cuenta sigue existiendo, sin f
 Lo que queda para siempre, sin datos personales:
 
 - La fila de `account` de una cuenta dada de baja: su identificador, `created_at`, `disconnected_at` y `deleted_at`. El correo está vacío y `google_sub` vale `deleted:<id>`.
-- La fila de `offboarding`: alcance y fechas. `google_sub` se vacía al borrar los datos de una baja efectiva y, en una baja restaurada o sustituida por otra, en la misma escritura que la restaura (disparador `offboarding_guard`).
+- La fila de `offboarding`: alcance, fechas y `reason` (`email_request` en una baja por correo). `google_sub` se vacía al borrar los datos de una baja efectiva y, en una baja restaurada o sustituida por otra, en la misma escritura que la restaura (disparador `offboarding_guard`).
 - Las filas de `retention_run`: recuentos por tabla.
 - Los jobs terminados que ejecutaron una acción, mientras se conserva la acción (12 meses desde la baja). El resto de jobs terminados, 14 días.
 
@@ -86,6 +89,30 @@ El acceso a los datos se cierra en la misma petición que confirma la baja, aunq
 Volver a conectar antes de los 30 días no recupera nada. La primera sincronización de la conexión nueva borra antes todo lo anterior (`leave_purged_on_reconnect` en el log) y la ficha se lee desde cero. Hasta entonces el panel responde `pendiente`.
 
 Si la baja se hace efectiva cuando el dueño ya ha vuelto a conectar, el worker no revoca nada (`revoke_state = 'superseded'`). Google revoca la concesión entera, no un token, y cortaría la conexión nueva. Los tokens antiguos se borran igualmente.
+
+## Retirar el acceso desde Google
+
+El dueño puede quitar el acceso a Fichaitor desde `myaccount.google.com/connections`, sin pasar por el panel. Fichaitor se entera la siguiente vez que renueva el token: Google responde `invalid_grant`.
+
+1. **Revocada por el usuario.** Ante un `invalid_grant` al renovar el token (en `sync_profile`, `reply_review` o `set_special_hours`), el worker marca esa conexión con `revoked_at` y **borra su token cifrado** en la misma escritura: ya no vale. Las conexiones anteriores a ella, que la nueva había sustituido, se borran. No se revoca nada en Google: ya está revocado. En el log queda `google_grant_revoked`, nivel `warning`, sin identificadores de Google.
+2. **Lo demás sigue igual.** Las sesiones siguen abiertas, los datos se siguen sirviendo y el panel enseña `needs_reconnect`, como con cualquier acceso perdido.
+3. **Cuenta atrás.** Si ese usuario de Google se queda sin ninguna conexión válida (todas revocadas), empieza la cuenta atrás. No hay tabla aparte: la fecha es el último `revoked_at` de sus conexiones.
+4. **Borrado a los 30 días** (`FICHAITOR_RETENTION_GOOGLE_DATA_DAYS`). La pasada diaria de retención borra lo obtenido de Google de **todas** las fichas de esa identidad, con las mismas tablas y reglas que la baja efectiva de una ficha: la conversación y las propuestas (citan reseñas), las fichas guardadas, los resúmenes y hechos, las reseñas con su clasificación y su borrador, el análisis del sentimiento con su historia y su uso, los jobs que nombran al usuario y la conexión revocada. La cuenta queda sin fichas y con `disconnected_at`, así que `GET /api/v1/me` responde `connected: false`; sus sesiones y sus chats vinculados siguen. El registro de respuestas publicadas se conserva 12 meses desde ese momento, como en una baja. En los recuentos de `retention_run` aparece `revoked_identity`.
+5. **Volver a conectar lo cancela.** Una conexión nueva con Google, antes de los 30 días, deja al usuario con una conexión válida: la pasada ya no lo borra, y la primera sincronización correcta borra la conexión revocada. Si después vuelve a retirar el acceso, la cuenta atrás empieza de nuevo desde esa fecha.
+
+Qué no cuenta como acceso retirado: un 401 sin `invalid_grant`, un 5xx, un 429 (cuota) o un fallo de red. El primero pide volver a conectar, como antes; los demás se reintentan. Las credenciales de Fichaitor rechazadas (`invalid_client`) son un error nuestro y no tocan la conexión.
+
+La base lo protege (disparador `google_connection_guard`): una conexión nace válida, y lo único que el worker puede hacerle después es marcarla como revocada borrando su token. Una conexión revocada no vuelve a tener token. Que haya `revoked_at` y no haya token van siempre juntos (`google_connection_revoked_check`).
+
+## Baja por correo
+
+Soporte recibe una petición de baja por correo, comprueba que viene de la dirección de la cuenta y la tramita con `scripts/baja_manual.py` (procedimiento en [despliegue.md](despliegue.md#tareas-habituales)). Hace lo mismo que la baja del panel, sin código ni espera de 48 horas: la persona ya la ha confirmado por correo.
+
+- **Efectiva al momento.** El script escribe la baja con `delete_at = confirmed_at` y `reason = 'email_request'`, en la misma transacción que cancela las propuestas, cierra las sesiones y desvincula los chats (con `cuenta`) y encola `apply_offboarding` para ya. El worker la hace efectiva en segundos: revoca en Google, borra los tokens y empiezan los plazos de la tabla de arriba, igual que una baja del panel.
+- **Una baja programada desde el panel queda sustituida** (`restored_at`), como cuando el dueño confirma otra.
+- **Con `ficha`**, Google concede el acceso por usuario: se desconectan todas las fichas de la cuenta. Si la cuenta tiene más de una, el script exige `--location` con la ficha que nombra el correo, para comprobar que es de esa cuenta.
+- **La vía del propietario.** El disparador `offboarding_guard` exige 47 horas a cualquier rol que no sea el propietario. `reason = 'email_request'` solo lo puede escribir el propietario: la API no tiene privilegio sobre esa columna y el disparador lo rechaza a cualquier otro rol. Nadie la cambia después. El worker hace efectiva sin las 47 horas una baja solo si lleva esa razón; una escrita por el propietario sin ella se queda sin hacer.
+- **Auditoría.** Una fila en `audit_log` con el evento `offboarding_email_request`: el id de la baja, el alcance, la ficha nombrada, el motivo (una referencia, sin direcciones de correo: el script las rechaza) y `written_by`, el usuario de la base que lo ejecutó. Se conserva 12 meses desde la baja efectiva, como el resto del registro. El script imprime además una línea JSON `baja_manual` con lo mismo, sin el motivo.
 
 ## Dos cuentas con la misma ficha
 
@@ -112,6 +139,8 @@ El borrado lo hace el worker y nadie más. La API sigue sin poder borrar nada.
 
 - **Sin rol aparte para la retención.** Lo usaría el mismo proceso, con la otra cadena de conexión al lado. No separaría nada y añadiría un secreto.
 - **`audit_log`.** El worker tiene `DELETE` y una política de fila que solo deja borrar las filas de cuentas con más de 12 meses de baja. No puede leerlas ni cambiarlas. Su `DELETE` no lleva `WHERE`, porque no tiene `SELECT` sobre ninguna columna: qué filas caen lo decide la política. El suelo de 12 meses está fijo en la base; la configuración puede alargarlo, no acortarlo.
+- **`google_connection`.** El worker lee la conexión sin el correo. Solo puede escribir `revoked_at` y `refresh_token_enc`, y el disparador `google_connection_guard` solo le deja marcarla como revocada a la vez que borra el token.
+- **`offboarding.reason`.** Solo el propietario lo escribe (baja por correo). Ni la API ni el worker tienen privilegio sobre la columna.
 - **`account`.** El worker fecha la desconexión y la baja. No lee el correo ni cambia `google_sub`: lo hace el disparador. La API solo puede quitar `disconnected_at`, al volver a conectar.
 - **`session` y `waitlist_entry`.** El worker lee fechas y borra. No lee la huella del token ni el contacto.
 - **Tablas de los canales.** El worker solo borra: lee las columnas de fecha y de cuenta que usan sus `WHERE`, nunca la dirección del chat ni el texto de un mensaje. La conversación (`fichaitor_conversation`) no borra nada; la API solo desvincula.
@@ -130,7 +159,7 @@ El borrado lo hace el worker y nadie más. La API sigue sin poder borrar nada.
 | `FICHAITOR_OFFBOARDING_CODE_RATE_LIMIT` y `..._RATE_WINDOW_SECONDS` | `5` y `3600` | Códigos por cuenta y ventana |
 | `FICHAITOR_OFFBOARDING_RESTORE_RATE_LIMIT` | `20` | Restauraciones por enlace, por IP y hora |
 | `FICHAITOR_OFFBOARDING_SECRET` | El de `FICHAITOR_OAUTH_STATE_SECRET` | Secreto de la huella de los códigos |
-| `FICHAITOR_RETENTION_GOOGLE_DATA_DAYS` | `30` | Lo obtenido de Google, tras la baja efectiva. Máximo 30 |
+| `FICHAITOR_RETENTION_GOOGLE_DATA_DAYS` | `30` | Lo obtenido de Google, tras la baja efectiva o tras retirar el acceso desde Google. Máximo 30 |
 | `FICHAITOR_RETENTION_REMOVED_DAYS` | `30` | Reseñas y fichas retiradas por Google. Máximo 30 |
 | `FICHAITOR_RETENTION_INACTIVE_DAYS` | `30` | Lo obtenido de Google de una ficha desactivada, desde que se desactiva. Máximo 30 |
 | `FICHAITOR_RETENTION_SESSION_DAYS` | `30` | Sesiones caducadas o cerradas. Máximo 30 |
@@ -150,6 +179,8 @@ Los límites impiden configurar un plazo más largo que el que promete la polít
 - **Los registros del servidor** (6 meses, según la política). Dependen de la rotación de logs del despliegue, no de este código.
 - **Las copias de seguridad.** Un dato borrado sigue en las copias hasta que caducan.
 - **El modo sin base de datos** (`MemoryStore`). La baja se programa y se restaura, pero nunca se hace efectiva: no hay worker.
+- **Retirar el acceso sin que Fichaitor llame a Google.** Fichaitor se entera de que el acceso se retiró al renovar el token: en la siguiente sincronización (al abrir el panel) o al publicar algo. Si nadie abre el panel y no hay nada que publicar, la cuenta atrás no empieza hasta entonces.
+- **Una baja por correo sin worker en marcha.** Queda registrada y los datos dejan de servirse al momento; la revocación y el borrado de los tokens esperan a que el worker tome el job.
 
 ## Pruebas
 

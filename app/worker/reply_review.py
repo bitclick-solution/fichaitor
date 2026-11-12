@@ -44,10 +44,16 @@ from app.domain.actions import (
 )
 from app.domain.channel_jobs import CHANNEL_ACTION_RESULT, RESULT_MAX_ATTEMPTS, result_key
 from app.domain.jobs import Job, JobError, PermanentJobError
-from app.ports.google_profile import GoogleProfile, GoogleRejected, ReconnectRequired
+from app.ports.google_profile import (
+    GoogleProfile,
+    GoogleRejected,
+    GrantRevoked,
+    ReconnectRequired,
+)
 from app.ports.job_queue import JobEnqueuer
 from app.ports.worker_store import ClaimedAction, WorkerStore
 from app.worker import log
+from app.worker.google_grant import record_revoked_grant
 
 KIND = REPLY_REVIEW
 
@@ -134,8 +140,13 @@ class ReplyReview:
                     action.gbp_review_id,
                     action.text,
                 )
-        except ReconnectRequired:
+        except ReconnectRequired as exc:
             await self._fail(action, job, ERROR_RECONNECT, 401)
+            if isinstance(exc, GrantRevoked):
+                # invalid_grant: the owner removed the access at Google (google_grant.py).
+                await record_revoked_grant(
+                    self._store, action.google_sub, connection.connection_id, self._clock, job.id
+                )
             raise PermanentJobError("el dueño tiene que volver a conectar con Google") from None
         except GoogleRejected as exc:
             if not have_access:

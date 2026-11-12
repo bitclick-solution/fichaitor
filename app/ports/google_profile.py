@@ -28,6 +28,14 @@ class ReconnectRequired(Exception):
     Never retried."""
 
 
+class GrantRevoked(ReconnectRequired):
+    """Google answered `invalid_grant` to the refresh of the token: that refresh token
+    is dead for good (the owner removed the access in their Google account, or it
+    expired). Only `refresh_access_token` raises it. Not a 5xx, a 429 or a network
+    failure: those are GoogleProfileError and are tried again. The worker marks the
+    connection as revoked and deletes its token (docs/retencion.md)."""
+
+
 @dataclass(frozen=True)
 class LocationHours:
     """The hours of a profile as Google has them now, in Google's own shapes:

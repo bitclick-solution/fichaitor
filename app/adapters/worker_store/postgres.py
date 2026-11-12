@@ -12,7 +12,7 @@ retention task (docs/retencion.md).
 
 import json
 from collections.abc import Mapping, Sequence
-from datetime import datetime
+from datetime import datetime, timedelta
 
 import asyncpg
 
@@ -27,7 +27,12 @@ from app.domain.actions import (
     REPLY_REVIEW,
     SET_SPECIAL_HOURS,
 )
-from app.domain.offboarding import FLOOR_HOURS, SCOPE_ACCOUNT, RetentionPolicy
+from app.domain.offboarding import (
+    FLOOR_HOURS,
+    REASON_EMAIL_REQUEST,
+    SCOPE_ACCOUNT,
+    RetentionPolicy,
+)
 from app.domain.profile_summary import (
     LOW_RATING_MAX,
     STATUS_ERROR,
@@ -82,12 +87,16 @@ _AUDIT_FROM_ACTION = """
 
 # A leave as the API writes it (M5 of docs/seguridad/revision-2026-11-12-b.md): of the
 # Google user of that very account, still not deleted, and scheduled with the floor of
-# hours the database imposes. `o` is the leave.
+# hours the database imposes. Or one support processed for an email request
+# (scripts/baja_manual.py): only the owner of the database can write that reason
+# (offboarding_guard and the column privileges), and it is effective at once.
+# `o` is the leave.
 _COHERENT_LEAVE = f"""
     EXISTS (SELECT 1 FROM account a
             WHERE a.id = o.account_id AND a.google_sub = o.google_sub
               AND a.deleted_at IS NULL)
-    AND o.delete_at >= o.confirmed_at + interval '{FLOOR_HOURS} hours'
+    AND (o.delete_at >= o.confirmed_at + interval '{FLOOR_HOURS} hours'
+         OR o.reason = '{REASON_EMAIL_REQUEST}')
 """
 
 # A profile in use in its account (multinegocio, docs/multinegocio.md): active or,
@@ -112,7 +121,7 @@ class PostgresWorkerStore:
             """
             SELECT id::text AS id, refresh_token_enc, key_version, locations::text AS locations
             FROM google_connection
-            WHERE google_sub = $1
+            WHERE google_sub = $1 AND revoked_at IS NULL
             ORDER BY connected_at DESC, id DESC
             LIMIT 1
             """,
@@ -134,6 +143,39 @@ class PostgresWorkerStore:
             locations=locations,
             connection_id=row["id"],
         )
+
+    async def revoke_connection(self, google_sub: str, connection_id: str, at: datetime) -> bool:
+        async with self._pool.acquire() as conn, conn.transaction():
+            # The row stays, without its token, as the mark of when the access went: the
+            # countdown counts from it. The trigger google_connection_guard lets the
+            # worker do this and nothing else to a connection.
+            await conn.execute(
+                """
+                UPDATE google_connection SET revoked_at = $3, refresh_token_enc = NULL
+                WHERE id = $2::uuid AND google_sub = $1 AND revoked_at IS NULL
+                """,
+                google_sub,
+                connection_id,
+                at,
+            )
+            # The ones it replaced share its grant: dead too, and never used again.
+            await conn.execute(
+                """
+                DELETE FROM google_connection c
+                USING google_connection gone
+                WHERE gone.id = $2::uuid AND gone.google_sub = $1 AND c.google_sub = $1
+                  AND (c.connected_at, c.id) < (gone.connected_at, gone.id)
+                """,
+                google_sub,
+                connection_id,
+            )
+            return not await conn.fetchval(
+                """
+                SELECT EXISTS (SELECT 1 FROM google_connection
+                               WHERE google_sub = $1 AND revoked_at IS NULL)
+                """,
+                google_sub,
+            )
 
     async def drop_replaced_connections(self, google_sub: str, connection_id: str) -> int:
         # Older in the same order latest_connection uses. A connection stored while the
@@ -841,10 +883,12 @@ class PostgresWorkerStore:
             """,
             offboarding_id,
         )
+        # A connection the owner revoked at Google has no token left: there is nothing
+        # to revoke. Its row goes with the rest of the data (_purge_leave).
         tokens = [
             TokenToRevoke(r["id"], r["refresh_token_enc"], r["key_version"])
             for r in rows
-            if not r["newer"]
+            if not r["newer"] and r["refresh_token_enc"] is not None
         ]
         return tokens, any(r["newer"] for r in rows)
 
@@ -898,49 +942,10 @@ class PostgresWorkerStore:
                 return counts
             sub, effective_at = leave["google_sub"], leave["effective_at"]
             if sub is not None:
-                counts["review_sentiment"] = await conn.fetchval(
-                    """
-                    SELECT count(*) FROM review_sentiment s JOIN review r ON r.id = s.review_id
-                    WHERE r.google_sub = $1
-                    """,
-                    sub,
-                )
-                # review_sentiment and review_draft go with their review (ON DELETE CASCADE).
-                for table in (
-                    "review",
-                    "profile_summary",
-                    "sentiment_analysis",
-                    "sentiment_history",
-                    "sentiment_usage",
-                ):
-                    counts[table] = _deleted(
-                        await conn.execute(
-                            f"DELETE FROM {table} WHERE google_sub = $1",  # noqa: S608
-                            sub,
-                        )
-                    )
-                # Tokens are deleted when the leave becomes effective; this is what a
-                # dead worker may have left behind. A newer connection is not touched.
-                counts["google_connection"] = _deleted(
-                    await conn.execute(
-                        "DELETE FROM google_connection"
-                        " WHERE google_sub = $1 AND connected_at <= $2",
-                        sub,
-                        effective_at,
-                    )
-                )
-                # Jobs of before the leave carry the Google user and the profile.
-                counts["job"] = _deleted(
-                    await conn.execute(
-                        """
-                        DELETE FROM job
-                        WHERE payload->>'google_sub' = $1 AND state <> 'running'
-                          AND created_at <= $2
-                        """,
-                        sub,
-                        effective_at,
-                    )
-                )
+                # Tokens are deleted when the leave becomes effective; the connections
+                # that go here are what a dead worker may have left behind, or ones the
+                # owner revoked at Google (without token). A newer one is not touched.
+                counts.update(await _purge_google_data(conn, sub, effective_at))
             # The profiles the leave retired. One the owner connected again is a new
             # read of Google and stays.
             counts["location"] = _deleted(
@@ -956,8 +961,76 @@ class PostgresWorkerStore:
             )
         return counts
 
+    async def _purge_revoked(self, google_sub: str, now: datetime, days: int) -> dict[str, int]:
+        """Delete what was obtained from Google of a user who removed the access at
+        Google `days` ago and has not connected again: the same tables and rules as an
+        effective leave of the profile (begin_offboarding and _purge_leave together).
+        Decided again under lock: a connection stored in the meantime cancels it."""
+        counts: dict[str, int] = {}
+        async with self._pool.acquire() as conn, conn.transaction():
+            rows = await conn.fetch(
+                "SELECT revoked_at FROM google_connection WHERE google_sub = $1 FOR UPDATE",
+                google_sub,
+            )
+            if not rows or any(r["revoked_at"] is None for r in rows):
+                return counts
+            if max(r["revoked_at"] for r in rows) > now - timedelta(days=days):
+                return counts
+            account_id = await conn.fetchval(
+                "SELECT id FROM account WHERE google_sub = $1 AND deleted_at IS NULL", google_sub
+            )
+            if account_id is not None:
+                # As when a leave of the profile becomes effective: the conversation
+                # (it quotes reviews) goes, the linked chats stay; the account is left
+                # without profiles and says it is not connected; its sessions stay.
+                await _purge_channels(conn, account_id, False)
+                await conn.execute(
+                    """
+                    UPDATE account
+                    SET disconnected_at = coalesce(disconnected_at, $2),
+                        selected_location_id = NULL
+                    WHERE id = $1
+                    """,
+                    account_id,
+                    now,
+                )
+                await conn.execute(
+                    "UPDATE location SET removed_at = $2"
+                    " WHERE account_id = $1 AND removed_at IS NULL",
+                    account_id,
+                    now,
+                )
+            counts.update(await _purge_google_data(conn, google_sub, now, only_revoked=True))
+            if account_id is not None:
+                counts["location"] = _deleted(
+                    await conn.execute(
+                        "DELETE FROM location WHERE account_id = $1 AND removed_at IS NOT NULL",
+                        account_id,
+                    )
+                )
+            counts["revoked_identity"] = 1
+        return counts
+
     async def run_retention(self, now: datetime, policy: RetentionPolicy) -> dict[str, int]:
         counts: dict[str, int] = {}
+        # Revoked at Google (docs/retencion.md): every connection of the user revoked,
+        # the last one long enough ago. A valid connection cancels the countdown.
+        revoked = await self._pool.fetch(
+            """
+            SELECT google_sub FROM google_connection
+            GROUP BY google_sub
+            HAVING bool_and(revoked_at IS NOT NULL)
+               AND max(revoked_at) <= $1::timestamptz - make_interval(days => $2)
+            ORDER BY google_sub
+            """,
+            now,
+            policy.google_data_days,
+        )
+        for row in revoked:
+            _add(
+                counts,
+                await self._purge_revoked(row["google_sub"], now, policy.google_data_days),
+            )
         due = await self._pool.fetch(
             """
             SELECT id FROM offboarding
@@ -1180,6 +1253,62 @@ class PostgresWorkerStore:
         await self._pool.execute(
             "UPDATE offboarding_code SET mail_state = $2 WHERE id = $1::uuid", code_id, state
         )
+
+
+async def _purge_google_data(
+    conn: asyncpg.Connection, google_sub: str, before: datetime, *, only_revoked: bool = False
+) -> dict[str, int]:
+    """Everything obtained from Google for that user, in every profile: the reviews (their
+    classification and draft go with them), the summaries and facts, the sentiment
+    analysis, its history and usage, the stored connections made up to `before`, and the
+    jobs created up to `before` that are not running (they carry the user and the
+    profile). The same for an effective leave and for an access revoked at Google; in
+    the second, `only_revoked`: a connection stored in the meantime is not touched."""
+    counts: dict[str, int] = {}
+    counts["review_sentiment"] = await conn.fetchval(
+        """
+        SELECT count(*) FROM review_sentiment s JOIN review r ON r.id = s.review_id
+        WHERE r.google_sub = $1
+        """,
+        google_sub,
+    )
+    # review_sentiment and review_draft go with their review (ON DELETE CASCADE).
+    for table in (
+        "review",
+        "profile_summary",
+        "sentiment_analysis",
+        "sentiment_history",
+        "sentiment_usage",
+    ):
+        counts[table] = _deleted(
+            await conn.execute(
+                f"DELETE FROM {table} WHERE google_sub = $1",  # noqa: S608
+                google_sub,
+            )
+        )
+    counts["google_connection"] = _deleted(
+        await conn.execute(
+            """
+            DELETE FROM google_connection
+            WHERE google_sub = $1 AND connected_at <= $2
+              AND (revoked_at IS NOT NULL OR NOT $3::boolean)
+            """,
+            google_sub,
+            before,
+            only_revoked,
+        )
+    )
+    counts["job"] = _deleted(
+        await conn.execute(
+            """
+            DELETE FROM job
+            WHERE payload->>'google_sub' = $1 AND state <> 'running' AND created_at <= $2
+            """,
+            google_sub,
+            before,
+        )
+    )
+    return counts
 
 
 async def _purge_channels(conn: asyncpg.Connection, account_id: object, whole: bool) -> None:

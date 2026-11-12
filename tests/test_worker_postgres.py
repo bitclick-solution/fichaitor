@@ -387,7 +387,9 @@ def test_the_worker_role_reads_connections_but_no_contacts(kind, sub):
             "connection insert": "INSERT INTO google_connection"
             " (google_sub, email, refresh_token_enc, key_version, scopes)"
             " VALUES ('pytest-x', '', '', 1, '{}')",
-            "connection update": "UPDATE google_connection SET refresh_token_enc = '' WHERE false",
+            # It may mark a connection revoked (revoked_at and refresh_token_enc, under the
+            # trigger google_connection_guard: test_revocacion_google_postgres.py); nothing else.
+            "connection update": "UPDATE google_connection SET email = '' WHERE false",
             "connection update all": "UPDATE google_connection SET key_version = 2 WHERE false",
         }
         results = {name: await denied(WORKER_URL, sql) for name, sql in checks.items()}

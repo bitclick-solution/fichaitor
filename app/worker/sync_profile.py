@@ -29,10 +29,16 @@ from app.domain.profile_summary import (
     summarize,
 )
 from app.domain.reviews import REPLY_GRACE, with_sent_replies
-from app.ports.google_profile import GoogleProfile, GoogleRejected, ReconnectRequired
+from app.ports.google_profile import (
+    GoogleProfile,
+    GoogleRejected,
+    GrantRevoked,
+    ReconnectRequired,
+)
 from app.ports.worker_store import WorkerStore
 from app.worker import log
 from app.worker.analyze_sentiment import SentimentTrigger
+from app.worker.google_grant import record_revoked_grant
 from app.worker.propose_review import ReviewProposals
 
 KIND = "sync_profile"
@@ -121,10 +127,16 @@ class SyncProfile:
             media = await _optional(
                 "media", self._google.media(access_token, target.account, target.location)
             )
-        except ReconnectRequired:
+        except ReconnectRequired as exc:
             await self._store.save_status(
                 google_sub, location, STATUS_NEEDS_RECONNECT, self._clock()
             )
+            if isinstance(exc, GrantRevoked):
+                # invalid_grant: the owner removed the access at Google. The token goes,
+                # and the countdown to delete what came from Google may start.
+                await record_revoked_grant(
+                    self._store, google_sub, connection.connection_id, self._clock, job.id
+                )
             raise PermanentJobError("el dueño tiene que volver a conectar con Google") from None
         except GoogleRejected as exc:
             if have_access and exc.status in ACCESS_LOST_STATUSES:

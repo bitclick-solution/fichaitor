@@ -72,7 +72,7 @@ La clave de reconexión no depende de la ventana: la sincronización se encola a
 
 Carga: `{"google_sub": "...", "location": "locations/123"}`.
 
-1. Busca la conexión más reciente de ese `google_sub` en `google_connection`.
+1. Busca la conexión más reciente de ese `google_sub` en `google_connection`, sin contar las revocadas.
 2. Comprueba que la ficha pertenece a esa conexión. La cuenta y la ficha que se envían a Google salen de la conexión guardada, no de la carga.
 3. Descifra el token de renovación con la clave privada.
 4. Pide a Google un token de acceso y hace las lecturas de la tabla siguiente, en ese orden.
@@ -98,10 +98,11 @@ Lecturas de cada sincronización:
 |---|---|---|
 | Todo va bien | `done` | `ok`, con cifras nuevas |
 | Google responde 5xx, 429 o no responde | Se reintenta | Sin cambios hasta agotar intentos; entonces `error` |
-| Google rechaza el token de renovación (`invalid_grant` o 401) | `failed`, sin reintentos | `needs_reconnect` |
+| Google rechaza el token de renovación con `invalid_grant` | `failed`, sin reintentos. La conexión queda revocada y su token, borrado. Consulta [Acceso retirado desde Google](#acceso-retirado-desde-google) | `needs_reconnect` |
+| Google rechaza el token de renovación con un 401 sin `invalid_grant` | `failed`, sin reintentos. La conexión se conserva | `needs_reconnect` |
 | Google rechaza la lectura (4xx) | `failed`, sin reintentos | `error` |
 | El token no se puede descifrar | `failed`, sin reintentos | `error` |
-| No hay ninguna conexión guardada para ese `google_sub` | `failed`, sin reintentos y sin llamar a Google | `needs_reconnect` |
+| No hay ninguna conexión válida (sin revocar) para ese `google_sub` | `failed`, sin reintentos y sin llamar a Google | `needs_reconnect` |
 | La ficha no está en la conexión más reciente | `failed`, sin reintentos y sin llamar a Google | `error` |
 | El worker muere durante el último intento | `failed` al caducar el bloqueo | `error`, como mucho un minuto después |
 | La carga no es válida (falta `google_sub` o `location`) | `failed`, sin reintentos | No se escribe nada: no hay ficha a la que apuntar |
@@ -199,7 +200,7 @@ La operación de Google es `accounts.locations.reviews.updateReply` ([referencia
 |---|---|---|---|
 | Google acepta la respuesta (200) | `done` | `done` | `reply_sent`, código 200 |
 | Reintento: Google ya tiene ese texto | `done`, sin escribir | `done` | `reply_sent`, código 200, motivo `already_applied` |
-| Google rechaza el token de renovación (`invalid_grant`) o responde 401 | `failed`, sin reintentos | `failed`, `reconnect`: "Tu acceso a Google ha caducado; vuelve a conectar." | `reply_failed`, código 401, motivo `reconnect` |
+| Google rechaza el token de renovación (`invalid_grant`) o responde 401 | `failed`, sin reintentos. Con `invalid_grant`, la conexión queda revocada y su token, borrado | `failed`, `reconnect`: "Tu acceso a Google ha caducado; vuelve a conectar." | `reply_failed`, código 401, motivo `reconnect` |
 | Google responde 404 | `failed`, sin reintentos | `failed`, `review_gone` | `reply_failed`, código 404 |
 | Google responde otro 4xx | `failed`, sin reintentos | `failed`, `rejected` | `reply_failed`, con el código |
 | Google responde 5xx o 429, o no responde | Se reintenta (30 s, 60 s) | Sigue `running` hasta agotar los 3 intentos; entonces `failed`, `unavailable` | Solo al final: `reply_failed`, motivo `unavailable` |
@@ -241,7 +242,7 @@ Qué hace el job:
 |---|---|---|
 | Google acepta (200) | `done` | `done` |
 | Reintento: Google ya tiene ese horario | `done`, sin escribir | `done`, motivo `already_applied` |
-| `invalid_grant` o 401 | `failed`, sin reintentos | `failed`, `reconnect` |
+| `invalid_grant` o 401 | `failed`, sin reintentos. Con `invalid_grant`, la conexión queda revocada y su token, borrado | `failed`, `reconnect` |
 | Otro 4xx | `failed`, sin reintentos | `failed`, `rejected` |
 | 5xx, 429 o sin respuesta | Se reintenta (30 s, 60 s, 120 s, 240 s, 480 s) | `failed`, `unavailable` al agotar los 6 intentos |
 | El día ya pasó | `failed`, sin llamar a Google | `failed`, `date_passed` |
@@ -320,7 +321,7 @@ El adaptador SMTP usa `smtplib`, de la biblioteca estándar, en un hilo. Basta p
 
 ### El job `apply_offboarding`
 
-Carga: `{"offboarding_id": "<uuid>"}`. La API lo encola al confirmar la baja, para ejecutarse en su fecha (`run_at`), con la clave `apply_offboarding:<id>` y 5 intentos.
+Carga: `{"offboarding_id": "<uuid>"}`. La API lo encola al confirmar la baja, para ejecutarse en su fecha (`run_at`), con la clave `apply_offboarding:<id>` y 5 intentos. Una baja por correo (`scripts/baja_manual.py`) lo encola igual, para ya: lleva `reason = 'email_request'`, que solo el propietario puede escribir, y es la única que el job hace efectiva sin las 47 horas ([retencion.md](retencion.md#baja-por-correo)).
 
 1. **Hace efectiva la baja**, en una transacción. Solo si sigue programada y su fecha ha llegado: una baja restaurada, o un job que corre antes de tiempo, no hace nada (`offboarding_skipped`). Desde aquí ya no se puede restaurar.
 2. **Revoca en Google todas las conexiones guardadas** de ese usuario, no solo la última: `POST https://oauth2.googleapis.com/revoke`, con el token de renovación en el cuerpo (`token=...`, `application/x-www-form-urlencoded`). Una petición por token.
@@ -336,7 +337,7 @@ La revocación sigue la [documentación de Google](https://developers.google.com
 | Otro 4xx | Borra el token y no reintenta | `failed` |
 | 5xx, 429 o sin respuesta | Reintenta (30 s, 60 s, 120 s, 240 s). El token sigue guardado entre intentos. En el quinto, lo borra | `failed` si se agotan |
 | El token no se puede descifrar | Borra el token | `failed` |
-| No había ninguna conexión | Nada | `none` |
+| No había ninguna conexión con token (tampoco una que el dueño retiró desde Google) | Nada | `none` |
 | El dueño ya ha vuelto a conectar | No revoca nada y borra los tokens antiguos | `superseded` |
 
 - **Con `failed` queda constancia** en `offboarding` y en el log (`offboarding_effective`, nivel `warning`, con `not_revoked`). El token ya no está en la base: no se puede reintentar. El dueño puede quitar el acceso desde `myaccount.google.com/connections`.
@@ -358,9 +359,22 @@ Carga: `{}`. La pasada diaria que borra lo que ha superado su plazo. Qué borra 
 - **Jobs terminados**: borra los `done` y `failed` de más de `FICHAITOR_RETENTION_JOB_DAYS` días (14), salvo el que ejecutó una acción que se conserva (`job_finished` en los recuentos).
 - **Fichas desactivadas** (multinegocio): borra lo obtenido de Google de una ficha que lleva `FICHAITOR_RETENTION_INACTIVE_DAYS` días (30) desactivada, contados desde `location.deactivated_at`, con las mismas sentencias que las fichas retiradas. La fila de `location` se queda. Una ficha activada otra vez no tiene `deactivated_at` y no se toca. Hasta el paso 9 de [multinegocio.md](multinegocio.md#paso-9-retirada-de-la-compatibilidad) tampoco se toca la ficha elegida en el panel.
 - **Registro de activaciones y derechos de plan**: borra los de las cuentas con más de `FICHAITOR_RETENTION_AUDIT_MONTHS` meses (12) de baja efectiva, como el registro de respuestas. Los recuentos los nombran `location_activation_log` y `plan_entitlement`.
+- **Acceso retirado desde Google**: borra lo obtenido de Google de todas las fichas de un usuario cuyas conexiones están todas revocadas, la última hace `FICHAITOR_RETENTION_GOOGLE_DATA_DAYS` días (30) o más. Lo decide otra vez con las conexiones bloqueadas: una conexión nueva lo cancela. Consulta [Acceso retirado desde Google](#acceso-retirado-desde-google).
 - **Carriles**: no borra ninguna propuesta terminada que nombre un carril (`conversation_lane.active_proposal_id`), igual que las que nombra un hilo. La baja efectiva (`apply_offboarding`) borra los carriles de la cuenta antes que sus propuestas, porque la clave ajena del carril a su propuesta no lleva `ON DELETE`.
 
 Para añadir otro trabajo diario, añade un `DailyJob` a la lista `daily` de `Worker` (`app/worker/__main__.py`).
+
+### Acceso retirado desde Google
+
+Si el dueño quita el acceso a Fichaitor en su cuenta de Google, la siguiente renovación del token responde `invalid_grant`. El adaptador lo distingue (`GrantRevoked`, que es un `ReconnectRequired`) de un 401 sin ese código, de un 5xx, de un 429 y de un fallo de red. Solo `refresh_access_token` lo lanza.
+
+Lo tratan igual `sync_profile`, `reply_review` y `set_special_hours` (`app/worker/google_grant.py`):
+
+1. El job falla como hoy con un acceso perdido: `needs_reconnect` en el resumen, o la acción `failed` con `reconnect`.
+2. `PostgresWorkerStore.revoke_connection` marca la conexión con `revoked_at` y pone su token a `NULL`, en la misma escritura, y borra las conexiones más antiguas a las que sustituía. No llama a Google: ya está revocado.
+3. Si el usuario de Google se queda sin ninguna conexión válida, el evento `google_grant_revoked` lleva `countdown_started: true`. A los 30 días la tarea de retención borra lo obtenido de Google de todas sus fichas. Una conexión nueva antes de ese plazo lo cancela.
+
+Si la base falla al marcarla, el job se reintenta: Google vuelve a responder `invalid_grant` y el token se borra entonces. Los plazos y las tablas están en [retencion.md](retencion.md#retirar-el-acceso-desde-google).
 
 ## Tablas
 
@@ -465,7 +479,7 @@ La tabla tiene seguridad a nivel de fila: la API solo puede insertar `reply_conf
 | Rol | Puede | No puede |
 |---|---|---|
 | `fichaitor_api` | Insertar en `job` (solo `kind`, `payload`, `run_at`, `idempotency_key`, `max_attempts`); leer `profile_summary` y `review`; leer y escribir `review_draft`; insertar y leer `action` (al insertar, solo cuenta, ficha, reseña, tipo, texto y fecha de confirmación); insertar en `audit_log` el evento `reply_confirmed`; leer `sentiment_analysis` y `sentiment_history` | Leer `review_sentiment` o `sentiment_usage`, o escribir en las tablas del sentimiento; leer, cambiar o borrar jobs; fijar estado o intentos; escribir resúmenes o reseñas; cambiar o borrar una acción, o crearla con estado o resultado; leer, cambiar o borrar la auditoría |
-| `fichaitor_worker` | Leer, insertar y actualizar `job`, `profile_summary` y `review`; leer de `google_connection` las columnas que usa; leer `action` y actualizar su estado, intentos, fechas y resultado; insertar en `audit_log` los eventos `reply_sent` y `reply_failed`; leer, insertar y actualizar `review_sentiment`, `sentiment_analysis` y `sentiment_history`; añadir filas a `sentiment_usage` | Leer o cambiar `sentiment_usage`; leer `waitlist_entry`, `funnel_event` o el email de las conexiones; escribir en `google_connection`; borrar fuera de la baja y de la tarea de retención (consulta [retencion.md](retencion.md#privilegios)); vaciar una tabla; **crear una acción o cambiar su texto, su reseña o su cuenta**; leer `review_draft`; leer o cambiar la auditoría; crear o restaurar una baja; leer el correo de una cuenta, la huella de una sesión o un contacto de la lista de espera |
+| `fichaitor_worker` | Leer, insertar y actualizar `job`, `profile_summary` y `review`; leer de `google_connection` las columnas que usa y marcar una conexión como revocada, borrando su token (lo único que el disparador `google_connection_guard` le deja escribir ahí); leer `action` y actualizar su estado, intentos, fechas y resultado; insertar en `audit_log` los eventos `reply_sent` y `reply_failed`; leer, insertar y actualizar `review_sentiment`, `sentiment_analysis` y `sentiment_history`; añadir filas a `sentiment_usage` | Leer o cambiar `sentiment_usage`; leer `waitlist_entry`, `funnel_event` o el email de las conexiones; escribir en `google_connection` otra cosa que la revocación, o devolverle un token; borrar fuera de la baja y de la tarea de retención (consulta [retencion.md](retencion.md#privilegios)); vaciar una tabla; **crear una acción o cambiar su texto, su reseña o su cuenta**; leer `review_draft`; leer o cambiar la auditoría; crear o restaurar una baja; leer el correo de una cuenta, la huella de una sesión o un contacto de la lista de espera |
 
 ## Variables de entorno
 

@@ -523,6 +523,58 @@ docker exec fichaitor-db psql -U fichaitor -d fichaitor \
   -c "SELECT state, count(*), min(run_at) FROM job GROUP BY state"
 ```
 
+**Tramitar una baja pedida por correo:**
+
+Cuando alguien pide por correo la baja de su ficha o de su cuenta, soporte la tramita con `scripts/baja_manual.py`. Hace lo mismo que la baja del panel, pero sin código ni espera de 48 horas: es efectiva al momento. Qué hace y por qué la base lo admite está en `docs/retencion.md`, «Baja por correo».
+
+Antes de ejecutarlo, comprueba:
+
+- **Que el correo viene de la dirección de la cuenta.** Mira la dirección real del remitente (no el nombre que se muestra) y las cabeceras de autenticación del mensaje (`spf=pass`, `dkim=pass` o `dmarc=pass` para su dominio). Si no coincide o no pasa, no la tramites: contesta pidiendo que la haga desde el panel o desde esa dirección.
+- **Qué pide:** desconectar Google (`ficha`) o borrar la cuenta (`cuenta`). Si dice una ficha y la cuenta tiene varias, apunta cuál. Google concede el acceso por usuario: la baja de `ficha` desconecta todas las fichas de la cuenta. Si solo quiere dejar de usar una, que la desactive en el panel.
+- **Una referencia para `--motivo`**, por ejemplo el número del ticket. Sin direcciones de correo ni otros datos personales: se guarda 12 meses en la auditoría.
+
+Ejecútalo en el servidor, dentro del contenedor del worker, con el usuario propietario de la base de datos. La contraseña se lee de `db.env` y viaja en una variable de entorno, nunca en la línea de órdenes:
+
+1. Prepara la URL del propietario en la sesión del servidor:
+
+   ```bash
+   cd /opt/bitclick/fichaitor
+   set -a; . ./db.env; set +a
+   export FICHAITOR_OWNER_DATABASE_URL="postgresql://fichaitor:${POSTGRES_PASSWORD}@fichaitor-db:5432/fichaitor"
+   ```
+
+2. Mira lo que haría. Sin `--confirmar` no cambia nada:
+
+   ```bash
+   docker exec -e FICHAITOR_OWNER_DATABASE_URL fichaitor-worker \
+     python scripts/baja_manual.py --email dueno@example.com --scope ficha --motivo "Ticket 1234"
+   ```
+
+   Enseña la cuenta (con el correo enmascarado), sus fichas, si ya tiene una baja programada desde el panel (la nueva la sustituye) y qué va a pasar. Si la cuenta tiene más de una ficha y el alcance es `ficha`, pide `--location loc_...`: la ficha que nombra el correo, para comprobar que es de esa cuenta.
+
+3. Si todo cuadra, repite la orden con `--confirmar`. Imprime el identificador de la baja, una línea JSON `baja_manual` de auditoría y, en unos segundos, `Efectiva: ... Revocación en Google: revoked`. Si dice que el worker todavía no la ha hecho efectiva, comprueba que `fichaitor-worker` está en marcha: los datos ya no se sirven y el worker la aplicará al tomar el job.
+
+4. Borra la variable de la sesión y contesta a la persona: la baja está hecha y lo obtenido de Google se borra en un máximo de 30 días.
+
+   ```bash
+   unset FICHAITOR_OWNER_DATABASE_URL POSTGRES_PASSWORD
+   ```
+
+| Código de salida | Qué significa |
+|---|---|
+| `0` | Hecho, o simulación correcta |
+| `1` | No se ha tramitado: no hay cuenta con ese correo, hay más de una, la ficha no es de la cuenta, falta `--location`, la cuenta ya está desconectada o el motivo no vale. El mensaje lo explica |
+| `2` | Uso o configuración: falta la URL, o no es el usuario propietario |
+
+Para ver las bajas tramitadas por correo:
+
+```bash
+docker exec fichaitor-db psql -U fichaitor -d fichaitor \
+  -c "SELECT at, written_by, action_id AS baja, action_type, text AS motivo FROM audit_log WHERE event = 'offboarding_email_request' ORDER BY at DESC LIMIT 20"
+```
+
+> **Nota:** el script viaja en la imagen de la API y del worker desde la versión que lo incluye. Con una imagen anterior, despliega primero.
+
 > **Precaución:** no ejecutes `docker compose down -v`. La opción `-v` borra el volumen de la base de datos.
 
 ## Lista de comprobación previa a publicar

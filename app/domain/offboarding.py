@@ -34,6 +34,11 @@ MAIL_MAX_ATTEMPTS = 3
 FLOOR_HOURS = 47
 MIN_GRACE_HOURS = 48
 APPLY_MAX_ATTEMPTS = 5
+# offboarding.reason of a leave support processed for an email request
+# (scripts/baja_manual.py). NULL: asked for in the panel with a code. Only the owner of
+# the database can write it, and such a leave is effective at once: the person already
+# confirmed it by email from the address of the account.
+REASON_EMAIL_REQUEST = "email_request"
 
 CODE_DIGITS = 6
 RESTORE_TOKEN_BYTES = 32

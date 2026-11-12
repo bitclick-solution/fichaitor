@@ -37,6 +37,8 @@ class MemoryWorkerStore:
         # Reviews, actions and audit: shared with a MemoryStore when one is given.
         self.tables = tables if tables is not None else MemoryTables()
         self.connections: dict[str, list[StoredConnection]] = {}
+        # Connections revoked by the owner at Google: (connection id, when), by user.
+        self.revoked: dict[str, list[tuple[str, datetime]]] = {}
         self.summaries: dict[tuple[str, str], StoredSummary] = {}
         self.categories: dict[tuple[str, str], str] = {}  # set by tests and the demo
         self.suspended: set[str] = set()  # Google users with a scheduled leave
@@ -82,6 +84,15 @@ class MemoryWorkerStore:
     async def latest_connection(self, google_sub: str) -> StoredConnection | None:
         history = self.connections.get(google_sub)
         return history[-1] if history else None
+
+    async def revoke_connection(self, google_sub: str, connection_id: str, at: datetime) -> bool:
+        # The real store keeps the row without its token; here it moves to `revoked`.
+        history = self.connections.get(google_sub, [])
+        used = [i for i, c in enumerate(history) if c.connection_id == connection_id]
+        if used:
+            self.revoked.setdefault(google_sub, []).append((history[used[-1]].connection_id, at))
+            self.connections[google_sub] = history[used[-1] + 1 :]
+        return not self.connections.get(google_sub)
 
     async def drop_replaced_connections(self, google_sub: str, connection_id: str) -> int:
         history = self.connections.get(google_sub, [])

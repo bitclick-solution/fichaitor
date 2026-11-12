@@ -262,7 +262,8 @@ GRANT INSERT (special_date) ON action TO fichaitor_api;
 ALTER TABLE audit_log DROP CONSTRAINT IF EXISTS audit_log_event_check;
 ALTER TABLE audit_log ADD CONSTRAINT audit_log_event_check
     CHECK (event IN ('reply_confirmed', 'reply_sent', 'reply_failed',
-                     'special_hours_confirmed', 'special_hours_sent', 'special_hours_failed'));
+                     'special_hours_confirmed', 'special_hours_sent', 'special_hours_failed',
+                     'offboarding_email_request'));
 
 -- ---------------------------------------------------------------------------
 -- Sentimiento del establecimiento (2026-11-12). Consulta docs/sentimiento.md.
@@ -432,6 +433,15 @@ CREATE TABLE IF NOT EXISTS offboarding (
     CHECK (purged_at IS NULL OR effective_at IS NOT NULL)
 );
 
+-- Bases anteriores (2026-11-12): cómo se pidió la baja. NULL = desde el panel, con código
+-- (todas las filas que ya existían). 'email_request' = por correo, tramitada por soporte
+-- con scripts/baja_manual.py: solo la escribe el propietario (disparador de abajo y
+-- privilegios de columna) y se hace efectiva al momento, sin las 47 horas.
+ALTER TABLE offboarding ADD COLUMN IF NOT EXISTS reason text;
+ALTER TABLE offboarding DROP CONSTRAINT IF EXISTS offboarding_reason_check;
+ALTER TABLE offboarding ADD CONSTRAINT offboarding_reason_check
+    CHECK (reason IN ('email_request'));
+
 -- Como mucho una baja programada por cuenta.
 CREATE UNIQUE INDEX IF NOT EXISTS offboarding_one_pending_per_account ON offboarding (account_id)
     WHERE restored_at IS NULL AND effective_at IS NULL;
@@ -453,6 +463,8 @@ CREATE INDEX IF NOT EXISTS offboarding_open_sub ON offboarding (google_sub)
 --   puede vaciarse.
 -- I8: una baja restaurada (o sustituida por otra) no cierra nada; su google_sub se vacía
 -- en la misma escritura, para no unir la identidad de Google con la cuenta para siempre.
+-- reason (baja por correo): solo el propietario la fija, al crear la baja, y nadie la
+-- cambia después. Es la vía explícita del propietario para una baja sin las 47 horas.
 CREATE OR REPLACE FUNCTION offboarding_guard() RETURNS trigger
 LANGUAGE plpgsql AS $$
 DECLARE
@@ -470,11 +482,16 @@ BEGIN
            OR NEW.scope IS DISTINCT FROM OLD.scope
            OR NEW.confirmed_at IS DISTINCT FROM OLD.confirmed_at
            OR NEW.delete_at IS DISTINCT FROM OLD.delete_at
+           OR NEW.reason IS DISTINCT FROM OLD.reason
            OR (NEW.google_sub IS DISTINCT FROM OLD.google_sub AND NEW.google_sub IS NOT NULL) THEN
             RAISE EXCEPTION 'una baja no cambia de cuenta, de fecha ni de usuario de Google'
                 USING ERRCODE = 'check_violation';
         END IF;
         RETURN NEW;
+    END IF;
+    IF NEW.reason IS NOT NULL THEN
+        RAISE EXCEPTION 'solo el propietario tramita una baja por correo'
+            USING ERRCODE = 'insufficient_privilege';
     END IF;
     SELECT a.google_sub INTO account_sub FROM account a
     WHERE a.id = NEW.account_id AND a.deleted_at IS NULL;
@@ -657,3 +674,67 @@ CREATE POLICY plan_entitlement_worker_expired ON plan_entitlement
               now() - interval '12 months',
               coalesce(nullif(current_setting('fichaitor.audit_cutoff', true), '')::timestamptz,
                        now() - interval '12 months'))));
+
+-- ---------------------------------------------------------------------------
+-- Acceso retirado desde Google (2026-11-12). Consulta docs/retencion.md, «Retirar el
+-- acceso desde Google».
+-- Si Google responde invalid_grant al renovar el token, el dueño ha quitado el acceso (o
+-- ha caducado): el worker marca la conexión con revoked_at y borra su token cifrado en la
+-- misma escritura. Si el usuario de Google se queda sin ninguna conexión válida, la tarea
+-- de retención borra lo obtenido de Google de todas sus fichas 30 días después del último
+-- revoked_at. Una conexión nueva (volver a conectar) la cancela: deja de cumplirse "todas
+-- revocadas". Sin tabla aparte: la cuenta atrás se deduce de las conexiones.
+-- Bases anteriores: columnas nuevas y una restricción que las filas existentes ya cumplen
+-- (revoked_at NULL y token presente). No se cambia ninguna fila.
+ALTER TABLE google_connection ADD COLUMN IF NOT EXISTS revoked_at timestamptz;
+ALTER TABLE google_connection ALTER COLUMN refresh_token_enc DROP NOT NULL;
+ALTER TABLE google_connection DROP CONSTRAINT IF EXISTS google_connection_revoked_check;
+ALTER TABLE google_connection ADD CONSTRAINT google_connection_revoked_check
+    CHECK ((revoked_at IS NULL) = (refresh_token_enc IS NOT NULL));
+
+-- Solo las conexiones vivas de cada usuario: las que busca latest_connection.
+CREATE INDEX IF NOT EXISTS google_connection_sub_valid
+    ON google_connection (google_sub, connected_at DESC) WHERE revoked_at IS NULL;
+
+-- Reglas, para quien no sea el propietario:
+-- - Una conexión nace válida (la API no puede crearla revocada).
+-- - Lo único que se le puede hacer después es revocarla: revoked_at pasa de NULL a una
+--   fecha y el token se borra en la misma escritura. Nada más cambia, y una conexión
+--   revocada no vuelve a cambiar (nadie le pone un token).
+CREATE OR REPLACE FUNCTION google_connection_guard() RETURNS trigger
+LANGUAGE plpgsql AS $$
+BEGIN
+    IF fichaitor_is_owner(TG_RELID) THEN
+        RETURN NEW;
+    END IF;
+    IF TG_OP = 'INSERT' THEN
+        IF NEW.revoked_at IS NOT NULL THEN
+            RAISE EXCEPTION 'una conexión nace válida' USING ERRCODE = 'check_violation';
+        END IF;
+        RETURN NEW;
+    END IF;
+    IF OLD.revoked_at IS NOT NULL
+       OR NEW.revoked_at IS NULL
+       OR NEW.refresh_token_enc IS NOT NULL
+       OR NEW.id IS DISTINCT FROM OLD.id
+       OR NEW.google_sub IS DISTINCT FROM OLD.google_sub
+       OR NEW.email IS DISTINCT FROM OLD.email
+       OR NEW.connected_at IS DISTINCT FROM OLD.connected_at
+       OR NEW.key_version IS DISTINCT FROM OLD.key_version
+       OR NEW.scopes IS DISTINCT FROM OLD.scopes
+       OR NEW.locations IS DISTINCT FROM OLD.locations THEN
+        RAISE EXCEPTION 'una conexión solo se marca como revocada, borrando su token'
+            USING ERRCODE = 'check_violation';
+    END IF;
+    RETURN NEW;
+END
+$$;
+
+DROP TRIGGER IF EXISTS google_connection_guard ON google_connection;
+CREATE TRIGGER google_connection_guard BEFORE INSERT OR UPDATE ON google_connection
+    FOR EACH ROW EXECUTE FUNCTION google_connection_guard();
+
+-- Worker: lee revoked_at y marca la revocación (revoked_at y el token, a NULL). Sigue sin
+-- leer el correo de la conexión.
+GRANT SELECT (revoked_at) ON google_connection TO fichaitor_worker;
+GRANT UPDATE (revoked_at, refresh_token_enc) ON google_connection TO fichaitor_worker;

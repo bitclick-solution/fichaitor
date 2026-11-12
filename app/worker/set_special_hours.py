@@ -59,10 +59,16 @@ from app.domain.special_hours import (
     google_periods,
     merge,
 )
-from app.ports.google_profile import GoogleProfile, GoogleRejected, ReconnectRequired
+from app.ports.google_profile import (
+    GoogleProfile,
+    GoogleRejected,
+    GrantRevoked,
+    ReconnectRequired,
+)
 from app.ports.job_queue import JobEnqueuer
 from app.ports.worker_store import ClaimedAction, WorkerStore
 from app.worker import log
+from app.worker.google_grant import record_revoked_grant
 
 KIND = SET_SPECIAL_HOURS
 MAX_ATTEMPTS = JOB_MAX_ATTEMPTS  # enqueued with it by the store that creates the action
@@ -153,8 +159,13 @@ class SetSpecialHours:
         except NoRegularHours:
             await self._fail(action, job, ERROR_NO_REGULAR_HOURS)
             raise PermanentJobError("la ficha no tiene horario normal que copiar") from None
-        except ReconnectRequired:
+        except ReconnectRequired as exc:
             await self._fail(action, job, ERROR_RECONNECT, 401)
+            if isinstance(exc, GrantRevoked):
+                # invalid_grant: the owner removed the access at Google (google_grant.py).
+                await record_revoked_grant(
+                    self._store, action.google_sub, connection.connection_id, self._clock, job.id
+                )
             raise PermanentJobError("el dueño tiene que volver a conectar con Google") from None
         except GoogleRejected as exc:
             reason = ERROR_REJECTED if have_access else ERROR_INTERNAL

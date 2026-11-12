@@ -41,6 +41,7 @@ from app.domain.special_hours import MAX_GOOGLE_PERIODS, weekly_hours
 from app.ports.google_profile import (
     GoogleProfileError,
     GoogleRejected,
+    GrantRevoked,
     LocationHours,
     ReconnectRequired,
 )
@@ -126,7 +127,10 @@ class RealGoogleProfile:
                     # Our own credentials are wrong: asking the owner to reconnect
                     # would not fix it.
                     raise GoogleRejected(f"credenciales de la aplicación rechazadas ({status})")
-                if code == "invalid_grant" or status == 401:
+                if code == "invalid_grant":
+                    # The refresh token is dead for good: revoked by the owner or expired.
+                    raise GrantRevoked(f"permiso de Google revocado o caducado ({status})")
+                if status == 401:
                     raise ReconnectRequired(f"permiso de Google caducado o revocado ({status})")
                 if status < 500 and status != 429:
                     raise GoogleRejected(f"renovación rechazada (estado {status})")
