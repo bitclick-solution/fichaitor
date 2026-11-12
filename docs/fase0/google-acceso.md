@@ -35,12 +35,14 @@ La ruta coincide con la del contrato de la API (`docs/03-lld.md`). El secreto de
 | Requisito | Estado |
 |---|---|
 | Nombre de la app y correo de asistencia | Listos: Fichaitor, `soporte@fichaitor.es` |
-| Logo (cuadrado, 120 × 120 px, PNG o JPG, menos de 1 MB) | Falta |
-| Página principal pública en `https://fichaitor.es` | Falta |
-| Política de privacidad publicada en `/privacidad/` | Falta |
-| Condiciones de uso publicadas en `/condiciones-de-uso/` | Falta |
-| Dominio verificado en Google Search Console | Falta |
+| Logo (cuadrado, 120 × 120 px, PNG o JPG, menos de 1 MB) | Listo: `brand/logo-120.png` (1,3 KB). Falta subirlo en Branding |
+| Página principal pública en `https://fichaitor.es` | Hecha en `web/`, sin publicar. El registro A apunta al VPS desde el 2026-11-12; falta desplegar el contenedor y crear el host en Nginx Proxy Manager |
+| Política de privacidad publicada en `/privacidad/` | Redactada en `docs/legal/privacidad.md`, sin marcas abiertas y sin revisión profesional. Se publica con la web |
+| Condiciones de uso publicadas en `/condiciones-de-uso/` | Redactadas en `docs/legal/condiciones-de-uso.md`, sin revisión profesional. Se publican con la web |
+| Dominio verificado en Google Search Console | Verificado el 2026-11-12 (registro TXT `google-site-verification` en el DNS). Falta comprobar que la cuenta propietaria es Propietario o Editor del proyecto de Google Cloud |
 | Correo de contacto del desarrollador | Por rellenar |
+| Registro AAAA de `fichaitor.es` | Pendiente: sigue apuntando a IONOS (`2001:8d8:100f:f000::2b1`). Hay que borrarlo antes de pedir el certificado |
+| Verificación de marca y «Publish app» | Pendiente: se hace con la web publicada. El resultado de la verificación de marca vale 7 días |
 
 ## A. Proyecto nuevo y acceso a la API
 
