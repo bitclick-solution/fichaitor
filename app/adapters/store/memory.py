@@ -8,6 +8,21 @@ from datetime import datetime
 
 from app.adapters.memory_tables import ActionRow, MemoryTables, ReviewRow
 from app.domain.actions import REPLY_REVIEW
+from app.domain.offboarding import (
+    APPLY_KIND,
+    APPLY_MAX_ATTEMPTS,
+    CODE_GONE,
+    CODE_LOCKED,
+    CODE_OK,
+    CODE_WRONG,
+    MAIL_MAX_ATTEMPTS,
+    MAIL_PENDING,
+    SCOPE_ACCOUNT,
+    SEND_MAIL_KIND,
+    CodeCheck,
+    PendingDeletion,
+    same_hash,
+)
 from app.ports.google_oauth import ProfileLocation
 from app.ports.job_queue import JobEnqueuer
 from app.ports.store import (
@@ -55,6 +70,33 @@ class SessionRow:
     account_id: str
     expires_at: datetime
     revoked_at: datetime | None = None
+    id: str = ""
+
+
+@dataclass
+class CodeRow:
+    id: str
+    account_id: str
+    session_id: str
+    scope: str
+    code_hash: str
+    expires_at: datetime
+    attempts: int = 0
+    used_at: datetime | None = None
+    invalidated_at: datetime | None = None
+    mail_state: str = MAIL_PENDING
+
+
+@dataclass
+class OffboardingRow:
+    id: str
+    account_id: str
+    scope: str
+    confirmed_at: datetime
+    delete_at: datetime
+    restore_token_hash: str | None
+    restored_at: datetime | None = None
+    effective_at: datetime | None = None
 
 
 class MemoryStore:
@@ -73,6 +115,8 @@ class MemoryStore:
         self.sessions: dict[str, SessionRow] = {}  # by token hash, never the token
         # What the worker would write, by (google_sub, Google location name).
         self.summaries: dict[tuple[str, str], StoredSummary] = {}
+        self.codes: list[CodeRow] = []  # fingerprints only, never a code
+        self.offboardings: list[OffboardingRow] = []
         self._fail = fail
 
     def _check(self) -> None:
@@ -128,7 +172,7 @@ class MemoryStore:
         self, account_id: str, token_hash: str, now: datetime, expires_at: datetime
     ) -> None:
         self._check()
-        self.sessions[token_hash] = SessionRow(account_id, expires_at)
+        self.sessions[token_hash] = SessionRow(account_id, expires_at, id=str(uuid.uuid4()))
 
     async def account_for_session(self, token_hash: str, now: datetime) -> Account | None:
         self._check()
@@ -136,7 +180,9 @@ class MemoryStore:
         if session is None or session.revoked_at is not None or session.expires_at <= now:
             return None
         row = self._account(session.account_id)
-        return Account(row.id, row.email, row.selected_location_id)
+        leave = self._pending(row.id)
+        pending = PendingDeletion(leave.scope, leave.delete_at) if leave else None
+        return Account(row.id, row.email, row.selected_location_id, session.id, pending)
 
     async def revoke_session(self, token_hash: str, now: datetime) -> None:
         self._check()
@@ -180,7 +226,7 @@ class MemoryStore:
             ),
             None,
         )
-        if row is None:
+        if row is None or self._pending(account_id) is not None:
             return None
         key = (account.google_sub, row.profile.location)
         summary = self.summaries.get(key)
@@ -208,7 +254,7 @@ class MemoryStore:
     def _selected_key(self, account_id: str) -> tuple[str, str] | None:
         """(google_sub, Google location) of the selected profile of that account."""
         account = next((a for a in self.accounts.values() if a.id == account_id), None)
-        if account is None:
+        if account is None or self._pending(account_id) is not None:
             return None
         for row in self.locations:
             if (
@@ -294,3 +340,118 @@ class MemoryStore:
         key = self._selected_key(account_id)
         found = self.tables.sentiment_of(*key, now) if key is not None else None
         return StoredSentiment(found[0], tuple(found[1])) if found is not None else None
+
+    # --- leaving: code, scheduled leave and restore -------------------------------
+
+    def _pending(self, account_id: str) -> OffboardingRow | None:
+        """The scheduled leave of that account, if it has one."""
+        return next(
+            (
+                o
+                for o in self.offboardings
+                if o.account_id == account_id and o.restored_at is None and o.effective_at is None
+            ),
+            None,
+        )
+
+    async def create_offboarding_code(
+        self,
+        account_id: str,
+        session_id: str,
+        scope: str,
+        code_hash: str,
+        now: datetime,
+        expires_at: datetime,
+        mail: dict,
+    ) -> None:
+        self._check()
+        for code in self.codes:
+            if code.account_id == account_id and code.used_at is None:
+                code.invalidated_at = code.invalidated_at or now
+        row = CodeRow(str(uuid.uuid4()), account_id, session_id, scope, code_hash, expires_at)
+        self.codes.append(row)
+        if self.jobs is not None:
+            await self.jobs.enqueue(
+                SEND_MAIL_KIND, {**mail, "code_id": row.id}, max_attempts=MAIL_MAX_ATTEMPTS
+            )
+
+    async def offboarding_code_mail(self, account_id: str) -> str | None:
+        self._check()
+        for code in reversed(self.codes):
+            if code.account_id == account_id:
+                live = code.used_at is None and code.invalidated_at is None
+                return code.mail_state if live else None
+        return None
+
+    async def confirm_offboarding(
+        self,
+        account_id: str,
+        candidate_hash: str,
+        scope: str,
+        now: datetime,
+        *,
+        max_attempts: int,
+        delete_at: datetime,
+        restore_hash: str,
+        mail: dict,
+    ) -> CodeCheck:
+        self._check()
+        code = next((c for c in reversed(self.codes) if c.account_id == account_id), None)
+        if (
+            code is None
+            or code.used_at is not None
+            or code.invalidated_at is not None
+            or code.expires_at <= now
+        ):
+            return CodeCheck(CODE_GONE)
+        if code.attempts >= max_attempts:
+            code.invalidated_at = now
+            return CodeCheck(CODE_LOCKED)
+        code.attempts += 1
+        if not same_hash(code.code_hash, candidate_hash):
+            if code.attempts >= max_attempts:
+                code.invalidated_at = now
+                return CodeCheck(CODE_LOCKED)
+            return CodeCheck(CODE_WRONG, max_attempts - code.attempts)
+        code.used_at = now
+        earlier = self._pending(account_id)
+        if earlier is not None:
+            earlier.restored_at, earlier.restore_token_hash = now, None
+        leave = OffboardingRow(str(uuid.uuid4()), account_id, scope, now, delete_at, restore_hash)
+        self.offboardings.append(leave)
+        if scope == SCOPE_ACCOUNT:
+            for session in self.sessions.values():
+                if session.account_id == account_id and session.revoked_at is None:
+                    session.revoked_at = now
+        if self.jobs is not None:
+            await self.jobs.enqueue(SEND_MAIL_KIND, dict(mail), max_attempts=MAIL_MAX_ATTEMPTS)
+            await self.jobs.enqueue(
+                APPLY_KIND,
+                {"offboarding_id": leave.id},
+                idempotency_key=f"{APPLY_KIND}:{leave.id}",
+                run_at=delete_at,
+                max_attempts=APPLY_MAX_ATTEMPTS,
+            )
+        return CodeCheck(CODE_OK, delete_at=delete_at)
+
+    async def restore_offboarding(self, account_id: str, now: datetime) -> bool:
+        self._check()
+        leave = self._pending(account_id)
+        if leave is None:
+            return False
+        leave.restored_at, leave.restore_token_hash = now, None
+        return True
+
+    async def restore_offboarding_by_token(self, token_hash: str, now: datetime) -> str | None:
+        self._check()
+        for leave in self.offboardings:
+            if (
+                leave.restore_token_hash is not None
+                and same_hash(leave.restore_token_hash, token_hash)
+                and leave.restored_at is None
+                and leave.effective_at is None
+                and leave.delete_at > now
+            ):
+                leave.restored_at, leave.restore_token_hash = now, None
+                return leave.account_id
+        return None

@@ -4,6 +4,10 @@ import asyncio
 import logging
 import time
 import traceback
+from collections.abc import Callable, Sequence
+from dataclasses import dataclass
+from datetime import UTC, date, datetime
+from datetime import time as day_time
 
 from app.domain.jobs import Job, JobError, PermanentJobError, retry_delay, safe_error
 from app.ports.job_queue import JobQueue
@@ -11,6 +15,24 @@ from app.worker.log import event
 from app.worker.registry import HandlerRegistry
 
 TIMEOUT_ERROR = "tiempo máximo de ejecución superado"
+
+
+@dataclass(frozen=True)
+class DailyJob:
+    """A job the worker enqueues for itself once a day. There is no scheduler process:
+    every worker tries to enqueue today's job and the idempotency key (`<kind>:<day>`)
+    lets only one of them succeed, so any number of workers run it once. A worker that
+    starts after the hour still gets today's job, which is then already due."""
+
+    kind: str
+    hour_utc: int = 3
+    max_attempts: int = 3
+
+    def key(self, day: date) -> str:
+        return f"{self.kind}:{day.isoformat()}"
+
+    def run_at(self, day: date) -> datetime:
+        return datetime.combine(day, day_time(self.hour_utc), UTC)
 
 
 class Worker:
@@ -24,6 +46,8 @@ class Worker:
         job_timeout: float = 120.0,
         lock_timeout: float = 300.0,
         recover_interval: float = 60.0,
+        daily: Sequence[DailyJob] = (),
+        clock: Callable[[], datetime] = lambda: datetime.now(UTC),
     ) -> None:
         self._queue = queue
         self._registry = registry
@@ -33,6 +57,10 @@ class Worker:
         self._lock_timeout = lock_timeout
         self._recover_interval = recover_interval
         self._next_recovery = 0.0  # monotonic clock: the first round always looks
+        self._daily = tuple(daily)
+        self._clock = clock
+        self._scheduled: set[str] = set()  # keys this process already tried today
+        self._next_schedule = 0.0
 
     async def run(self, stop: asyncio.Event) -> None:
         """Run jobs until stop is set. The job in progress is always finished first."""
@@ -49,6 +77,7 @@ class Worker:
 
     async def run_once(self) -> bool:
         """Take and run one job. False if there was nothing to do."""
+        await self._schedule()
         job = await self._queue.claim(self._worker_id, self._registry.kinds, self._lock_timeout)
         # After claim(), which is what closes the jobs abandoned on their last attempt.
         await self._record_lost()
@@ -79,6 +108,36 @@ class Worker:
             event("job_failed", logging.ERROR, error=error, **fields)
         else:
             event("job_retry", logging.WARNING, error=error, retry_in=delay, **fields)
+
+    async def _schedule(self) -> None:
+        """Enqueue today's daily jobs, once per process and day. Looked at once per
+        recover_interval; a failure here never stops the jobs and is tried again."""
+        if not self._daily:
+            return
+        tick = time.monotonic()
+        if tick < self._next_schedule:
+            return
+        self._next_schedule = tick + self._recover_interval
+        today = self._clock().astimezone(UTC).date()
+        for daily in self._daily:
+            key = daily.key(today)
+            if key in self._scheduled:
+                continue
+            try:
+                created = await self._queue.enqueue(
+                    daily.kind,
+                    {},
+                    idempotency_key=key,
+                    run_at=daily.run_at(today),
+                    max_attempts=daily.max_attempts,
+                )
+            except Exception as exc:
+                event("schedule_error", logging.ERROR, error=type(exc).__name__, kind=daily.kind)
+                continue
+            self._scheduled = {k for k in self._scheduled if not k.startswith(f"{daily.kind}:")}
+            self._scheduled.add(key)
+            if created:
+                event("daily_job_enqueued", kind=daily.kind, day=today.isoformat())
 
     async def _record_lost(self) -> None:
         """Let each handler record the jobs of its kind that died with their worker.

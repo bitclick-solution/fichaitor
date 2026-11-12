@@ -15,7 +15,7 @@ from typing import Literal
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel, Field
 
-from app.api.session import account_guard, require_csrf_header
+from app.api.session import active_account_guard, require_csrf_header
 from app.api.summary_out import STATUS_PENDING, seconds
 from app.application.profile_sync import ProfileSync
 from app.application.review_replies import (
@@ -132,7 +132,8 @@ def build_router(
     clock: Callable[[], float],
 ) -> APIRouter:
     router = APIRouter()
-    current_account = account_guard(store, clock)
+    # Closed while a leave is scheduled: nothing is listed, drafted or published.
+    current_account = active_account_guard(store, clock)
 
     def review_id_or_404(review_id: str) -> str:
         # The shape is checked before anything is looked up.

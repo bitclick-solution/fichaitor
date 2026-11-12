@@ -141,10 +141,13 @@ Al volver a conectar, las fichas se actualizan con lo que Google lista en ese mo
   "locations": [
     { "id": "loc_3f2a", "title": "Bar La Parra", "place_id": "ChIJ...", "verified": true }
   ],
-  "selected_location_id": null
+  "selected_location_id": null,
+  "connected": true,
+  "pending_deletion": null
 }
 ```
 
+- `connected` y `pending_deletion` (2026-11-12): el estado de la conexión con Google y la baja programada, si la hay. Consulta [Baja: desconectar y borrar la cuenta](#baja-desconectar-y-borrar-la-cuenta-2026-11-12).
 - `locations` viene ordenado por `title`. Puede ser una lista vacía.
 - `id`: `loc_` seguido de letras y números. Es propio de cada cuenta: no sirve en otra.
 - `place_id` puede ser `null`: Google no siempre lo da (fichas sin verificar o sin ubicación en el mapa).
@@ -378,6 +381,176 @@ Cada cuenta ve solo el resumen de su ficha elegida. Dos cuentas que administran 
 
 204 sin cuerpo. Cierra la sesión en el servidor y borra la cookie. Lleva la cabecera `X-Requested-With: fichaitor`; sin ella, 403. Responde 204 también si no había sesión.
 
+## Baja: desconectar y borrar la cuenta (2026-11-12)
+
+El dueño puede desconectar Google (`scope: "ficha"`) o borrar su cuenta (`scope: "cuenta"`). Las dos bajas siguen el mismo recorrido:
+
+1. La web pide un código. Llega al correo de la cuenta, que es el de Google.
+2. El dueño escribe el código. La baja queda **programada a 48 horas**.
+3. Hasta esa fecha se puede **restaurar**: desde la sesión o desde el enlace del correo de aviso.
+4. A las 48 horas la baja se hace efectiva: se revoca el acceso en Google y empieza el borrado. Lo hace el worker; ninguna ruta lo dispara.
+
+Los plazos de borrado están en [retencion.md](retencion.md).
+
+Reglas comunes:
+
+- Los `POST` con sesión llevan la cabecera `X-Requested-With: fichaitor`. Sin ella, 403.
+- Sin sesión, 401.
+- Todos los errores traen `detail` con un texto en español listo para mostrar.
+- El código y el token de restauración viajan siempre en el cuerpo del `POST`, nunca en la URL.
+
+### `POST /api/v1/me/offboarding/code`
+
+Pide el código. Petición:
+
+```json
+{ "scope": "ficha" }
+```
+
+`scope` es `"ficha"` o `"cuenta"`.
+
+Respuesta 202:
+
+```json
+{ "sent_to": "d***o@example.com", "expires_in": 600 }
+```
+
+- `sent_to` es el correo de la cuenta, enmascarado.
+- `expires_in` son los segundos de validez del código (10 minutos).
+- El código tiene 6 cifras y sirve una sola vez. Vale solo para ese `scope` y desde la sesión que lo pidió.
+- Pedir otro código invalida el anterior.
+- La respuesta llega antes de que el correo salga: lo envía el worker. Para saber si salió, consulta `GET /api/v1/me/offboarding/code`.
+
+| Código | Cuándo | `detail` |
+|---|---|---|
+| 409 | La cuenta ya tiene una baja programada | "Ya tienes una baja programada. Restáurala si quieres cambiarla." |
+| 429 | Más de 5 códigos por cuenta en una hora | "Has pedido demasiados códigos. Prueba dentro de un rato." |
+| 503 | El servidor no tiene correo configurado, o no pudo guardar el código. No se programa nada | "Ahora mismo no podemos enviarte el código por correo. Escríbenos a soporte@fichaitor.es." |
+
+### `GET /api/v1/me/offboarding/code`
+
+Estado del correo del último código vigente de la cuenta:
+
+```json
+{ "status": "enviado" }
+```
+
+| `status` | Qué significa | Qué hace la web |
+|---|---|---|
+| `pendiente` | El correo está en cola | Sigue esperando. Sondea cada 3 segundos, 30 segundos como máximo |
+| `enviado` | El servidor de correo lo aceptó | Pide el código al dueño |
+| `fallido` | No se pudo enviar tras 3 intentos | Avisa al dueño y ofrece pedir otro código |
+| `ninguno` | No hay ningún código vigente | Ofrece pedir uno |
+
+### `POST /api/v1/me/offboarding/confirm`
+
+Confirma la baja con el código. Petición:
+
+```json
+{ "scope": "ficha", "code": "123456" }
+```
+
+Respuesta 200:
+
+```json
+{ "scope": "ficha", "delete_at": "2026-11-14T11:16:00Z" }
+```
+
+`delete_at` es cuándo se hace efectiva la baja: 48 horas después.
+
+| Código | Cuándo | `detail` |
+|---|---|---|
+| 409 | La cuenta ya tiene una baja programada | "Ya tienes una baja programada. Restáurala si quieres cambiarla." |
+| 410 | No hay código, ha caducado, ya se usó o se pidió otro después | "El código ha caducado o ya se ha usado. Pide otro." |
+| 422 | El código no es correcto. También si es de otro `scope` o de otra sesión | "El código no es correcto. Te quedan 4 intentos." |
+| 429 | Quinto intento fallido. El código queda invalidado: hay que pedir otro | "Demasiados intentos. Ese código ya no vale: pide otro." |
+| 503 | No se pudo guardar | "No hemos podido hacerlo. Prueba otra vez en un minuto." |
+
+Qué pasa al confirmar:
+
+- **Se deja de leer la ficha y de enviar avisos.** No se revoca ni se borra nada todavía.
+- **Las rutas de la ficha responden 409** con `detail` "Tienes una baja programada. Restáurala para seguir usando Fichaitor.": `POST /api/v1/me/location`, `GET /api/v1/me/summary`, `GET /api/v1/me/diagnosis`, `GET /api/v1/me/sentiment`, `GET /api/v1/me/reviews`, los borradores, las respuestas y `GET /api/v1/me/actions/{id}`.
+- **Se envía un correo de aviso** con la fecha y el enlace de restauración.
+- **Con `scope: "ficha"`** la sesión sigue abierta. `GET /api/v1/me` trae `pending_deletion`.
+- **Con `scope: "cuenta"`** se cierran todas las sesiones de la cuenta, también la que confirma: la siguiente petición responde 401. La web lleva al dueño a la pantalla de inicio.
+
+### `POST /api/v1/me/offboarding/restore`
+
+Cancela la baja programada de la cuenta de la sesión. Sin cuerpo. Respuesta 204.
+
+- 409 si la cuenta no tiene ninguna baja programada: "No tienes ninguna baja programada."
+- Tras restaurar, todo vuelve a como estaba y se pide una sincronización. El enlace del correo deja de valer.
+
+### `POST /api/v1/public/offboarding/restore`
+
+Cancela la baja desde el enlace del correo. **Sin sesión** y sin la cabecera de protección. Petición:
+
+```json
+{ "token": "..." }
+```
+
+Respuesta 204.
+
+- El enlace del correo es `https://<dominio>/app#restaurar=<token>`. El token va en el **fragmento**, que el navegador no envía al servidor: no queda en los registros de acceso. La web lo lee del fragmento, lo quita de la barra de direcciones y lo envía en el cuerpo de esta ruta.
+- El token sirve una sola vez y hasta `delete_at`.
+- **410** para un token desconocido, usado o caducado, siempre con el mismo `detail`: "Este enlace ya no vale: ha caducado o ya se ha usado." La respuesta no revela si la cuenta existe.
+- **429** con más de 20 intentos por IP en una hora.
+- Restaurar no abre sesión. Si el dueño no tiene una, la web le pide entrar con Google.
+
+### `GET /api/v1/me` durante una baja
+
+`GET /api/v1/me` trae dos campos más:
+
+```json
+{
+  "email": "dueno@example.com",
+  "locations": [],
+  "selected_location_id": null,
+  "connected": true,
+  "pending_deletion": { "scope": "ficha", "delete_at": "2026-11-14T11:16:00Z" }
+}
+```
+
+| Campo | Tipo | Qué es |
+|---|---|---|
+| `pending_deletion` | objeto o `null` | La baja programada. `null` si no hay ninguna |
+| `connected` | booleano | `false` cuando la baja de la ficha ya es efectiva y el dueño no ha vuelto a conectar. La web ofrece "Conectar con Google" |
+
+Con `pending_deletion`, la web enseña solo el aviso de la baja con su fecha y el botón de restaurar.
+
+### Entrar con Google durante las 48 horas
+
+Si alguien entra con Google en una cuenta con la baja programada, no se crea una cuenta nueva: es la misma. La sesión nueva solo puede ver `GET /api/v1/me` (con `pending_deletion`), restaurar y cerrar sesión. El resto responde 409.
+
+### Cuando la baja ya es efectiva
+
+- **`scope: "ficha"`**: la cuenta sigue existiendo, sin fichas. `GET /api/v1/me` responde con `locations: []`, `connected: false` y `pending_deletion: null`. Al volver a conectar, la ficha se lee desde cero: nada de lo anterior vuelve.
+- **`scope: "cuenta"`**: la cuenta está dada de baja y sus sesiones, cerradas. Entrar después con la misma identidad de Google crea una cuenta nueva y vacía.
+- Ya no se puede restaurar: las dos rutas responden como si no hubiera baja (409 y 410).
+
+### Lo que la web debe mostrar
+
+Antes de pedir el código, una confirmación explícita con lo que va a pasar:
+
+- **Desconectar la ficha**: "Dejaremos de leer tu ficha. A las 48 horas revocaremos el acceso a tu cuenta de Google. En un máximo de 30 días borraremos todo lo obtenido de Google: los datos de la ficha, las reseñas, su clasificación, los resúmenes, el historial de notas y los borradores de respuesta. El registro de las respuestas que publicaste se conserva 12 meses. Tu cuenta sigue existiendo y podrás volver a conectar."
+- **Borrar la cuenta**: lo mismo, y además: "Cerraremos tu sesión en todos tus dispositivos. A las 48 horas tu cuenta quedará borrada."
+- En los dos casos: "Tienes 48 horas para cambiar de idea. Te enviaremos un correo con un enlace para restaurarla."
+
+### Lo que la web NO debe hacer con la baja
+
+- No pongas el código ni el token de restauración en una URL de la API, ni los guardes en `localStorage`.
+- No dejes el token en la barra de direcciones después de leerlo.
+- No envíes el código ni el token a herramientas de analítica o de registro de errores.
+- No des la baja por hecha con el 202 del código: hace falta el 200 de la confirmación.
+
+### Sin correo real
+
+Con `FICHAITOR_FAKE_MAIL=true` no se envía nada. El worker escribe el correo completo en su registro, con el prefijo `[CORREO SIMULADO]`: ahí están el código y el enlace de restauración.
+
+```bash
+docker compose logs worker | grep -A12 "CORREO SIMULADO"
+```
+
 ## Reseñas y respuestas (2026-11-12)
 
 Primera función que **escribe en Google**: el dueño ve las reseñas de su ficha, pide una respuesta redactada si quiere y **publica la que confirma**. Una respuesta es pública y Google avisa a quien escribió la reseña: no se puede deshacer, solo editar o borrar después.
@@ -574,6 +747,7 @@ Estado de una acción de esa cuenta. Respuesta 200:
 | `rejected` | Google ha rechazado la respuesta (4xx): por ejemplo, la ficha no está verificada | "Google no ha aceptado la respuesta. Revisa el texto y vuelve a enviarla." |
 | `review_gone` | La reseña ya no existe en Google (404) | "Esa reseña ya no está en Google. No hay nada que responder." |
 | `unavailable` | Google ha fallado en todos los intentos (5xx, 429 o sin respuesta) | "No hemos podido enviar tu respuesta a Google. Prueba otra vez en unos minutos." |
+| `suspended` | La cuenta confirmó una baja antes de que la respuesta saliera. No se envía nada | "No se ha enviado: tienes una baja programada." |
 | `internal` | Fallo de nuestro lado: por ejemplo, la ficha ya no está en la conexión | "No hemos podido enviar tu respuesta. Prueba otra vez en unos minutos." |
 
 - Muestra `message` tal cual. Distingue los casos por `status` y `error`, no por el texto.
@@ -657,10 +831,10 @@ Respuesta 200:
 | `previous_score` | entero o `null` | Nota del mes anterior con análisis. `null` si no hay ninguno en los últimos 12 meses |
 | `delta` | entero o `null` | `score - previous_score`, en puntos. Puede ser negativo o `0`. `null` si no hay mes anterior |
 | `history` | lista | Una nota por mes, de más antiguo a más reciente, con `month` en formato `"AAAA-MM"`. Como máximo los últimos 12 meses, el actual incluido. Solo aparecen los meses en los que hubo análisis. Vacía con `pendiente`, `insuficiente` y `error` |
-| `summary` | texto o `null` | Dos frases como máximo. Texto sin formato, listo para mostrar |
+| `summary` | texto o `null` | Dos frases como máximo, más una tercera fija cuando hay valoraciones de 1 o 2 estrellas sin comentario ("Hay 1 valoración de 1 o 2 estrellas sin comentario."). Texto sin formato, listo para mostrar |
 | `praised` | lista | Hasta 5 temas elogiados, de más a menos menciones: `topic` (etiqueta en español de una lista cerrada) y `mentions` (número de reseñas que lo mencionan; nunca supera `based_on`). Puede ir vacía |
 | `complaints` | lista | Lo mismo para los temas con quejas. Puede ir vacía |
-| `suggestion` | texto o `null` | Una acción concreta para el dueño. Texto sin formato |
+| `suggestion` | texto o `null` | Una acción concreta para el dueño. La elige el código por reglas: si hay reseñas sin responder, propone responderlas (primero las de 1 o 2 estrellas) y dice cuántas. Puede tener dos frases. Texto sin formato |
 | `generated_at` | fecha y hora UTC, o `null` | Cuándo se hizo el análisis |
 | `next_update` | texto o `null` | Frase en español lista para mostrar: cuándo se vuelve a calcular |
 | `provisional` | booleano | `true` cuando hay menos de 5 reseñas con texto: la nota existe, pero se apoya en poco. Consulta [Análisis provisional](#análisis-provisional) |
@@ -687,7 +861,7 @@ Con `provisional: true`:
 - `score`, `overall` e `history` se calculan igual.
 - `praised` y `complaints` traen lo que haya. Pueden ir vacías.
 - `summary` es un texto fijo y honesto sobre la base, por ejemplo: "Basado en 3 valoraciones; aún hay pocas con texto para ver de qué habla la gente."
-- `suggestion` propone conseguir más reseñas con el enlace de la ficha.
+- `suggestion` propone conseguir más reseñas con el enlace de la ficha, salvo que haya reseñas sin responder: entonces propone responderlas.
 
 #### Sondeo
 

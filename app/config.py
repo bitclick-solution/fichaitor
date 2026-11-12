@@ -1,3 +1,4 @@
+from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -41,3 +42,15 @@ class Settings(BaseSettings):
     review_draft_rate_limit: int = 30
     review_draft_rate_window_seconds: int = 86400
     review_draft_timeout_seconds: float = 20.0
+
+    # Leaving (docs/contrato-web-api.md, "Baja"). A leave is confirmed with a code
+    # sent by email. The secret keys the fingerprint of the codes; empty: the one of
+    # the OAuth state is used.
+    offboarding_secret: str = ""
+    offboarding_code_ttl_seconds: int = Field(default=600, ge=60, le=3600)
+    offboarding_code_max_attempts: int = Field(default=5, ge=1, le=20)
+    offboarding_code_rate_limit: int = Field(default=5, ge=1)  # per account
+    offboarding_code_rate_window_seconds: int = Field(default=3600, ge=1)
+    # Hours a confirmed leave stays scheduled, and can be restored, before it is effective.
+    offboarding_grace_hours: float = Field(default=48.0, ge=0)
+    offboarding_restore_rate_limit: int = Field(default=20, ge=1)  # per client IP and hour

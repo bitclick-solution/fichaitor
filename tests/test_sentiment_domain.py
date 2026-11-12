@@ -1,5 +1,6 @@
 """Sentiment rules: classification, score, counts, triggers and texts. No I/O."""
 
+import dataclasses
 import itertools
 import random
 from datetime import UTC, date, datetime, timedelta
@@ -9,6 +10,7 @@ import pytest
 from app.domain import sentiment as s
 from app.domain.sentiment import (
     AnalysisState,
+    Attention,
     Figures,
     LastAnalysis,
     SentimentPolicy,
@@ -336,8 +338,26 @@ def test_topics_come_from_the_window_or_from_everything_when_the_window_is_thin(
 # --- when to analyse -----------------------------------------------------------------------
 
 
-def last(hours_ago, based_on=10, status="ok"):
-    return LastAnalysis(status, NOW - timedelta(hours=hours_ago), based_on)
+def last(hours_ago, based_on=10, status="ok", version=s.FORMULA_VERSION):
+    return LastAnalysis(status, NOW - timedelta(hours=hours_ago), based_on, version)
+
+
+def test_an_analysis_of_an_earlier_formula_is_redone_at_once_and_only_a_good_one():
+    assert s.FORMULA_VERSION == 2
+    quiet = lambda found: AnalysisState(found, 0, 0)  # noqa: E731
+    # Inside the 24 hours and with nothing new: the version alone is the reason.
+    assert s.decide(quiet(last(1, version=1)), NOW, POLICY) == s.TRIGGER_FORMULA
+    assert s.decide(quiet(last(1, version=1)), NOW, POLICY, event_triggers=False) == (
+        s.TRIGGER_FORMULA
+    )
+    assert s.decide(quiet(last(1)), NOW, POLICY) is None
+    assert s.decide(quiet(last(1, version=3)), NOW, POLICY) is None
+    # Nothing to redo where there was nothing: no reviews, or an error (its own rule).
+    assert s.decide(quiet(last(1, based_on=0, status="insuficiente", version=1)), NOW, POLICY) is (
+        None
+    )
+    assert s.decide(quiet(last(1, status="error", version=1)), NOW, POLICY) == s.TRIGGER_FIRST
+    assert s.TRIGGER_FORMULA in s.TRIGGERS and s.TRIGGER_FORMULA == "formula_update"
 
 
 def test_the_first_analysis_runs_at_once_even_without_reviews():
@@ -561,3 +581,142 @@ def test_a_month_is_its_first_day_in_utc_and_the_trend_covers_twelve():
     assert s.first_history_month(NOW) == date(2025, 12, 1)
     assert s.first_history_month(datetime(2026, 1, 5, tzinfo=UTC)) == date(2025, 2, 1)
     assert s.first_history_month(datetime(2026, 12, 5, tzinfo=UTC)) == date(2026, 1, 1)
+
+
+# --- low ratings without a comment and unanswered reviews (formula 2) --------------------
+
+
+def replied(found: SentimentReview) -> SentimentReview:
+    return dataclasses.replace(found, replied=True)
+
+
+def test_attention_counts_low_ratings_without_text_and_unanswered_reviews():
+    reviews = [
+        review("a", 1, ""),
+        review("b", 2, "Fatal."),
+        replied(review("c", 2, "")),
+        review("d", 5, "Genial."),
+        replied(review("e", 4, "")),
+        review("f", None, "Sin estrellas."),
+        review("g", 3, ""),
+    ]
+    assert s.attention_of(reviews) == Attention(
+        low_ratings=3, low_without_text=2, unanswered=5, unanswered_low=2
+    )
+    assert s.attention_of([]) == s.NO_ATTENTION == Attention(0, 0, 0, 0)
+
+
+def test_the_summary_always_names_the_low_ratings_without_a_comment():
+    one = Attention(low_ratings=1, low_without_text=1)
+    assert s.rule_summary(FIGURES, one) == (
+        "La valoración general es positiva: 86 sobre 100 a partir de 13 reseñas. "
+        "Lo más elogiado es «Trato del personal» y la queja más repetida, «Tiempo de espera». "
+        "Hay 1 valoración de 1 o 2 estrellas sin comentario."
+    )
+    four = Attention(low_ratings=6, low_without_text=4)
+    assert s.complete_summary(GOOD, four) == (
+        GOOD + " Hay 4 valoraciones de 1 o 2 estrellas sin comentario."
+    )
+    # A low rating with its comment is already in the topics: nothing is added.
+    assert s.complete_summary(GOOD, Attention(low_ratings=2)) == GOOD
+    assert s.rule_summary(FIGURES) == s.rule_summary(FIGURES, s.NO_ATTENTION)
+    provisional = Figures("ok", 3, 1, True, "todas las reseñas", 67, "mixto")
+    assert s.rule_summary(provisional, one) == (
+        "Basado en 3 valoraciones; aún hay pocas con texto para ver de qué habla la gente. "
+        "Hay 1 valoración de 1 o 2 estrellas sin comentario."
+    )
+
+
+NO_COMPLAINTS = Figures(
+    "ok", 14, 9, False, "últimos 12 meses", 93, "positivo", (TopicCount("Trato del personal", 7),)
+)
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "Tus clientes destacan el trato del personal. No se han registrado quejas.",
+        "A tus clientes les gusta el trato del personal y no hay quejas en las reseñas.",
+        "El trato del personal es lo que más gusta, sin quejas de los clientes.",
+        "El trato del personal gusta mucho y no hay ninguna queja de los clientes.",
+        "A tus clientes les gusta el trato del personal y no tienes críticas que atender.",
+        "El trato del personal gusta y no se observan valoraciones negativas de clientes.",
+    ],
+)
+def test_a_summary_may_not_say_there_are_no_complaints_when_there_are_low_ratings(text):
+    assert s.validate_summary(text, NO_COMPLAINTS, POLICY) == text  # true without them
+    assert s.validate_summary(text, NO_COMPLAINTS, POLICY, Attention(low_ratings=1)) is None
+    assert s.validate_summary(text, FIGURES, POLICY) is None  # FIGURES has a complaint
+    assert s.denies_complaints(text) and not s.denies_complaints(GOOD)
+
+
+def test_the_counts_of_attention_may_be_quoted_and_no_other():
+    attention = Attention(low_ratings=4, low_without_text=1, unanswered=11, unanswered_low=4)
+    text = "A tus clientes les gusta el trato del personal. Tienes 11 reseñas sin responder."
+    assert s.validate_summary(text, FIGURES, POLICY, attention) == text
+    assert s.validate_summary(text, FIGURES, POLICY) is None
+    assert s.validate_suggestion(text.replace("11", "14"), FIGURES, POLICY, attention) is None
+    assert 0 not in s.allowed_numbers(FIGURES, POLICY, s.NO_ATTENTION)
+
+
+def test_the_suggestion_is_chosen_by_fixed_rules_in_order():
+    model = "Avisa a cada cliente del tiempo de espera previsto en cuanto llegue."
+    choose = s.choose_suggestion
+    # 1. Unanswered reviews of 1 or 2 stars first, whatever the model wrote.
+    assert choose(FIGURES, Attention(2, 0, 5, 1), model) == (
+        "Responde primero a la reseña de 1 o 2 estrellas que sigue sin respuesta. "
+        "En total tienes 5 reseñas sin responder."
+    )
+    assert choose(FIGURES, Attention(3, 0, 3, 3), model) == (
+        "Responde primero a las 3 reseñas de 1 o 2 estrellas que siguen sin respuesta."
+    )
+    # 2. Then any unanswered review, saying how many.
+    assert choose(FIGURES, Attention(2, 0, 13, 0), model) == (
+        "Responde a las 13 reseñas que siguen sin respuesta: quien las lea verá que las atiendes."
+    )
+    assert choose(FIGURES, Attention(unanswered=1), model) == (
+        "Responde a la reseña que sigue sin respuesta: quien la lea verá que la atiendes."
+    )
+    # 3. A repeated complaint: the model's advice if there is a valid one, else the fixed one.
+    assert choose(FIGURES, s.NO_ATTENTION, model) == model
+    assert "espera" in choose(FIGURES, s.NO_ATTENTION, None)
+    assert choose(FIGURES, s.NO_ATTENTION, None) == s.rule_suggestion(FIGURES)
+    # 4. Otherwise the model's, or the general advice.
+    assert choose(NO_COMPLAINTS, s.NO_ATTENTION, model) == model
+    assert choose(NO_COMPLAINTS, s.NO_ATTENTION, None) == s.SUGGESTION_KEEP_GOING
+    # Without reviews there is nothing to answer; a provisional one asks for more.
+    none = Figures("insuficiente", 0, 0, True, None, None, None)
+    assert choose(none, Attention(unanswered=3), model) == s.SUGGESTION_ASK_FIRST
+    few = Figures("ok", 3, 1, True, "todas las reseñas", 67, "mixto")
+    assert choose(few, s.NO_ATTENTION, None) == s.SUGGESTION_ASK_MORE
+    assert choose(few, Attention(unanswered=2), None).startswith("Responde a las 2 reseñas")
+
+
+def test_the_real_case_a_one_star_rating_without_text_and_thirteen_unanswered():
+    reviews = [review(f"p{n}", 5, "Genial.", n, "positive") for n in range(12)]
+    reviews += [review("low", 1, ""), replied(review("old", 5, ""))]
+    attention = s.attention_of(reviews)
+    assert attention == Attention(1, 1, 13, 1)
+    figures = s.compute(reviews, NOW, POLICY)
+    assert figures.complaints == ()
+    denial = "Tus clientes están contentos con el servicio. No se han registrado quejas."
+    assert s.validate_summary(denial, figures, POLICY, attention) is None
+    assert s.rule_summary(figures, attention).endswith(
+        "Hay 1 valoración de 1 o 2 estrellas sin comentario."
+    )
+    assert s.rule_suggestion(figures, attention) == (
+        "Responde primero a la reseña de 1 o 2 estrellas que sigue sin respuesta. "
+        "En total tienes 13 reseñas sin responder."
+    )
+
+
+def test_the_texts_the_code_writes_fit_the_columns_and_never_deny_complaints():
+    worst = Attention(99999, 99999, 99999, 99999)
+    for figures in all_figures():
+        for attention in (worst, Attention(1, 1, 1, 1), Attention(unanswered=99999)):
+            summary = s.rule_summary(figures, attention)
+            suggestion = s.rule_suggestion(figures, attention)
+            assert len(summary) <= 600 and len(suggestion) <= 400
+            assert not s.denies_complaints(summary)
+    longest = "A" * s.SUMMARY_MAX_LENGTH
+    assert len(s.complete_summary(longest, worst)) <= 600

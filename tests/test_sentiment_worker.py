@@ -5,6 +5,7 @@ the fake adapter: nothing is ever sent out.
 """
 
 import asyncio
+import dataclasses
 import io
 import json
 import logging
@@ -62,6 +63,17 @@ REVIEWS = (
     review("g-7", 3, "", 60),
     review("g-8", 5, "Todo muy limpio.", 70),
 )
+
+
+def answered(reviews):
+    """The same reviews, every one with a reply of the owner."""
+    return tuple(
+        dataclasses.replace(r, replied=True, reply_text="Gracias.", reply_at=r.created_at)
+        for r in reviews
+    )
+
+
+ANSWERED = answered(REVIEWS)
 
 
 class Clock:
@@ -332,7 +344,7 @@ def test_a_valid_summary_of_the_model_is_stored():
         "summary": "A tus clientes les gusta el trato del personal. La espera es la gran queja.",
         "suggestion": "Avisa a cada cliente del tiempo de espera previsto en cuanto llegue.",
     }
-    analysis = synced(texts=texts).analysis()
+    analysis = synced(reviews=ANSWERED, texts=texts).analysis()
     assert (analysis.summary, analysis.suggestion) == (texts["summary"], texts["suggestion"])
     assert analysis.summary_source == "model"
 
@@ -350,7 +362,7 @@ def test_a_valid_summary_of_the_model_is_stored():
 )
 def test_a_summary_that_contradicts_the_counts_or_breaks_a_rule_falls_back_to_the_rules(summary):
     texts = {"summary": summary, "suggestion": "Te garantizamos que así la nota va a subir."}
-    analysis = synced(texts=texts).analysis()
+    analysis = synced(reviews=ANSWERED, texts=texts).analysis()
     assert analysis.summary_source == "rules"
     assert analysis.summary == s.rule_summary(analysis.figures)
     assert analysis.suggestion == s.rule_suggestion(analysis.figures)
@@ -362,7 +374,7 @@ def test_a_bad_suggestion_alone_is_replaced_by_the_rule():
         "summary": "A tus clientes les gusta el trato del personal. La espera es la gran queja.",
         "suggestion": "Publica tu teléfono 600 123 456 en cada respuesta para que te llamen.",
     }
-    analysis = synced(texts=texts).analysis()
+    analysis = synced(reviews=ANSWERED, texts=texts).analysis()
     assert analysis.summary == texts["summary"]
     assert analysis.suggestion == s.rule_suggestion(analysis.figures)
 
@@ -391,7 +403,12 @@ def test_below_the_minimum_the_analysis_is_provisional_and_the_model_writes_no_s
     assert analysis.summary == (
         "Basado en 3 valoraciones; aún hay pocas con texto para ver de qué habla la gente."
     )
-    assert "enlace de tu ficha" in analysis.suggestion
+    # Nobody has answered them and one is of 1 star: that comes before asking for more.
+    assert analysis.suggestion == (
+        "Responde primero a la reseña de 1 o 2 estrellas que sigue sin respuesta. "
+        "En total tienes 3 reseñas sin responder."
+    )
+    assert "enlace de tu ficha" in synced(reviews=answered(few)).analysis().suggestion
     assert figures.complaints == (
         s.TopicCount("Comida y bebida", 1),
         s.TopicCount("Tiempo de espera", 1),
@@ -641,3 +658,82 @@ def test_the_worker_process_registers_the_job_and_chains_it_to_the_sync():
     assert isinstance(registry.get(KIND), AnalyzeSentiment)
     assert isinstance(registry.get(SYNC_KIND)._sentiment, SentimentTrigger)
     assert build_registry(settings, store, FakeGoogleProfile()).get(SYNC_KIND)._sentiment is None
+
+
+# --- low ratings without a comment and unanswered reviews (formula 2) --------------------
+
+MODEL_TEXTS = {
+    "summary": "A tus clientes les gusta el trato del personal. La espera es la gran queja.",
+    "suggestion": "Avisa a cada cliente del tiempo de espera previsto en cuanto llegue.",
+}
+
+
+def test_the_real_case_one_star_without_text_and_thirteen_unanswered():
+    # What the first real analysis got wrong: "no se han registrado quejas" with a
+    # rating of 1 star and no text, and a generic suggestion with 13 unanswered reviews.
+    praise = [review(f"g-{n}", 5, "Trato estupendo, muy amables.", n) for n in range(1, 13)]
+    reviews = (*praise, review("g-low", 1, "", 2), *answered([review("g-old", 5, "", 90)]))
+    texts = {
+        "summary": "Tus clientes destacan el trato del personal. No se han registrado quejas.",
+        "suggestion": "Sigue felicitando a tu equipo por el buen trato que da a los clientes.",
+    }
+    world = synced(reviews=reviews, texts=texts)
+    analysis = world.analysis()
+    (request,) = world.model.summary_calls
+    assert (request.low_without_text, request.unanswered, request.unanswered_low) == (1, 13, 1)
+    assert analysis.summary_source == "rules"  # the model's denied the complaints
+    assert "quejas" not in analysis.summary
+    assert analysis.summary.endswith("Hay 1 valoración de 1 o 2 estrellas sin comentario.")
+    assert analysis.suggestion == (
+        "Responde primero a la reseña de 1 o 2 estrellas que sigue sin respuesta. "
+        "En total tienes 13 reseñas sin responder."
+    )
+
+
+def test_the_code_adds_the_low_ratings_without_comment_to_a_summary_of_the_model():
+    reviews = answered((*REVIEWS, review("g-9", 2, "", 4), review("g-10", 1, "", 6)))
+    analysis = synced(reviews=reviews, texts=MODEL_TEXTS).analysis()
+    assert analysis.summary_source == "model"
+    assert analysis.summary == (
+        MODEL_TEXTS["summary"] + " Hay 2 valoraciones de 1 o 2 estrellas sin comentario."
+    )
+    # Everything is answered and there is a repeated complaint: the model's advice on it.
+    assert analysis.suggestion == MODEL_TEXTS["suggestion"]
+    assert len(analysis.summary) <= 600 and len(analysis.suggestion) <= 400
+
+
+def test_unanswered_reviews_come_before_whatever_the_model_suggests():
+    good = [review(f"g-{n}", 5, "Trato estupendo, muy amables.", n) for n in range(1, 7)]
+    reviews = (*answered(good), review("g-7", 4, "Buen precio.", 8), review("g-8", 5, "", 9))
+    analysis = synced(reviews=reviews, texts=MODEL_TEXTS).analysis()
+    assert analysis.summary == MODEL_TEXTS["summary"]
+    assert analysis.suggestion == (
+        "Responde a las 2 reseñas que siguen sin respuesta: quien las lea verá que las atiendes."
+    )
+
+
+def test_an_analysis_of_an_earlier_formula_is_redone_once_without_classifying_again():
+    world = synced(reviews=(*REVIEWS, review("g-9", 1, "", 4)))
+    key = (SUB, LOCATION)
+    old = dataclasses.replace(
+        world.analysis(), formula_version=1, summary="Viejo.", suggestion="Vieja."
+    )
+    world.tables.analyses[key] = old
+    stored = dict(world.tables.classifications)
+    assert len(world.model.classify_calls) == 1 and len(world.model.summary_calls) == 1
+
+    world.clock.advance(minutes=10)  # well inside the 24 hours, and nothing new
+    run(world.sync())
+    again = world.analysis()
+    assert (again.trigger, again.formula_version) == ("formula_update", s.FORMULA_VERSION)
+    assert again.summary.endswith("Hay 1 valoración de 1 o 2 estrellas sin comentario.")
+    assert again.suggestion.startswith("Responde primero a las 3 reseñas de 1 o 2 estrellas")
+    assert again.figures == old.figures
+    # No review reached the model again: only the summary was asked for.
+    assert len(world.model.classify_calls) == 1 and len(world.model.summary_calls) == 2
+    assert world.tables.classifications == stored
+
+    world.clock.advance(minutes=10)
+    run(world.sync())  # it does not loop: the stored one is of the current formula
+    assert world.analysis() == again and len(world.model.summary_calls) == 2
+    assert len(world.jobs()) == 2

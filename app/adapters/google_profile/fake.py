@@ -134,7 +134,15 @@ class FakeGoogleProfile:
         # Every write that reached "Google": (account, location, review id, text).
         self.replies: list[tuple[str, str, str, str]] = []
         self.write_attempts = 0
+        self.revoke_error: Exception | None = None  # raised on every revocation
+        self.revoked: list[str] = []  # refresh tokens "revoked at Google"
         self._replied: dict[tuple[str, str], tuple[str, datetime]] = {}  # by profile and review
+
+    async def revoke_token(self, refresh_token: str) -> None:
+        # Nothing leaves the process. Tests set revoke_error and read revoked.
+        if self.revoke_error is not None:
+            raise self.revoke_error
+        self.revoked.append(refresh_token)
 
     async def refresh_access_token(self, refresh_token: str) -> str:
         self.refreshed_with.append(refresh_token)

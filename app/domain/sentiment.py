@@ -8,9 +8,12 @@ The model proposes and the code decides:
   text is classified by its stars with a fixed rule and never reaches the model.
 - The score (0 to 100), the verdict, the counts per topic and the decision to
   recompute are worked out here, from the classifications. The model never counts.
-- The summary and the suggestion are written by a model and accepted only if they pass
-  `validate_summary` and `validate_suggestion`; otherwise the fixed texts of
-  `rule_summary` and `rule_suggestion` are used. Those always exist.
+- The summary is written by a model and accepted only if it passes `validate_summary`;
+  otherwise the fixed text of `rule_summary` is used. Either way the code adds a
+  sentence about the ratings of 1 or 2 stars that came without a comment.
+- The suggestion is chosen by the code (`choose_suggestion`): unanswered reviews come
+  first. The one a model wrote is used only where the rules leave room for it, and only
+  if it passes `validate_suggestion`.
 
 The text of a review is written by a third party: nothing in it is ever acted upon.
 The formula and the lists are documented in docs/sentimiento.md.
@@ -24,7 +27,9 @@ from datetime import UTC, date, datetime, timedelta
 
 from app.domain.review_reply import _CONTACT, _PROMISE, _SENTENCE_END, _has_emoji, clean_text
 
-FORMULA_VERSION = 1
+# 2 (2026-11-12): the summary names the low ratings without a comment and the
+# suggestion is chosen by fixed rules, unanswered reviews first.
+FORMULA_VERSION = 2
 
 POSITIVE = "positive"
 NEUTRAL = "neutral"
@@ -167,6 +172,7 @@ class SentimentReview:
     text: str
     created_at: datetime | None
     stored: StoredClassification | None = None
+    replied: bool = False  # the owner has answered it
 
 
 def has_text(review: SentimentReview) -> bool:
@@ -269,7 +275,14 @@ TRIGGER_FIRST = "first"
 TRIGGER_LOW_RATING = "low_rating"
 TRIGGER_NEW_REVIEWS = "new_reviews"
 TRIGGER_MONTHLY = "monthly"
-TRIGGERS = (TRIGGER_FIRST, TRIGGER_LOW_RATING, TRIGGER_NEW_REVIEWS, TRIGGER_MONTHLY)
+TRIGGER_FORMULA = "formula_update"  # stored with an earlier FORMULA_VERSION
+TRIGGERS = (
+    TRIGGER_FIRST,
+    TRIGGER_LOW_RATING,
+    TRIGGER_NEW_REVIEWS,
+    TRIGGER_MONTHLY,
+    TRIGGER_FORMULA,
+)
 
 LOW_RATING_MAX = 2
 
@@ -279,6 +292,7 @@ class LastAnalysis:
     status: str
     generated_at: datetime
     based_on: int
+    formula_version: int = FORMULA_VERSION  # of the code that produced it
 
 
 @dataclass(frozen=True)
@@ -314,12 +328,18 @@ def decide(
     failed, or it found no reviews and now there are some. After that, at most one per
     `min_hours_between`, on whichever comes first: a new review of 1 or 2 stars,
     `new_reviews_trigger` new reviews, or `monthly_days` with at least one new review.
+
+    A good analysis made by an earlier version of the formula is redone at once, with
+    no cap: it happens once, since the new one is stored with the current version. It
+    classifies nothing again: only reviews that are new or changed reach the model.
     """
     last = state.last
     if last is None or last.status == STATUS_ERROR:
         return TRIGGER_FIRST
     if last.based_on == 0 and state.new_reviews > 0:
         return TRIGGER_FIRST
+    if last.status == STATUS_OK and last.formula_version < FORMULA_VERSION:
+        return TRIGGER_FORMULA
     if state.new_reviews == 0:
         return None
     age = now - last.generated_at
@@ -463,6 +483,38 @@ def compute(reviews: Sequence[SentimentReview], now: datetime, policy: Sentiment
     )
 
 
+# --- what needs the owner's attention: counted by the code ----------------------------
+
+
+@dataclass(frozen=True)
+class Attention:
+    """What the classifications do not show: low ratings that came without a comment
+    and reviews nobody has answered. Counted over the live reviews of the profile."""
+
+    low_ratings: int = 0  # reviews of 1 or 2 stars, with or without text
+    low_without_text: int = 0  # of those, the ones without a comment
+    unanswered: int = 0  # reviews without a reply of the owner
+    unanswered_low: int = 0  # of those, the ones of 1 or 2 stars
+
+
+NO_ATTENTION = Attention()
+
+
+def _is_low(review: SentimentReview) -> bool:
+    return review.rating is not None and 1 <= review.rating <= LOW_RATING_MAX
+
+
+def attention_of(reviews: Sequence[SentimentReview]) -> Attention:
+    low = [r for r in reviews if _is_low(r)]
+    pending = [r for r in reviews if not r.replied]
+    return Attention(
+        low_ratings=len(low),
+        low_without_text=sum(1 for r in low if not has_text(r)),
+        unanswered=len(pending),
+        unanswered_low=sum(1 for r in pending if _is_low(r)),
+    )
+
+
 # --- what the model that writes the summary gets --------------------------------------
 
 EXCERPT_MAX_CHARS = 280
@@ -527,13 +579,39 @@ _ENGLISH = frozenset(
 )
 
 
-def allowed_numbers(figures: Figures, policy: SentimentPolicy) -> frozenset[int]:
+def allowed_numbers(
+    figures: Figures, policy: SentimentPolicy, attention: Attention = NO_ATTENTION
+) -> frozenset[int]:
     """The only figures a text about this analysis may quote."""
     numbers = {100, policy.window_months, figures.based_on, figures.with_text}
     if figures.score is not None:
         numbers.add(figures.score)
     numbers.update(t.mentions for t in figures.praised + figures.complaints)
+    counts = (
+        attention.low_ratings,
+        attention.low_without_text,
+        attention.unanswered,
+        attention.unanswered_low,
+    )
+    numbers.update(n for n in counts if n > 0)
     return frozenset(numbers)
+
+
+# "No se han registrado quejas", "sin quejas", "ninguna queja", "no hay críticas"...
+_NO_COMPLAINTS = re.compile(
+    r"\bno\s+(?:se\s+)?(?:han?|hay|existen?|constan?|aparecen?|tienes?|tiene|recibes?|recibe"
+    r"|registran?|encuentran?|observan?|detectan?|aprecian?)\b[^.!?]{0,40}"
+    r"\b(?:quejas?|cr[ií]ticas?|negativ[ao]s?)\b"
+    r"|\bsin\s+(?:ninguna\s+)?(?:quejas?|cr[ií]ticas?)\b"
+    r"|\bning[uú]n[ao]?\s+(?:queja|cr[ií]tica|valoraci[oó]n\s+negativa|rese[ñn]a\s+negativa)\b"
+    r"|\bnadie\s+se\s+queja\b",
+    re.IGNORECASE,
+)
+
+
+def denies_complaints(text: str) -> bool:
+    """Whether a text says that nobody complains."""
+    return _NO_COMPLAINTS.search(text) is not None
 
 
 def _numbers_agree(text: str, allowed: frozenset[int]) -> bool:
@@ -572,24 +650,40 @@ def _valid_text(
     return text
 
 
-def validate_summary(raw: object, figures: Figures, policy: SentimentPolicy) -> str | None:
+def validate_summary(
+    raw: object,
+    figures: Figures,
+    policy: SentimentPolicy,
+    attention: Attention = NO_ATTENTION,
+) -> str | None:
     """The summary a model wrote, ready to show, or None if it breaks any rule: two
     sentences at most, Spanish, no contact details, no promises and no figure other
-    than those of the analysis. Never raises."""
-    return _valid_text(
+    than those of the analysis. It may not say that there are no complaints when the
+    profile has complaints or ratings of 1 or 2 stars. Never raises."""
+    text = _valid_text(
         raw,
-        allowed_numbers(figures, policy),
+        allowed_numbers(figures, policy, attention),
         SUMMARY_MIN_LENGTH,
         SUMMARY_MAX_LENGTH,
         SUMMARY_MAX_SENTENCES,
     )
+    if text is None:
+        return None
+    if (figures.complaints or attention.low_ratings > 0) and denies_complaints(text):
+        return None
+    return text
 
 
-def validate_suggestion(raw: object, figures: Figures, policy: SentimentPolicy) -> str | None:
+def validate_suggestion(
+    raw: object,
+    figures: Figures,
+    policy: SentimentPolicy,
+    attention: Attention = NO_ATTENTION,
+) -> str | None:
     """Same rules as the summary, for the one action suggested to the owner."""
     return _valid_text(
         raw,
-        allowed_numbers(figures, policy),
+        allowed_numbers(figures, policy, attention),
         SUGGESTION_MIN_LENGTH,
         SUGGESTION_MAX_LENGTH,
         SUGGESTION_MAX_SENTENCES,
@@ -641,8 +735,30 @@ _ADVICE = {
 }
 
 
-def rule_summary(figures: Figures) -> str:
+def low_ratings_note(attention: Attention) -> str | None:
+    """The sentence about the ratings of 1 or 2 stars that came without a comment: no
+    topic can be read from them, so the counts per topic do not show them."""
+    count = attention.low_without_text
+    if count <= 0:
+        return None
+    if count == 1:
+        return "Hay 1 valoración de 1 o 2 estrellas sin comentario."
+    return f"Hay {count} valoraciones de 1 o 2 estrellas sin comentario."
+
+
+def complete_summary(summary: str, attention: Attention) -> str:
+    """A summary, of a model or of the rules, with the sentence about the low ratings
+    without a comment added when there are any. Written by the code, never by a model."""
+    note = low_ratings_note(attention)
+    return f"{summary} {note}" if note else summary
+
+
+def rule_summary(figures: Figures, attention: Attention = NO_ATTENTION) -> str:
     """The summary built from the figures alone. Honest about how little it rests on."""
+    return complete_summary(_rule_summary(figures), attention)
+
+
+def _rule_summary(figures: Figures) -> str:
     if figures.status != STATUS_OK or figures.score is None:
         return SUMMARY_NO_REVIEWS
     if figures.provisional:
@@ -664,15 +780,59 @@ def rule_summary(figures: Figures) -> str:
     return first
 
 
-def rule_suggestion(figures: Figures) -> str:
-    """One action for the owner, chosen by fixed rules."""
+def reply_low_suggestion(attention: Attention) -> str:
+    """Unanswered reviews of 1 or 2 stars: those first."""
+    low, pending = attention.unanswered_low, attention.unanswered
+    if low == 1:
+        first = "Responde primero a la reseña de 1 o 2 estrellas que sigue sin respuesta."
+    else:
+        first = f"Responde primero a las {low} reseñas de 1 o 2 estrellas que siguen sin respuesta."
+    if pending > low:
+        return f"{first} En total tienes {pending} reseñas sin responder."
+    return first
+
+
+def reply_suggestion(attention: Attention) -> str:
+    """Unanswered reviews, none of them of 1 or 2 stars."""
+    if attention.unanswered == 1:
+        return "Responde a la reseña que sigue sin respuesta: quien la lea verá que la atiendes."
+    return (
+        f"Responde a las {attention.unanswered} reseñas que siguen sin respuesta: quien las "
+        "lea verá que las atiendes."
+    )
+
+
+def choose_suggestion(
+    figures: Figures, attention: Attention = NO_ATTENTION, advised: str | None = None
+) -> str:
+    """The one action suggested to the owner, chosen by fixed rules in this order:
+
+    1. Unanswered reviews of 1 or 2 stars: answer those first.
+    2. Unanswered reviews: answer them.
+    3. A repeated complaint: act on that topic.
+    4. Otherwise, the general advice.
+
+    `advised` is the suggestion a model wrote, already validated, or None. It is used
+    only in 3 and 4: a model never decides what comes first.
+    """
     if figures.status != STATUS_OK:
         return SUGGESTION_ASK_FIRST
+    if attention.unanswered_low > 0:
+        return reply_low_suggestion(attention)
+    if attention.unanswered > 0:
+        return reply_suggestion(attention)
     if figures.provisional:
         return SUGGESTION_ASK_MORE
     if figures.complaints:
-        return _ADVICE.get(figures.complaints[0].topic, SUGGESTION_DEFAULT)
+        return advised or _ADVICE.get(figures.complaints[0].topic, SUGGESTION_DEFAULT)
+    if advised:
+        return advised
     return SUGGESTION_KEEP_GOING if figures.overall == OVERALL_POSITIVE else SUGGESTION_DEFAULT
+
+
+def rule_suggestion(figures: Figures, attention: Attention = NO_ATTENTION) -> str:
+    """The suggestion without a model: the same rules, with the fixed advice."""
+    return choose_suggestion(figures, attention, None)
 
 
 def next_update_text(policy: SentimentPolicy) -> str:
@@ -733,3 +893,4 @@ class Analysis:
     summary_source: str  # model or rules
     trigger: str
     generated_at: datetime
+    formula_version: int = FORMULA_VERSION

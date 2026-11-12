@@ -21,6 +21,7 @@ ERROR_REJECTED = "rejected"  # Google refused the request (4xx)
 ERROR_REVIEW_GONE = "review_gone"  # the review no longer exists (404)
 ERROR_UNAVAILABLE = "unavailable"  # Google kept failing (5xx, 429, network)
 ERROR_INTERNAL = "internal"  # our side: the profile left the connection, bad token
+ERROR_SUSPENDED = "suspended"  # the account has a scheduled leave: nothing is sent
 
 # Audit trail.
 EVENT_CONFIRMED = "reply_confirmed"
@@ -44,6 +45,7 @@ _FAILED_MESSAGES = {
     ERROR_RECONNECT: MSG_RECONNECT,
     ERROR_REJECTED: "Google no ha aceptado la respuesta. Revisa el texto y vuelve a enviarla.",
     ERROR_REVIEW_GONE: "Esa reseña ya no está en Google. No hay nada que responder.",
+    ERROR_SUSPENDED: "No se ha enviado: tienes una baja programada.",
     ERROR_UNAVAILABLE: (
         "No hemos podido enviar tu respuesta a Google. Prueba otra vez en unos minutos."
     ),

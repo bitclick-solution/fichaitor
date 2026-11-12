@@ -4,9 +4,9 @@ Skipped unless the three URLs are set (apply db/schema.sql and db/schema_worker.
 and create the development users of db/dev-init.sql):
 
     docker compose up -d db
-    FICHAITOR_TEST_OWNER_URL=postgresql://fichaitor:dev@127.0.0.1:5433/fichaitor \
-    FICHAITOR_TEST_DATABASE_URL=postgresql://fichaitor_api_dev:dev@127.0.0.1:5433/fichaitor \
-    FICHAITOR_TEST_WORKER_URL=postgresql://fichaitor_worker_dev:dev@127.0.0.1:5433/fichaitor \
+    FICHAITOR_TEST_OWNER_URL=postgresql://fichaitor:dev@127.0.0.1:5433/fichaitor_test \
+    FICHAITOR_TEST_DATABASE_URL=postgresql://fichaitor_api_dev:dev@127.0.0.1:5433/fichaitor_test \
+    FICHAITOR_TEST_WORKER_URL=postgresql://fichaitor_worker_dev:dev@127.0.0.1:5433/fichaitor_test \
     uv run pytest -q tests/test_worker_postgres.py
 
 Everything these tests create is marked with the prefix "pytest-" and removed afterwards.
@@ -351,8 +351,8 @@ def test_the_api_role_can_enqueue_and_read_summaries_and_nothing_else(kind, sub)
             "forge lock": f"INSERT INTO job (kind, locked_by) VALUES ('{kind}', 'yo')",
             "returning": f"INSERT INTO job (kind) VALUES ('{kind}') RETURNING payload",
             "insert summary": insert_summary,
-            "update summary": "UPDATE profile_summary SET status = 'error'",
-            "delete summary": "DELETE FROM profile_summary",
+            "update summary": "UPDATE profile_summary SET status = 'error' WHERE false",
+            "delete summary": "DELETE FROM profile_summary WHERE false",
         }
         results = {name: await denied(API_URL, sql) for name, sql in checks.items()}
 
@@ -376,7 +376,8 @@ def test_the_worker_role_reads_connections_but_no_contacts(kind, sub):
         await add_connection(sub)
         checks = {
             "waitlist": "SELECT * FROM waitlist_entry",
-            "waitlist count": "SELECT count(*) FROM waitlist_entry",
+            "waitlist contact": "SELECT contact FROM waitlist_entry",
+            "waitlist place": "SELECT place_id, business_name FROM waitlist_entry",
             "waitlist insert": "INSERT INTO waitlist_entry (channel, contact, consent_version)"
             " VALUES ('email', 'pytest@example.com', 'x')",
             "funnel": "SELECT * FROM funnel_event",
@@ -385,10 +386,8 @@ def test_the_worker_role_reads_connections_but_no_contacts(kind, sub):
             "connection insert": "INSERT INTO google_connection"
             " (google_sub, email, refresh_token_enc, key_version, scopes)"
             " VALUES ('pytest-x', '', '', 1, '{}')",
-            "connection update": "UPDATE google_connection SET refresh_token_enc = ''",
-            "connection delete": "DELETE FROM google_connection",
-            "job delete": f"DELETE FROM job WHERE kind = '{kind}'",
-            "summary delete": "DELETE FROM profile_summary",
+            "connection update": "UPDATE google_connection SET refresh_token_enc = '' WHERE false",
+            "connection update all": "UPDATE google_connection SET key_version = 2 WHERE false",
         }
         results = {name: await denied(WORKER_URL, sql) for name, sql in checks.items()}
         pool = await asyncpg.create_pool(WORKER_URL, min_size=1, max_size=1)

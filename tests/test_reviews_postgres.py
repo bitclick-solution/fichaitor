@@ -3,9 +3,9 @@ roles of the API and of the worker.
 
 Skipped unless the three URLs are set (same environment as test_worker_postgres):
 
-    FICHAITOR_TEST_OWNER_URL=postgresql://fichaitor:dev@127.0.0.1:5433/fichaitor \
-    FICHAITOR_TEST_DATABASE_URL=postgresql://fichaitor_api_dev:dev@127.0.0.1:5433/fichaitor \
-    FICHAITOR_TEST_WORKER_URL=postgresql://fichaitor_worker_dev:dev@127.0.0.1:5433/fichaitor \
+    FICHAITOR_TEST_OWNER_URL=postgresql://fichaitor:dev@127.0.0.1:5433/fichaitor_test \
+    FICHAITOR_TEST_DATABASE_URL=postgresql://fichaitor_api_dev:dev@127.0.0.1:5433/fichaitor_test \
+    FICHAITOR_TEST_WORKER_URL=postgresql://fichaitor_worker_dev:dev@127.0.0.1:5433/fichaitor_test \
     uv run pytest -q tests/test_reviews_postgres.py
 
 Only rows whose google_sub starts with 'pytest-' are created, and they are removed
@@ -494,16 +494,21 @@ def test_the_api_role_cannot(sql):
         "UPDATE action SET google_sub = 'x' WHERE false",
         "UPDATE action SET location = 'x' WHERE false",
         "UPDATE action SET confirmed_at = now() WHERE false",
-        "DELETE FROM action WHERE false",
-        # Reviews are never deleted; drafts are not the worker's business.
-        "DELETE FROM review WHERE false",
+        # It deletes only in the retention task (tests/test_offboarding_postgres.py);
+        # TRUNCATE is checked in the catalogue, below. Drafts are not its business.
         "SELECT * FROM review_draft LIMIT 1",
+        "DELETE FROM review_draft WHERE false",
         "INSERT INTO review_draft (review_id, source_hash, draft) SELECT 'r', 'h', 'd' WHERE false",
         # Audit: insert its own events and nothing else.
         "SELECT * FROM audit_log LIMIT 1",
         "UPDATE audit_log SET text = 'x' WHERE false",
         "UPDATE audit_log SET google_status = 200 WHERE false",
-        "DELETE FROM audit_log WHERE false",
+        # It may delete what the policy of the table lets go, and cannot choose: any
+        # WHERE needs to read a column, and it can read none.
+        "DELETE FROM audit_log WHERE account_id IS NOT NULL",
+        "DELETE FROM audit_log WHERE id > 0",
+        "DELETE FROM audit_log WHERE false RETURNING text",
+        "SELECT count(*) FROM audit_log",
         f"INSERT INTO audit_log {AUDIT_COLUMNS} VALUES"
         f" {AUDIT_VALUES.format(event='reply_confirmed')}",
     ],
@@ -527,10 +532,24 @@ def test_no_role_holds_a_privilege_that_could_rewrite_history(role):
         return {r["p"] for r in rows}
 
     everything = "SELECT,INSERT,UPDATE,DELETE,TRUNCATE,REFERENCES,TRIGGER"
-    assert run(held("audit_log", everything)) == set()  # only column-level INSERT
-    assert run(held("action", "INSERT,UPDATE,DELETE,TRUNCATE")) == set()
+    api = role == "fichaitor_api"
+    # Only the worker deletes, for the retention task; on the audit log, only the rows
+    # its policy lets go. Nobody can TRUNCATE, and INSERT stays column-level.
+    assert run(held("audit_log", everything)) == (set() if api else {"DELETE"})
+    assert run(held("action", "INSERT,UPDATE,DELETE,TRUNCATE")) == (set() if api else {"DELETE"})
     on_reviews = run(held("review", everything))
-    assert on_reviews == ({"SELECT"} if role == "fichaitor_api" else {"SELECT", "INSERT", "UPDATE"})
+    assert on_reviews == ({"SELECT"} if api else {"SELECT", "INSERT", "UPDATE", "DELETE"})
+    policies = run(
+        owner(
+            "SELECT policyname, cmd FROM pg_policies WHERE tablename = 'audit_log'"
+            " ORDER BY policyname"
+        )
+    )
+    assert [(p["policyname"], p["cmd"]) for p in policies] == [
+        ("audit_log_api_insert", "INSERT"),
+        ("audit_log_worker_delete_expired", "DELETE"),
+        ("audit_log_worker_insert", "INSERT"),
+    ]
     forced = run(owner("SELECT relrowsecurity FROM pg_class WHERE relname = 'audit_log'"))
     assert forced[0]["relrowsecurity"] is True
 

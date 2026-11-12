@@ -169,7 +169,12 @@ class MemoryTables:
     def sentiment_reviews(self, google_sub: str, location: str) -> list[SentimentReview]:
         return [
             SentimentReview(
-                row.id, row.rating, row.text, row.created_at, self.classifications.get(row.id)
+                row.id,
+                row.rating,
+                row.text,
+                row.created_at,
+                self.classifications.get(row.id),
+                replied=row.reply_text is not None,
             )
             for row in self.reviews_of(google_sub, location)
         ]
@@ -179,7 +184,9 @@ class MemoryTables:
         if analysis is None:
             return None
         figures = analysis.figures
-        return LastAnalysis(figures.status, analysis.generated_at, figures.based_on)
+        return LastAnalysis(
+            figures.status, analysis.generated_at, figures.based_on, analysis.formula_version
+        )
 
     def save_analysis(
         self, google_sub: str, location: str, analysis: Analysis, usage: Usage

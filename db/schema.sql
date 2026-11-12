@@ -8,6 +8,10 @@ BEGIN
     IF NOT EXISTS (SELECT FROM pg_roles WHERE rolname = 'fichaitor_api') THEN
         CREATE ROLE fichaitor_api NOLOGIN;
     END IF;
+    -- El disparador de la baja de cuentas (más abajo) distingue al worker de la API.
+    IF NOT EXISTS (SELECT FROM pg_roles WHERE rolname = 'fichaitor_worker') THEN
+        CREATE ROLE fichaitor_worker NOLOGIN;
+    END IF;
 END
 $$;
 
@@ -77,6 +81,55 @@ CREATE TABLE IF NOT EXISTS account (
     selected_location_id text
 );
 
+-- Baja (2026-11-12). Consulta docs/retencion.md.
+-- disconnected_at: desde cuándo la cuenta está sin conexión con Google (baja de la ficha
+-- o de la cuenta ya efectiva). Lo pone el worker al hacer efectiva la baja; al volver a
+-- conectar, la API lo deja a NULL. De esta fecha cuentan los 12 meses del registro de
+-- respuestas.
+-- deleted_at: la cuenta está dada de baja. No se puede volver a entrar con ella.
+ALTER TABLE account ADD COLUMN IF NOT EXISTS disconnected_at timestamptz;
+ALTER TABLE account ADD COLUMN IF NOT EXISTS deleted_at timestamptz;
+
+-- Reglas de la baja, en la base y no solo en el código:
+-- - Al darse de baja una cuenta (deleted_at), en la misma escritura se vacía su correo,
+--   deja de tener ficha elegida y su google_sub pasa a 'deleted:<id>': la identidad de
+--   Google queda libre, así que un inicio de sesión posterior crea una cuenta nueva que
+--   no hereda nada.
+-- - Una cuenta dada de baja no vuelve a cambiar.
+-- - Solo el worker (o el propietario) puede fechar una desconexión o una baja. La API
+--   solo puede quitar disconnected_at, que es lo que hace al volver a conectar.
+CREATE OR REPLACE FUNCTION account_baja_guard() RETURNS trigger
+LANGUAGE plpgsql AS $$
+BEGIN
+    IF OLD.deleted_at IS NOT NULL THEN
+        NEW.google_sub := OLD.google_sub;
+        NEW.email := OLD.email;
+        NEW.deleted_at := OLD.deleted_at;
+        NEW.disconnected_at := OLD.disconnected_at;
+        NEW.selected_location_id := NULL;
+        RETURN NEW;
+    END IF;
+    IF NOT pg_has_role(current_user, 'fichaitor_worker', 'MEMBER')
+       AND (NEW.deleted_at IS NOT NULL
+            OR (NEW.disconnected_at IS NOT NULL
+                AND NEW.disconnected_at IS DISTINCT FROM OLD.disconnected_at)) THEN
+        RAISE EXCEPTION 'solo el worker puede fechar una baja'
+            USING ERRCODE = 'insufficient_privilege';
+    END IF;
+    IF NEW.deleted_at IS NOT NULL THEN
+        NEW.google_sub := 'deleted:' || OLD.id::text;
+        NEW.email := '';
+        NEW.selected_location_id := NULL;
+        NEW.disconnected_at := coalesce(NEW.disconnected_at, NEW.deleted_at);
+    END IF;
+    RETURN NEW;
+END
+$$;
+
+DROP TRIGGER IF EXISTS account_baja_guard ON account;
+CREATE TRIGGER account_baja_guard BEFORE UPDATE ON account
+    FOR EACH ROW EXECUTE FUNCTION account_baja_guard();
+
 -- Fichas de cada cuenta. El identificador público es 'loc_' más 12 caracteres aleatorios.
 -- La misma ficha de Google en dos cuentas son dos filas con identificadores distintos.
 -- Las fichas que Google deja de listar no se borran: se marcan con removed_at.
@@ -107,7 +160,8 @@ END
 $$;
 
 -- Sesiones. token_hash es el SHA-256 del token de la cookie; el token no se guarda.
--- Cerrar sesión marca revoked_at: las filas no se borran.
+-- Cerrar sesión marca revoked_at. La tarea de retención del worker borra las sesiones
+-- caducadas o cerradas hace más de 30 días.
 CREATE TABLE IF NOT EXISTS session (
     id         uuid PRIMARY KEY DEFAULT gen_random_uuid(),
     account_id uuid NOT NULL REFERENCES account (id),
@@ -122,9 +176,11 @@ CREATE INDEX IF NOT EXISTS session_account ON session (account_id);
 -- En cuentas, fichas y sesiones la API lee, inserta y cambia solo las columnas que
 -- usan sus rutas. No borra nada, no cambia google_sub ni el dueño de una ficha,
 -- y no puede alargar una sesión ni cambiarle el token o la cuenta.
+-- disconnected_at: solo puede quitarlo (al volver a conectar); lo impone el disparador.
+-- El borrado físico lo hace el worker: sus privilegios están en schema_worker.sql.
 REVOKE ALL ON account, location, session FROM fichaitor_api;
 GRANT SELECT, INSERT ON account, location, session TO fichaitor_api;
-GRANT UPDATE (email, selected_location_id) ON account TO fichaitor_api;
+GRANT UPDATE (email, selected_location_id, disconnected_at) ON account TO fichaitor_api;
 GRANT UPDATE (gbp_account, title, place_id, verified, updated_at, removed_at)
     ON location TO fichaitor_api;
 GRANT UPDATE (revoked_at) ON session TO fichaitor_api;

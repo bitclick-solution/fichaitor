@@ -2,11 +2,17 @@
 
 El worker ejecuta el trabajo asíncrono de Fichaitor. Toma jobs de una cola en PostgreSQL y los ejecuta. Es el único proceso que tiene la clave privada de los tokens y las credenciales de Google.
 
-Tiene tres jobs:
+Tiene seis jobs. Los tres primeros trabajan sobre la ficha:
 
 - `sync_profile` lee una ficha en Google y guarda tres cosas: el resumen del panel (reseñas sin responder, horarios especiales y cambios hechos por Google); desde el 2026-11-11, los hechos de la ficha con los que la API calcula el diagnóstico (`GET /api/v1/me/diagnosis`); y desde el 2026-11-12, las reseñas de la ficha.
 - `reply_review` es **el ejecutor**: envía a Google la respuesta a una reseña que el dueño ha confirmado. Es el único código del producto que escribe en Google. Consulta [El job `reply_review`](#el-job-reply_review).
 - `analyze_sentiment` calcula el sentimiento del establecimiento a partir de las reseñas guardadas. Lo encola el propio worker al terminar una sincronización. Es el único job que llama al modelo. Consulta [El job `analyze_sentiment`](#el-job-analyze_sentiment).
+
+Los otros tres son los de la baja, y están en [Baja, correo y retención](#baja-correo-y-retención):
+
+- `send_mail` envía los correos de la baja: el código y el aviso con el enlace de restauración.
+- `apply_offboarding` hace efectiva una baja cuando llega su fecha: revoca los tokens en Google y los borra.
+- `retention` es la pasada diaria que borra lo que ha superado su plazo. El worker se lo encola a sí mismo.
 
 ## Cómo funciona
 
@@ -25,6 +31,7 @@ Reglas de la cola:
 - **Tiempo máximo.** Cada ejecución se corta a los `WORKER_JOB_TIMEOUT_SECONDS`, siempre antes de que caduque el bloqueo.
 - **Idempotencia.** Encolar dos veces con la misma `idempotency_key` no crea un segundo job.
 - **Tipos conocidos.** Un worker solo toma los `kind` para los que tiene manejador.
+- **Baja programada.** `sync_profile`, `analyze_sentiment` y `reply_review` no hacen nada para un usuario de Google con una baja programada: terminan `done` con el evento `account_suspended`. Una respuesta pendiente queda `failed` con el motivo `suspended`.
 
 > **Importante:** La clave de idempotencia es única para siempre, también después de terminar el job. Para un trabajo periódico, incluye el periodo en la clave, por ejemplo `sync_profile:<google_sub>:<location>:2026-11-11`.
 
@@ -142,7 +149,7 @@ Qué hace, en orden:
 2. Clasifica por sus estrellas las reseñas nuevas sin texto. Sin modelo.
 3. Envía al modelo, por lotes, las reseñas con texto nuevas, cambiadas o pendientes: estrellas y texto, nada más. Guarda cada clasificación válida; la que no vale queda pendiente.
 4. Calcula en código la nota, la valoración y los recuentos por tema.
-5. Si hay suficientes reseñas con texto, pide al modelo el resumen y la sugerencia, y los valida. Si no pasan, usa los textos por reglas.
+5. Si hay suficientes reseñas con texto, pide al modelo el resumen y una sugerencia, y los valida. Si no pasan, usa los textos por reglas. El código añade la frase de las valoraciones bajas sin comentario y elige la sugerencia por reglas: primero, las reseñas sin responder.
 6. Guarda el análisis, la nota del mes y el uso del modelo.
 
 Reglas:
@@ -152,6 +159,7 @@ Reglas:
 - **Un fallo de la decisión o del encolado no hace fallar la sincronización.** Se registra `sentiment_not_enqueued` y la siguiente sincronización lo vuelve a intentar.
 - **Tres intentos** (`max_attempts`), para fallos de la base de datos. Si se agotan y la ficha no tenía análisis, queda `error`; si lo tenía, se conserva.
 - **El texto de una reseña es un dato.** Nada de lo que diga cambia lo que hace el job.
+- **Versión de la fórmula.** Un análisis guardado con una versión anterior (`sentiment_analysis.formula_version`) se rehace en la siguiente sincronización, con el disparador `formula_update` y sin el tope de 24 horas. No vuelve a clasificar reseñas: lo normal es una sola llamada, la del resumen.
 - **Sin textos en los logs.** `sentiment_analyzed` lleva contadores: reseñas, llamadas, tokens y nota.
 
 El modelo sale de las mismas variables que la captura y los borradores: `FICHAITOR_GEMINI_API_KEY` y `FICHAITOR_GEMINI_MODEL`, o `FICHAITOR_FAKE_SCREENSHOT=true`. Sin ninguna, el worker registra `sentiment_model_missing` al arrancar y el análisis cuenta todas las reseñas por sus estrellas.
@@ -239,6 +247,73 @@ Las cifras de reseñas, el horario regular y los cambios de Google no se repiten
 
 > **Nota:** "Horarios especiales futuros" cuenta días distintos con fecha de hoy en adelante. "Hoy" se calcula en UTC.
 
+## Baja, correo y retención
+
+El recorrido de una baja, los plazos y la tabla de qué se borra y cuándo están en [retencion.md](retencion.md). Las rutas están en [contrato-web-api.md](contrato-web-api.md#baja-desconectar-y-borrar-la-cuenta-2026-11-12). Aquí están los tres jobs.
+
+### El job `send_mail`
+
+Envía los dos correos de una baja. La API los encola; solo el worker habla con el servidor de correo.
+
+| Plantilla | Carga | Cuándo |
+|---|---|---|
+| `offboarding_code` | `to`, `scope`, `code`, `minutes`, `code_id` | Al pedir el código |
+| `offboarding_scheduled` | `to`, `scope`, `delete_at`, `token` | Al confirmar la baja |
+
+- **La carga del job es el único sitio donde el código y el token de restauración existen en claro.** El job la vacía (`{}`) al enviar el correo, al fallar para siempre y al agotar los intentos. Cada minuto, `on_lost` vacía la de los jobs terminados que la conserven porque su worker murió.
+- **3 intentos.** Un fallo temporal del servidor (4xx de SMTP, red) se reintenta. Un rechazo (5xx de SMTP, credenciales, certificado no válido, servidor sin TLS) no.
+- **El resultado del código se anota** en `offboarding_code.mail_state` (`sent` o `failed`). La web lo consulta con `GET /api/v1/me/offboarding/code`.
+- **Nada sensible en los logs ni en `job.last_error`**: los errores del adaptador son textos fijos, sin dirección, código ni enlace.
+- **Sin correo configurado**, el worker registra `mail_missing` al arrancar y todo job `send_mail` falla al primer intento. La API responde 503 al pedir un código.
+
+El adaptador SMTP usa `smtplib`, de la biblioteca estándar, en un hilo. Basta para un correo por conversación y no añade dependencias.
+
+- **TLS obligatorio y certificado comprobado.** En el puerto 465, TLS desde el primer byte. En cualquier otro, STARTTLS: si el servidor no lo ofrece, el correo no se envía.
+- **Cabeceras**: `From` con el nombre de `FICHAITOR_MAIL_FROM_NAME`, `Message-ID` con el dominio del remitente, `Auto-Submitted: auto-generated` y, si `FICHAITOR_MAIL_REPLY_TO` tiene valor, `Reply-To`.
+- **Cuerpo**: texto plano y una versión HTML sencilla. Sin datos de reseñas.
+- **El enlace de restauración** es `<FICHAITOR_PUBLIC_BASE_URL>/app#restaurar=<token>`. El token va en el fragmento para que no llegue a los registros de acceso.
+
+> **Nota:** La fecha de los correos sale en hora peninsular si la imagen tiene los datos de zonas horarias (`tzdata`). Si no, sale en UTC y lo dice.
+
+### El job `apply_offboarding`
+
+Carga: `{"offboarding_id": "<uuid>"}`. La API lo encola al confirmar la baja, para ejecutarse en su fecha (`run_at`), con la clave `apply_offboarding:<id>` y 5 intentos.
+
+1. **Hace efectiva la baja**, en una transacción. Solo si sigue programada y su fecha ha llegado: una baja restaurada, o un job que corre antes de tiempo, no hace nada (`offboarding_skipped`). Desde aquí ya no se puede restaurar.
+2. **Revoca en Google todas las conexiones guardadas** de ese usuario, no solo la última: `POST https://oauth2.googleapis.com/revoke`, con el token de renovación en el cuerpo (`token=...`, `application/x-www-form-urlencoded`). Una petición por token.
+3. **Borra cada token cifrado** en cuanto su revocación queda resuelta.
+4. **Anota el resultado** en `offboarding.revoke_state`.
+
+La revocación sigue la [documentación de Google](https://developers.google.com/identity/protocols/oauth2/web-server#tokenrevoke): admite un token de acceso o de renovación, responde 200 si lo revoca y 400 con un código de error si no.
+
+| Qué responde Google | Qué hace el job | `revoke_state` |
+|---|---|---|
+| 200 | Borra el token | `revoked` |
+| 400 con `invalid_token` (ya caducado o revocado) | Lo da por revocado y borra el token | `revoked` |
+| Otro 4xx | Borra el token y no reintenta | `failed` |
+| 5xx, 429 o sin respuesta | Reintenta (30 s, 60 s, 120 s, 240 s). El token sigue guardado entre intentos. En el quinto, lo borra | `failed` si se agotan |
+| El token no se puede descifrar | Borra el token | `failed` |
+| No había ninguna conexión | Nada | `none` |
+| El dueño ya ha vuelto a conectar | No revoca nada y borra los tokens antiguos | `superseded` |
+
+- **Con `failed` queda constancia** en `offboarding` y en el log (`offboarding_effective`, nivel `warning`, con `not_revoked`). El token ya no está en la base: no se puede reintentar. El dueño puede quitar el acceso desde `myaccount.google.com/connections`.
+- **Repetirlo no revoca dos veces.** Una baja con `revoke_state` ya anotado no se vuelve a tomar.
+- **El token en claro vive solo en variables locales.** Ningún error ni log lo lleva: de Google solo queda el código de estado.
+
+> **Importante:** La revocación no se ha probado contra Google real. El adaptador se prueba con transporte HTTP simulado (`tests/test_offboarding_units.py`).
+
+### El job `retention`
+
+Carga: `{}`. La pasada diaria que borra lo que ha superado su plazo. Qué borra y cuándo está en [retencion.md](retencion.md#tabla-de-conservación).
+
+- **Lo encola el propio worker.** No hay planificador aparte. Cada worker intenta encolar el job del día con la clave `retention:<fecha>` y `run_at` a las `FICHAITOR_RETENTION_HOUR_UTC`. La clave es única: con varias réplicas hay un solo job, y lo ejecuta un solo worker.
+- **Un worker que arranca pasada la hora** encola el job del día ya vencido y lo ejecuta en el momento, una vez.
+- **Idempotente.** Repetir la pasada no borra nada más. Dos pasadas a la vez no fallan.
+- **Antes de borrar**, hace efectivas las bajas vencidas cuyo job `apply_offboarding` se perdió y termina las revocaciones que quedaron a medias. Pasado un día, sin insistir a Google.
+- **Cada pasada deja constancia**: una fila en `retention_run` y el evento `retention_done`, con cuántas filas borró de cada tabla. Sin identificadores.
+
+Para añadir otro trabajo diario, añade un `DailyJob` a la lista `daily` de `Worker` (`app/worker/__main__.py`).
+
 ## Tablas
 
 Se definen en `db/schema_worker.sql`, que es idempotente y se aplica después de `db/schema.sql`. Sobre una base ya creada, volver a aplicarlo añade lo que falte (por ejemplo, la columna `facts`) sin tocar las filas.
@@ -298,7 +373,7 @@ Las cuatro tablas del sentimiento del establecimiento. Las escribe el worker.
 | Tabla | Una fila por | Contenido |
 |---|---|---|
 | `review_sentiment` | Reseña | Clasificación: huella de las estrellas y el texto, sentimiento, hasta 3 temas con polaridad, método (`model`, `stars`, `stars_fallback` o `pending`) e intentos. Ningún texto |
-| `sentiment_analysis` | Ficha y conexión | Último análisis: estado (`ok`, `insuficiente` o `error`), fecha, nota, valoración, temas con recuentos, resumen, sugerencia y disparador |
+| `sentiment_analysis` | Ficha y conexión | Último análisis: estado (`ok`, `insuficiente` o `error`), fecha, nota, valoración, temas con recuentos, resumen, sugerencia, disparador y versión de la fórmula |
 | `sentiment_history` | Ficha, conexión y mes | Nota del mes. El mes en curso se actualiza con cada análisis |
 | `sentiment_usage` | Análisis | Contadores de llamadas, reseñas enviadas y tokens. Solo se añaden filas |
 
@@ -320,7 +395,7 @@ Acciones sobre Google confirmadas por el dueño. Hoy solo hay un tipo, `reply_re
 
 ### `audit_log`
 
-Registro de auditoría. **Solo se añaden filas**: nadie las cambia ni las borra.
+Registro de auditoría. **Solo se añaden filas**: nadie las cambia. Solo se borran, en la tarea de retención, las de una cuenta que lleva más de 12 meses de baja.
 
 | Columna | Uso |
 |---|---|
@@ -335,14 +410,14 @@ Registro de auditoría. **Solo se añaden filas**: nadie las cambia ni las borra
 
 Cada acción deja dos filas: la confirmación y el resultado. Una acción que sigue en curso tiene solo la primera.
 
-La tabla tiene seguridad a nivel de fila: la API solo puede insertar `reply_confirmed` y el worker solo `reply_sent` y `reply_failed`. No hay ninguna política de lectura, cambio ni borrado, así que esas operaciones quedan negadas para los dos roles aunque alguien concediera el privilegio por error. Para consultarla hay que conectarse como propietario.
+La tabla tiene seguridad a nivel de fila: la API solo puede insertar `reply_confirmed` y el worker solo `reply_sent` y `reply_failed`. No hay ninguna política de lectura ni de cambio, así que esas operaciones quedan negadas para los dos roles aunque alguien concediera el privilegio por error. La única política de borrado es la del worker, para las filas de cuentas con más de 12 meses de baja. Para consultarla hay que conectarse como propietario.
 
 ### Roles
 
 | Rol | Puede | No puede |
 |---|---|---|
 | `fichaitor_api` | Insertar en `job` (solo `kind`, `payload`, `run_at`, `idempotency_key`, `max_attempts`); leer `profile_summary` y `review`; leer y escribir `review_draft`; insertar y leer `action` (al insertar, solo cuenta, ficha, reseña, tipo, texto y fecha de confirmación); insertar en `audit_log` el evento `reply_confirmed`; leer `sentiment_analysis` y `sentiment_history` | Leer `review_sentiment` o `sentiment_usage`, o escribir en las tablas del sentimiento; leer, cambiar o borrar jobs; fijar estado o intentos; escribir resúmenes o reseñas; cambiar o borrar una acción, o crearla con estado o resultado; leer, cambiar o borrar la auditoría |
-| `fichaitor_worker` | Leer, insertar y actualizar `job`, `profile_summary` y `review`; leer de `google_connection` las columnas que usa; leer `action` y actualizar su estado, intentos, fechas y resultado; insertar en `audit_log` los eventos `reply_sent` y `reply_failed`; leer, insertar y actualizar `review_sentiment`, `sentiment_analysis` y `sentiment_history`; añadir filas a `sentiment_usage` | Leer o cambiar `sentiment_usage`; leer `waitlist_entry`, `funnel_event` o el email de las conexiones; escribir en `google_connection`; borrar nada; **crear una acción o cambiar su texto, su reseña o su cuenta**; leer `review_draft`; leer, cambiar o borrar la auditoría |
+| `fichaitor_worker` | Leer, insertar y actualizar `job`, `profile_summary` y `review`; leer de `google_connection` las columnas que usa; leer `action` y actualizar su estado, intentos, fechas y resultado; insertar en `audit_log` los eventos `reply_sent` y `reply_failed`; leer, insertar y actualizar `review_sentiment`, `sentiment_analysis` y `sentiment_history`; añadir filas a `sentiment_usage` | Leer o cambiar `sentiment_usage`; leer `waitlist_entry`, `funnel_event` o el email de las conexiones; escribir en `google_connection`; borrar fuera de la baja y de la tarea de retención (consulta [retencion.md](retencion.md#privilegios)); vaciar una tabla; **crear una acción o cambiar su texto, su reseña o su cuenta**; leer `review_draft`; leer o cambiar la auditoría; crear o restaurar una baja; leer el correo de una cuenta, la huella de una sesión o un contacto de la lista de espera |
 
 ## Variables de entorno
 
@@ -362,6 +437,11 @@ Todas llevan el prefijo `FICHAITOR_`. El worker las valida al arrancar y, si fal
 | `FICHAITOR_GEMINI_API_KEY` y `FICHAITOR_GEMINI_MODEL` | No | — y `gemini-3.6-flash` | Modelo del sentimiento del establecimiento. Las mismas variables que usa la API |
 | `FICHAITOR_FAKE_SCREENSHOT` | No | `false` | Modelo de ejemplo para el sentimiento, sin clave y sin coste |
 | `FICHAITOR_SENTIMENT_*` | No | Consulta [sentimiento.md](sentimiento.md#variables-de-entorno) | Umbrales, disparadores y límites de coste del sentimiento |
+| `FICHAITOR_SMTP_HOST`, `FICHAITOR_SMTP_PORT`, `FICHAITOR_SMTP_USER`, `FICHAITOR_SMTP_PASSWORD` | No | —, `587`, —, — | Servidor de correo saliente. Consulta [El job `send_mail`](#el-job-send_mail) |
+| `FICHAITOR_MAIL_FROM`, `FICHAITOR_MAIL_FROM_NAME`, `FICHAITOR_MAIL_REPLY_TO` | No | —, `Fichaitor`, — | Remitente, su nombre y la dirección de respuesta |
+| `FICHAITOR_PUBLIC_BASE_URL` | No | `http://localhost:8080` | Base del enlace de restauración de los correos |
+| `FICHAITOR_FAKE_MAIL` | No | `false` | No envía correo: lo escribe en el log con el prefijo `[CORREO SIMULADO]` |
+| `FICHAITOR_RETENTION_*` | No | Consulta [retencion.md](retencion.md#variables) | Plazos de conservación y hora de la pasada diaria |
 
 > **Precaución:** `FICHAITOR_TOKEN_PRIVATE_KEY` solo debe estar en el entorno del worker. No la pongas en el entorno de la API. La API cifra con la clave pública y no puede leer un token.
 
@@ -401,7 +481,7 @@ Todas llevan el prefijo `FICHAITOR_`. El worker las valida al arrancar y, si fal
 
 6. Para pararlo, pulsa `Ctrl+C`. El worker termina el job en curso y sale.
 
-El worker escribe una línea JSON por evento: `worker_started`, `job_started`, `job_done`, `job_retry`, `job_failed`, `job_lost`, `lost_jobs_recorded`, `optional_read_rejected`, `reply_sent`, `action_skipped`, `action_lost`, `lost_hook_error`, `exhausted_hook_error`, `queue_error`, `stop_requested` y `worker_stopped`. Los logs llevan el identificador, el tipo y el intento del job, y el identificador de la acción en los eventos del ejecutor. No llevan cargas, tokens, cadenas de conexión, textos de reseñas ni respuestas.
+El worker escribe una línea JSON por evento: `worker_started`, `job_started`, `job_done`, `job_retry`, `job_failed`, `job_lost`, `lost_jobs_recorded`, `optional_read_rejected`, `reply_sent`, `action_skipped`, `action_lost`, `lost_hook_error`, `exhausted_hook_error`, `queue_error`, `stop_requested` y `worker_stopped`. Los de la baja son `mail_sent`, `mail_failed`, `mail_missing`, `fake_mail_enabled`, `account_suspended`, `offboarding_effective`, `offboarding_skipped`, `offboarding_not_applied`, `leave_purged_on_reconnect`, `daily_job_enqueued`, `schedule_error` y `retention_done`. Los logs llevan el identificador, el tipo y el intento del job, y el identificador de la acción en los eventos del ejecutor. No llevan cargas, tokens, cadenas de conexión, textos de reseñas ni respuestas. Tampoco códigos de baja, enlaces de restauración ni direcciones de correo, salvo con `FICHAITOR_FAKE_MAIL=true`.
 
 > **Precaución:** Con `FICHAITOR_FAKE_GOOGLE=false`, un job `reply_review` publica de verdad. No encoles a mano un job de este tipo ni insertes filas en `action` contra una ficha real para probar: la respuesta es pública y avisa a quien escribió la reseña.
 
@@ -424,16 +504,18 @@ SELECT * FROM profile_summary;
 ## Pruebas
 
 ```bash
-uv run pytest -q tests/test_worker_*.py tests/test_reviews_*.py tests/test_sentiment_*.py
+uv run pytest -q tests/test_worker_*.py tests/test_reviews_*.py tests/test_sentiment_*.py tests/test_offboarding_*.py
 ```
 
-Las pruebas de integración (`tests/test_worker_postgres.py`, `tests/test_reviews_postgres.py` y `tests/test_sentiment_postgres.py`) se saltan si faltan estas variables:
+Las pruebas de integración (`tests/test_worker_postgres.py`, `tests/test_reviews_postgres.py`, `tests/test_sentiment_postgres.py` y `tests/test_offboarding_postgres.py`) se saltan si faltan estas variables. Deben apuntar a la base de pruebas, que se crea con `scripts/preparar_bd_pruebas.sh`:
 
 ```bash
-export FICHAITOR_TEST_OWNER_URL=postgresql://fichaitor:dev@127.0.0.1:5433/fichaitor
-export FICHAITOR_TEST_DATABASE_URL=postgresql://fichaitor_api_dev:dev@127.0.0.1:5433/fichaitor
-export FICHAITOR_TEST_WORKER_URL=postgresql://fichaitor_worker_dev:dev@127.0.0.1:5433/fichaitor
+export FICHAITOR_TEST_OWNER_URL=postgresql://fichaitor:dev@127.0.0.1:5433/fichaitor_test
+export FICHAITOR_TEST_DATABASE_URL=postgresql://fichaitor_api_dev:dev@127.0.0.1:5433/fichaitor_test
+export FICHAITOR_TEST_WORKER_URL=postgresql://fichaitor_worker_dev:dev@127.0.0.1:5433/fichaitor_test
 ```
+
+> **Precaución:** Nunca ejecutes las pruebas contra la base de desarrollo ni contra una con datos reales. `tests/conftest.py` detiene la suite si alguna de las tres URL no apunta a una base cuyo nombre termine en `_test`. Consulta [retencion.md](retencion.md#pruebas).
 
 Crean y borran solo filas marcadas con el prefijo `pytest-`. Los jobs de las pruebas llevan un tipo propio (`pytest-…`), así que un worker en marcha sobre la misma base no los toma. Ninguna prueba llama a Google ni a Gemini: la escritura del adaptador real se prueba con transporte HTTP simulado (`tests/test_reviews_google.py`), igual que el modelo del sentimiento (`tests/test_sentiment_gemini.py`).
 

@@ -53,3 +53,22 @@ def account_guard(
         return account
 
     return current_account
+
+
+MSG_LEAVE_PENDING = "Tienes una baja programada. Restáurala para seguir usando Fichaitor."
+
+
+def active_account_guard(
+    store: Store, clock: Callable[[], float]
+) -> Callable[[Request], Awaitable[Account]]:
+    """The account of the session, unless it has a scheduled leave: from the moment a
+    leave is confirmed, nothing of the profile is read or shown until it is restored."""
+    current_account = account_guard(store, clock)
+
+    async def active_account(request: Request) -> Account:
+        account = await current_account(request)
+        if account.pending_deletion is not None:
+            raise HTTPException(409, MSG_LEAVE_PENDING)
+        return account
+
+    return active_account

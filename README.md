@@ -11,7 +11,7 @@ Estado: **en construcción**. La API, el worker, la base de datos y la web funci
 | Pieza | Estado |
 |---|---|
 | API (`app/api`, FastAPI) | Funciona: diagnóstico público, lista de espera, conexión con Google, cuentas y sesiones, resumen y diagnóstico de la ficha conectada, y reseñas con borrador y publicación de la respuesta |
-| Worker (`app/worker`) | Funciona: cola de jobs en PostgreSQL, job `sync_profile`, que lee la ficha en Google y guarda sus cifras, los hechos del diagnóstico y las reseñas, y job `reply_review`, que envía a Google la respuesta que el dueño confirma |
+| Worker (`app/worker`) | Funciona: cola de jobs en PostgreSQL, job `sync_profile`, que lee la ficha en Google y guarda sus cifras, los hechos del diagnóstico y las reseñas, job `reply_review`, que envía a Google la respuesta que el dueño confirma, y los jobs de la baja: `send_mail`, `apply_offboarding` (revoca los tokens en Google) y `retention` (borra lo que supera su plazo) |
 | Base de datos (PostgreSQL 16) | Funciona: `db/schema.sql` y `db/schema_worker.sql`, idempotentes, con un rol de mínimo privilegio para la API y otro para el worker |
 | Web (`web/`) | Funciona: sitio público con el diagnóstico y panel en `/app` (React + Vite), servidos por nginx en `http://127.0.0.1:8080` |
 | Calendario de fechas clave | Datos y reglas listos ([docs/calendario.md](docs/calendario.md)). El diagnóstico del panel usa los festivos nacionales; las propuestas de fechas clave aún no las usa ningún servicio |
@@ -25,7 +25,7 @@ Lo que falta del MVP ([docs/05-roadmap.md](docs/05-roadmap.md), fase 3):
 - De las reseñas: el aviso de reseña nueva (Pub/Sub), la respuesta por WhatsApp y el modo automático. Ver, redactar y publicar desde el panel ya funciona en el backend (sexto bloque); falta la pantalla en la web y la prueba contra Google real.
 - Las fechas clave y "hoy cierro" dentro del producto.
 - La facturación.
-- En el panel: borrar la cuenta. En la base: la limpieza periódica de sesiones caducadas.
+- De la baja: la pantalla en la web, la prueba de la revocación contra Google real y el correo real (hoy solo simulado). El backend ya está (séptimo bloque).
 - El diagnóstico por pantallazo, que está en construcción.
 
 Desde el 2026-11-12 hay **una escritura en Google**: la respuesta a una reseña, que solo envía el worker y solo cuando el dueño la ha confirmado desde su sesión. Todo lo demás sigue siendo lectura.
@@ -86,10 +86,16 @@ Tras actualizar el código, vuelve a aplicar el esquema (se puede aplicar las ve
 docker compose exec -T db psql -q -U fichaitor -d fichaitor -v ON_ERROR_STOP=1 < db/schema.sql
 ```
 
-Pruebas de integración contra PostgreSQL (sin estas variables se omiten):
+Pruebas de integración contra PostgreSQL (sin estas variables se omiten). Usan su propia base de datos, `fichaitor_test`, que se crea y se actualiza con:
 
 ```bash
-FICHAITOR_TEST_DATABASE_URL=postgresql://fichaitor_api_dev:dev@127.0.0.1:5433/fichaitor FICHAITOR_TEST_OWNER_URL=postgresql://fichaitor:dev@127.0.0.1:5433/fichaitor FICHAITOR_TEST_WORKER_URL=postgresql://fichaitor_worker_dev:dev@127.0.0.1:5433/fichaitor uv run pytest -q
+scripts/preparar_bd_pruebas.sh
+```
+
+> **Precaución:** Las pruebas nunca se ejecutan contra la base de desarrollo ni contra una con datos reales: crean y borran filas. `tests/conftest.py` detiene la suite si alguna de las tres URL no apunta a una base cuyo nombre termine en `_test`.
+
+```bash
+FICHAITOR_TEST_DATABASE_URL=postgresql://fichaitor_api_dev:dev@127.0.0.1:5433/fichaitor_test FICHAITOR_TEST_OWNER_URL=postgresql://fichaitor:dev@127.0.0.1:5433/fichaitor_test FICHAITOR_TEST_WORKER_URL=postgresql://fichaitor_worker_dev:dev@127.0.0.1:5433/fichaitor_test uv run pytest -q
 ```
 
 Quinto bloque: el **worker**, el **resumen de la ficha** y el **diagnóstico de la ficha conectada**. El worker toma jobs de una cola en PostgreSQL; el job `sync_profile` lee la ficha en Google y guarda en `profile_summary` sus cifras y los hechos con los que se calcula el diagnóstico. Está documentado en [docs/worker.md](docs/worker.md).
@@ -146,7 +152,28 @@ Séptimo bloque: el **sentimiento del establecimiento** (`GET /api/v1/me/sentime
 
 > **Precaución:** El análisis no se ha probado contra Gemini real. El coste de `docs/sentimiento.md` es una estimación: corrígela con las primeras cifras de la tabla `sentiment_usage`.
 
-Falta en estos bloques: borrar la cuenta desde el panel, la limpieza periódica de sesiones caducadas y las pruebas automáticas contra Google real.
+Séptimo bloque: la **baja** y la **conservación de datos**. El dueño puede desconectar Google o borrar su cuenta. El contrato con la web está en [docs/contrato-web-api.md](docs/contrato-web-api.md#baja-desconectar-y-borrar-la-cuenta-2026-11-12) y los plazos, en [docs/retencion.md](docs/retencion.md).
+
+- **La baja se confirma con un código** de un solo uso que llega por correo, y queda **programada 48 horas**. Hasta entonces se puede restaurar, desde la sesión o desde el enlace del correo.
+- **Desde la confirmación no se lee la ficha** y ninguna ruta devuelve sus datos.
+- **A las 48 horas el worker revoca en Google todos los tokens guardados y los borra.**
+- **Una pasada diaria borra lo que supera su plazo**: lo obtenido de Google, a los 30 días de la baja; el registro de respuestas, a los 12 meses; las sesiones caducadas, a los 30 días; la lista de espera, a los 12 meses.
+- **Solo borra el worker.** La API sigue sin poder borrar nada.
+- **El correo lo envía el worker por SMTP.** Con `FICHAITOR_FAKE_MAIL=true` no envía nada y escribe el correo en su registro.
+
+Tras actualizar el código, vuelve a aplicar los dos esquemas:
+
+```bash
+docker compose exec -T db psql -q -U fichaitor -d fichaitor -v ON_ERROR_STOP=1 < db/schema.sql
+```
+
+```bash
+docker compose exec -T db psql -q -U fichaitor -d fichaitor -v ON_ERROR_STOP=1 < db/schema_worker.sql
+```
+
+> **Importante:** La revocación no se ha probado contra Google real ni el envío contra un servidor de correo real.
+
+Falta en estos bloques: las pruebas automáticas contra Google real.
 
 ### Ejecutarlo
 
@@ -183,6 +210,7 @@ uv run ruff check .
 | [docs/05-roadmap.md](docs/05-roadmap.md) | Fases, qué hay que investigar, qué hay que construir y criterios de salida |
 | [docs/06-estandares.md](docs/06-estandares.md) | Stack, separación de responsabilidades, Docker y estrategia de pruebas |
 | [docs/sentimiento.md](docs/sentimiento.md) | Sentimiento del establecimiento: fórmula de la nota, temas, disparadores, coste y qué se guarda |
+| [docs/retencion.md](docs/retencion.md) | Baja y conservación: qué dato se guarda, cuánto tiempo, quién lo borra y cuándo |
 
 ## Decisiones tomadas
 

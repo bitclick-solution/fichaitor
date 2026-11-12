@@ -5,6 +5,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import Protocol
 
+from app.domain.offboarding import RetentionPolicy
 from app.domain.profile_summary import ProfileSummary, Review
 
 
@@ -19,6 +20,22 @@ class StoredConnection:
     refresh_token_enc: str
     key_version: int
     locations: tuple[ConnectedLocation, ...]
+
+
+@dataclass(frozen=True)
+class EffectiveLeave:
+    """A leave that is already effective and whose tokens are still to be revoked."""
+
+    id: str
+    scope: str
+    google_sub: str
+
+
+@dataclass(frozen=True)
+class TokenToRevoke:
+    connection_id: str
+    refresh_token_enc: str
+    key_version: int
 
 
 @dataclass(frozen=True)
@@ -106,4 +123,64 @@ class WorkerStore(Protocol):
         """Close as failed the live actions whose job of that kind ended as failed
         without closing them (its worker died, or it ran out of attempts). Safe to
         repeat. Returns how many were closed."""
+        ...
+
+    # --- leaving and retention ----------------------------------------------------
+
+    async def is_suspended(self, google_sub: str) -> bool:
+        """Whether that Google user has a scheduled leave: nothing of theirs is read,
+        analysed or sent until it is restored."""
+        ...
+
+    async def purge_superseded(self, google_sub: str, now: datetime) -> dict[str, int]:
+        """Delete what is left of earlier, effective leaves of that Google user who has
+        connected again since: a new connection starts from nothing. Rows deleted per
+        table; empty when there was nothing to do."""
+        ...
+
+    async def begin_offboarding(self, offboarding_id: str, now: datetime) -> EffectiveLeave | None:
+        """Make a scheduled leave effective if its date has come: from then on it cannot
+        be restored, the account has no profiles and, when the scope is the account,
+        the account is deleted and its sessions closed. Safe to repeat.
+
+        Returns the leave while its tokens are still to be revoked; None if it was
+        restored, is not due yet, does not exist or is already finished.
+        """
+        ...
+
+    async def leave_tokens(self, offboarding_id: str) -> tuple[list[TokenToRevoke], bool]:
+        """Every stored connection of that leave's Google user made before it became
+        effective, and whether the owner has connected again since (then revoking
+        would cut the new connection: the old tokens are only deleted)."""
+        ...
+
+    async def delete_connection(self, connection_id: str) -> None:
+        """Delete one stored connection, encrypted token included."""
+        ...
+
+    async def finish_revocation(self, offboarding_id: str, state: str) -> None:
+        """Record how the revocation ended. From then on the leave is not picked again."""
+        ...
+
+    async def due_offboardings(self, now: datetime) -> list[tuple[str, bool]]:
+        """Leaves the daily pass must look at: scheduled ones past their date and
+        effective ones whose revocation never finished. The flag says to give up on
+        Google (the revocation has been pending for more than a day)."""
+        ...
+
+    async def run_retention(self, now: datetime, policy: RetentionPolicy) -> dict[str, int]:
+        """Delete everything past its term, and nothing else, and record how many rows
+        went from each table. Safe to repeat and to run from several workers."""
+        ...
+
+    async def scrub_job(self, job_id: str) -> None:
+        """Empty the payload of a job: what it carried must not outlive it."""
+        ...
+
+    async def scrub_finished_jobs(self, kind: str) -> int:
+        """Empty the payload of every finished job of that kind that still has one."""
+        ...
+
+    async def set_code_mail(self, code_id: str, state: str) -> None:
+        """Record whether the email with a code went out."""
         ...

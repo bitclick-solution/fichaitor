@@ -1,8 +1,9 @@
 """Integration tests against a real PostgreSQL. Skipped unless FICHAITOR_TEST_DATABASE_URL is set.
 
     docker compose up -d db
-    FICHAITOR_TEST_DATABASE_URL=postgresql://fichaitor_api_dev:dev@127.0.0.1:5433/fichaitor \
-    FICHAITOR_TEST_OWNER_URL=postgresql://fichaitor:dev@127.0.0.1:5433/fichaitor uv run pytest -q
+    FICHAITOR_TEST_DATABASE_URL=postgresql://fichaitor_api_dev:dev@127.0.0.1:5433/fichaitor_test \
+    FICHAITOR_TEST_OWNER_URL=postgresql://fichaitor:dev@127.0.0.1:5433/fichaitor_test \
+    uv run pytest -q
 """
 
 import asyncio
@@ -85,8 +86,8 @@ def test_api_role_cannot_read_update_or_delete_contacts():
 
     for sql in (
         "SELECT contact FROM waitlist_entry",
-        "UPDATE waitlist_entry SET contact = 'x'",
-        "DELETE FROM waitlist_entry",
+        "UPDATE waitlist_entry SET contact = 'x' WHERE false",
+        "DELETE FROM waitlist_entry WHERE false",
         "SELECT * FROM funnel_event",
     ):
         with pytest.raises(asyncpg.InsufficientPrivilegeError):

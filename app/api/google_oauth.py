@@ -131,6 +131,7 @@ def build_router(
         # A reconnection with a profile already chosen: its figures are read again now,
         # without waiting for the sync window. Never fails the connection. Skipped when
         # the profiles could not be listed: that connection has none the worker can read.
+        # (A scheduled leave has no selected profile to read: nothing is enqueued.)
         if sync is not None and locations is not None:
             try:
                 await sync.request_for_account(account_id, reconnected=True)

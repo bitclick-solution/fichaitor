@@ -15,7 +15,7 @@ from pydantic import BaseModel, ConfigDict
 
 from app.domain.sentiment import MAX_TOPICS_PER_REVIEW, POLARITIES, SENTIMENTS
 
-PROMPT_VERSION = "sentiment-2026-11-12.1"
+PROMPT_VERSION = "sentiment-2026-11-12.2"
 
 CLASSIFY_SYSTEM_PROMPT = """\
 Clasificas reseñas que los clientes han dejado en la ficha de Google de un negocio. \
@@ -49,8 +49,12 @@ Redactas para el dueño de un negocio un resumen de cómo lo ven sus clientes en
 reseñas de su ficha de Google. Recibes un objeto JSON con datos ya calculados: la nota \
 de 0 a 100 ("nota"), la valoración general ("valoracion"), cuántas reseñas se han \
 analizado ("resenas_analizadas"), los temas más elogiados ("elogios") y los que más \
-quejas reciben ("quejas"), cada uno con el número de reseñas que lo mencionan, y unos \
-pocos extractos de reseñas ("extractos") con sus estrellas.
+quejas reciben ("quejas"), cada uno con el número de reseñas que lo mencionan, cuántas \
+valoraciones de 1 o 2 estrellas llegaron sin comentario \
+("valoraciones_bajas_sin_comentario"), cuántas reseñas siguen sin respuesta del dueño \
+("resenas_sin_responder") y cuántas de ellas son de 1 o 2 estrellas \
+("resenas_bajas_sin_responder"), y unos pocos extractos de reseñas ("extractos") con sus \
+estrellas.
 
 Devuelves dos textos:
 
@@ -58,7 +62,7 @@ Devuelves dos textos:
 qué valoran los clientes y de qué se quejan, según los temas recibidos.
 - suggestion: una sola acción concreta que el dueño puede hacer esta semana para mejorar \
 lo que más quejas recibe o, si no hay quejas, para mantener lo que funciona. Una frase, \
-en imperativo y de tú.
+en imperativo y de tú. No sugieras responder a las reseñas: de eso se encarga el sistema.
 
 Reglas para los dos textos:
 
@@ -66,6 +70,9 @@ Reglas para los dos textos:
 porcentajes, medias ni totales, y no digas cuántas reseñas mencionan algo si no es el \
 número recibido. En caso de duda, no pongas ninguna cifra.
 - Di solo lo que se desprende de los datos. No inventes hechos sobre el negocio.
+- No digas que no hay quejas, críticas ni valoraciones negativas si "quejas" no está \
+vacío o "valoraciones_bajas_sin_comentario" es mayor que cero: una valoración baja sin \
+comentario también es un cliente descontento, aunque no diga por qué.
 - No prometas resultados ("subirás la nota", "garantiza") ni des datos de contacto, \
 enlaces o nombres de personas.
 - Sin emojis, sin listas, sin comillas alrededor del texto.

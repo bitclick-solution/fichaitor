@@ -78,8 +78,8 @@ def test_api_role_cannot_read_or_change_tokens():
 
     for sql in (
         "SELECT refresh_token_enc FROM google_connection",
-        "UPDATE google_connection SET refresh_token_enc = 'x'",
-        "DELETE FROM google_connection",
+        "UPDATE google_connection SET refresh_token_enc = 'x' WHERE false",
+        "DELETE FROM google_connection WHERE false",
     ):
         with pytest.raises(asyncpg.InsufficientPrivilegeError):
             asyncio.run(attempt(sql))

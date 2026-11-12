@@ -11,18 +11,32 @@ from pydantic import ValidationError
 from app.adapters.google_profile.fake import FakeGoogleProfile
 from app.adapters.google_profile.real import RealGoogleProfile
 from app.adapters.job_queue.postgres import PostgresJobQueue
+from app.adapters.mailer.fake import FakeMailer
+from app.adapters.mailer.smtp import SmtpMailer
 from app.adapters.sentiment_model.build import build_sentiment_model
 from app.adapters.worker_store.postgres import PostgresWorkerStore
+from app.domain.offboarding import RetentionPolicy
 from app.domain.sentiment import SentimentPolicy
+from app.mail_config import MailSettings
 from app.ports.google_profile import GoogleProfile
 from app.ports.job_queue import JobEnqueuer
+from app.ports.mailer import Mailer
 from app.ports.sentiment_model import SentimentModel
 from app.ports.worker_store import WorkerStore
+from app.retention_config import RetentionSettings
 from app.screenshot_config import ScreenshotSettings
 from app.sentiment_config import SentimentSettings
-from app.worker import analyze_sentiment, log, reply_review, sync_profile
+from app.worker import (
+    analyze_sentiment,
+    apply_offboarding,
+    log,
+    reply_review,
+    retention,
+    send_mail,
+    sync_profile,
+)
 from app.worker.config import ConfigError, WorkerSettings
-from app.worker.loop import Worker
+from app.worker.loop import DailyJob, Worker
 from app.worker.registry import HandlerRegistry
 
 
@@ -33,6 +47,9 @@ def build_registry(
     jobs: JobEnqueuer | None = None,
     sentiment_model: SentimentModel | None = None,
     sentiment_policy: SentimentPolicy | None = None,
+    mailer: Mailer | None = None,
+    public_base_url: str = "",
+    retention_policy: RetentionPolicy | None = None,
 ) -> HandlerRegistry:
     """jobs: where a finished sync enqueues the sentiment analysis. Without it, no
     analysis is chained (the job kind is still registered)."""
@@ -51,7 +68,33 @@ def build_registry(
         reply_review.KIND,
         reply_review.ReplyReview(store, google, settings.token_private_key),
     )
+    # Leaving: the emails, making a leave effective at its date, and the daily pass
+    # that deletes what is past its term (docs/retencion.md).
+    apply = apply_offboarding.ApplyOffboarding(store, google, settings.token_private_key)
+    registry.register(send_mail.KIND, send_mail.SendMail(store, mailer, public_base_url))
+    registry.register(apply_offboarding.KIND, apply)
+    registry.register(
+        retention.KIND, retention.Retention(store, apply, retention_policy or RetentionPolicy())
+    )
     return registry
+
+
+def build_mailer(settings: MailSettings) -> Mailer | None:
+    """None when no mail is configured: the API then refuses to start a leave."""
+    if settings.fake_mail:
+        return FakeMailer()
+    if not (settings.smtp_host and settings.mail_from):
+        return None
+    return SmtpMailer(
+        settings.smtp_host,
+        settings.smtp_port,
+        sender=settings.mail_from,
+        sender_name=settings.mail_from_name,
+        reply_to=settings.mail_reply_to,
+        user=settings.smtp_user,
+        password=settings.smtp_password,
+        timeout=settings.smtp_timeout_seconds,
+    )
 
 
 def install_stop_signals(stop: asyncio.Event) -> None:
@@ -92,6 +135,13 @@ async def run(settings: WorkerSettings) -> None:
             log.event("sentiment_model_missing", logging.WARNING)
         elif model_settings.fake_screenshot:
             log.event("fake_sentiment_model_enabled", logging.WARNING)
+        mail_settings = MailSettings()
+        mailer = build_mailer(mail_settings)
+        if mailer is None:
+            log.event("mail_missing", logging.WARNING)
+        elif mail_settings.fake_mail:
+            log.event("fake_mail_enabled", logging.WARNING)
+        retention_settings = RetentionSettings()
         queue = PostgresJobQueue(pool)
         worker = Worker(
             queue,
@@ -102,11 +152,15 @@ async def run(settings: WorkerSettings) -> None:
                 jobs=queue,
                 sentiment_model=sentiment_model,
                 sentiment_policy=sentiment_settings.policy(),
+                mailer=mailer,
+                public_base_url=mail_settings.public_base_url,
+                retention_policy=retention_settings.policy(),
             ),
             worker_id=settings.worker_id,
             poll_interval=settings.worker_poll_interval_seconds,
             job_timeout=settings.worker_job_timeout_seconds,
             lock_timeout=settings.worker_lock_timeout_seconds,
+            daily=[DailyJob(retention.KIND, retention_settings.hour_utc, retention.MAX_ATTEMPTS)],
         )
         stop = asyncio.Event()
         install_stop_signals(stop)

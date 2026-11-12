@@ -9,6 +9,8 @@ they read what the worker stored.
 
 import logging
 from collections.abc import Callable, Sequence
+from dataclasses import replace
+from datetime import datetime
 
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from fastapi.responses import JSONResponse
@@ -24,11 +26,12 @@ from app.api.sentiment_out import SentimentResponse, empty_response, to_sentimen
 from app.api.session import (
     SESSION_COOKIE,
     account_guard,
+    active_account_guard,
     clear_session_cookie,
     require_csrf_header,
     utc,
 )
-from app.api.summary_out import SummaryResponse, to_summary_response
+from app.api.summary_out import SummaryResponse, seconds, to_summary_response
 from app.application.profile_sync import ProfileSync
 from app.domain.calendar import Holiday
 from app.domain.profile_summary import STATUS_OK
@@ -46,10 +49,19 @@ class LocationOut(BaseModel):
     verified: bool
 
 
+class PendingDeletionOut(BaseModel):
+    scope: str  # ficha or cuenta
+    delete_at: datetime
+
+
 class MeResponse(BaseModel):
     email: str
     locations: list[LocationOut]
     selected_location_id: str | None
+    # False after a leave of the profile, until the owner connects with Google again.
+    connected: bool
+    # A scheduled leave: the web shows it with the way to restore, and nothing else.
+    pending_deletion: PendingDeletionOut | None
 
 
 class SelectLocationRequest(BaseModel):
@@ -67,6 +79,8 @@ def build_router(
 ) -> APIRouter:
     router = APIRouter()
     current_account = account_guard(store, clock)
+    # Every route that reads the profile or works on it: closed while a leave is scheduled.
+    active_account = active_account_guard(store, clock)
     sentiment_policy = sentiment_policy or SentimentPolicy()
 
     async def me_of(account: Account) -> MeResponse:
@@ -80,6 +94,15 @@ def build_router(
                 for loc in locations
             ],
             selected_location_id=account.selected_location_id,
+            connected=account.connected,
+            pending_deletion=(
+                PendingDeletionOut(
+                    scope=account.pending_deletion.scope,
+                    delete_at=seconds(account.pending_deletion.delete_at),
+                )
+                if account.pending_deletion is not None
+                else None
+            ),
         )
 
     @router.get("/api/v1/me", response_model=MeResponse)
@@ -93,16 +116,14 @@ def build_router(
     )
     async def select_location(
         body: SelectLocationRequest,
-        account: Account = Depends(current_account),  # noqa: B008
+        account: Account = Depends(active_account),  # noqa: B008
     ) -> MeResponse:
         # Same answer for a profile of another account and for one that does not exist.
         if not await store.select_location(account.id, body.location_id):
             raise HTTPException(404, "Esa ficha no está en tu cuenta.")
         # So that the panel finds its figures ready. Never fails the choice itself.
         await sync.request_for_account(account.id)
-        return await me_of(
-            Account(account.id, account.email, selected_location_id=body.location_id)
-        )
+        return await me_of(replace(account, selected_location_id=body.location_id))
 
     @router.get(
         "/api/v1/me/diagnosis",
@@ -110,7 +131,7 @@ def build_router(
         responses={UNAVAILABLE_STATUS_CODE: {"model": DiagnosisUnavailable}},
     )
     async def my_diagnosis(
-        account: Account = Depends(current_account),  # noqa: B008
+        account: Account = Depends(active_account),  # noqa: B008
     ) -> ProfileDiagnosisResponse | JSONResponse:
         # Computed here, from the facts the worker stored: no call to Google, no cost
         # and so no rate limit. Reading it asks for a sync under the same rules as the
@@ -125,7 +146,7 @@ def build_router(
 
     @router.get("/api/v1/me/summary", response_model=SummaryResponse)
     async def my_summary(
-        account: Account = Depends(current_account),  # noqa: B008
+        account: Account = Depends(active_account),  # noqa: B008
     ) -> SummaryResponse:
         # Looked up by the account of the session only: nothing in the request chooses it.
         view = await sync.view(account.id)
@@ -135,7 +156,7 @@ def build_router(
 
     @router.get("/api/v1/me/sentiment", response_model=SentimentResponse)
     async def my_sentiment(
-        account: Account = Depends(current_account),  # noqa: B008
+        account: Account = Depends(active_account),  # noqa: B008
     ) -> SentimentResponse:
         # Read from what the worker stored, by the account of the session only. No
         # model is called here: no cost and so no rate limit.

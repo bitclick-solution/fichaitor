@@ -657,5 +657,12 @@ def test_the_worker_process_registers_the_executor():
         _env_file=None, worker_database_url="postgresql://x", token_private_key=PRIVATE
     )
     registry = build_registry(settings, MemoryWorkerStore(), FakeGoogleProfile())
-    assert set(registry.kinds) == {"sync_profile", "reply_review", "analyze_sentiment"}
+    assert set(registry.kinds) == {
+        "sync_profile",
+        "reply_review",
+        "analyze_sentiment",
+        "send_mail",
+        "apply_offboarding",
+        "retention",
+    }
     assert isinstance(registry.get("reply_review"), ReplyReview)

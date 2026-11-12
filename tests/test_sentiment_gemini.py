@@ -47,6 +47,9 @@ REQUEST = SummaryRequest(
     praised=[("Trato del personal", 7)],
     complaints=[("Tiempo de espera", 2)],
     excerpts=[(1, "Esperamos mucho."), (5, "Muy amables.")],
+    low_without_text=1,
+    unanswered=13,
+    unanswered_low=2,
 )
 TEXTS = {"summary": "Gusta el trato del personal.", "suggestion": "Avisa de la espera."}
 
@@ -194,6 +197,9 @@ def test_summarize_sends_figures_and_excerpts_without_identifiers():
         "resenas_analizadas": 13,
         "elogios": [{"tema": "Trato del personal", "resenas": 7}],
         "quejas": [{"tema": "Tiempo de espera", "resenas": 2}],
+        "valoraciones_bajas_sin_comentario": 1,
+        "resenas_sin_responder": 13,
+        "resenas_bajas_sin_responder": 2,
         "extractos": [
             {"estrellas": 1, "texto": "Esperamos mucho."},
             {"estrellas": 5, "texto": "Muy amables."},

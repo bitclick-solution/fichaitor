@@ -3,9 +3,9 @@ the worker.
 
 Skipped unless the three URLs are set (same environment as test_reviews_postgres):
 
-    FICHAITOR_TEST_OWNER_URL=postgresql://fichaitor:dev@127.0.0.1:5433/fichaitor \
-    FICHAITOR_TEST_DATABASE_URL=postgresql://fichaitor_api_dev:dev@127.0.0.1:5433/fichaitor \
-    FICHAITOR_TEST_WORKER_URL=postgresql://fichaitor_worker_dev:dev@127.0.0.1:5433/fichaitor \
+    FICHAITOR_TEST_OWNER_URL=postgresql://fichaitor:dev@127.0.0.1:5433/fichaitor_test \
+    FICHAITOR_TEST_DATABASE_URL=postgresql://fichaitor_api_dev:dev@127.0.0.1:5433/fichaitor_test \
+    FICHAITOR_TEST_WORKER_URL=postgresql://fichaitor_worker_dev:dev@127.0.0.1:5433/fichaitor_test \
     uv run pytest -q tests/test_sentiment_postgres.py
 
 Only rows whose google_sub starts with 'pytest-' are created, and they are removed
@@ -360,6 +360,76 @@ def test_classifications_are_read_back_and_only_new_reviews_reach_the_model_agai
     assert [j["state"] for j in jobs] == ["done", "done"]
 
 
+def test_an_analysis_of_an_earlier_formula_is_redone_without_classifying_again(kind):
+    async def scenario(sc):
+        await sc.account(ANA)
+        await sc.sync(ANA)
+        first = await sc.analysis(ANA)
+        # As a worker before formula 2 left it: the column had its default, 1.
+        await owner(
+            "UPDATE sentiment_analysis SET formula_version = 1, summary = 'Viejo.',"
+            " suggestion = 'Vieja.' WHERE google_sub = $1",
+            ANA,
+        )
+        before = await sc.classifications(ANA)
+        sc.now = NOW + timedelta(minutes=10)  # inside the 24 hours and nothing new
+        await sc.sync(ANA)
+        second = await sc.analysis(ANA)
+        after = await sc.classifications(ANA)
+        sc.now = NOW + timedelta(minutes=20)
+        await sc.sync(ANA)  # no loop: the stored one is of the current formula
+        usage = await owner(
+            "SELECT trigger, classify_calls, summary_calls, reviews_sent FROM sentiment_usage"
+            " WHERE google_sub = $1 ORDER BY id",
+            ANA,
+        )
+        return first, second, before, after, await sc.analysis(ANA), usage, sc
+
+    first, second, before, after, third, usage, sc = scene(kind, scenario)
+    assert first["formula_version"] == s.FORMULA_VERSION == 2
+    assert (second["trigger"], second["formula_version"]) == ("formula_update", 2)
+    assert second["generated_at"] == NOW + timedelta(minutes=10)
+    assert (second["score"], second["based_on"]) == (first["score"], first["based_on"])
+    # All 8 are unanswered and 3 of them are of 1 or 2 stars: the rules say so.
+    assert second["suggestion"] == (
+        "Responde primero a las 3 reseñas de 1 o 2 estrellas que siguen sin respuesta. "
+        "En total tienes 8 reseñas sin responder."
+    )
+    assert second["summary"] != "Viejo."
+    # Not one review went to the model again: one call, for the summary.
+    assert len(sc.model.classify_calls) == 1 and len(sc.model.summary_calls) == 2
+    assert {k: dict(v) for k, v in after.items()} == {k: dict(v) for k, v in before.items()}
+    assert [tuple(u) for u in usage] == [("first", 1, 1, 6), ("formula_update", 0, 1, 0)]
+    assert third == second
+
+
+def test_the_analysis_knows_which_reviews_the_owner_has_answered(kind):
+    async def scenario(sc):
+        await sc.account(ANA)
+        low = review("pytest-low", 1, "", 4)
+        done = Review(
+            rating=2,
+            created_at=NOW - timedelta(days=5),
+            replied=True,
+            text="",
+            review_id="pytest-done",
+            reply_text="Lo sentimos.",
+            reply_at=NOW - timedelta(days=4),
+        )
+        sc.google._reviews = ReviewSet((*REVIEWS[:6], low, done))
+        await sc.sync(ANA)
+        reviews = await sc.worker_store.sentiment_reviews(ANA, SHARED.location)
+        return reviews, await sc.analysis(ANA), sc.model.summary_calls
+
+    reviews, analysis, (request,) = scene(kind, scenario)
+    assert s.attention_of(reviews) == s.Attention(
+        low_ratings=4, low_without_text=2, unanswered=7, unanswered_low=3
+    )
+    assert (request.low_without_text, request.unanswered, request.unanswered_low) == (2, 7, 3)
+    assert analysis["summary"].endswith("Hay 2 valoraciones de 1 o 2 estrellas sin comentario.")
+    assert analysis["suggestion"].startswith("Responde primero a las 3 reseñas de 1 o 2 estrellas")
+
+
 def test_an_answer_outside_the_closed_values_leaves_that_review_pending_and_the_job_done(kind):
     def obedient(item, topics):
         if "Ignora" in item.text:
@@ -595,14 +665,13 @@ def test_the_api_role_cannot(sql):
 @pytest.mark.parametrize(
     "sql",
     [
+        # It deletes only in the retention task (tests/test_offboarding_postgres.py);
+        # a classification goes with its review. TRUNCATE: checked in the catalogue.
         "DELETE FROM review_sentiment WHERE false",
-        "DELETE FROM sentiment_analysis WHERE false",
-        "DELETE FROM sentiment_history WHERE false",
-        "TRUNCATE sentiment_history",
         # Usage is append only, and its date is the database's.
         "SELECT * FROM sentiment_usage LIMIT 1",
+        "SELECT classify_calls FROM sentiment_usage LIMIT 1",
         "UPDATE sentiment_usage SET classify_calls = 0 WHERE false",
-        "DELETE FROM sentiment_usage WHERE false",
         "INSERT INTO sentiment_usage (google_sub, location, trigger, at)"
         " SELECT 'pytest-x', 'l', 'first', now() - interval '1 year' WHERE false",
     ],
@@ -628,9 +697,11 @@ def test_each_role_holds_exactly_the_privileges_it_needs(role):
     api = role == "fichaitor_api"
     writer = {"SELECT", "INSERT", "UPDATE"}
     assert run(held("review_sentiment")) == (set() if api else writer)
-    assert run(held("sentiment_analysis")) == ({"SELECT"} if api else writer)
-    assert run(held("sentiment_history")) == ({"SELECT"} if api else writer)
-    assert run(held("sentiment_usage")) == set()  # the worker: column-level INSERT only
+    # DELETE: the worker's, for the retention task.
+    assert run(held("sentiment_analysis")) == ({"SELECT"} if api else writer | {"DELETE"})
+    assert run(held("sentiment_history")) == ({"SELECT"} if api else writer | {"DELETE"})
+    # The worker: column-level INSERT, and DELETE by profile (it reads only the key).
+    assert run(held("sentiment_usage")) == (set() if api else {"DELETE"})
     public = run(
         owner(
             "SELECT table_name FROM information_schema.role_table_grants"

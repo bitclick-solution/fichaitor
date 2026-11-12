@@ -38,6 +38,7 @@ class MemoryWorkerStore:
         self.connections: dict[str, list[StoredConnection]] = {}
         self.summaries: dict[tuple[str, str], StoredSummary] = {}
         self.categories: dict[tuple[str, str], str] = {}  # set by tests and the demo
+        self.suspended: set[str] = set()  # Google users with a scheduled leave
 
     # --- sentiment -------------------------------------------------------------
 
@@ -170,3 +171,13 @@ class MemoryWorkerStore:
             ):
                 closed += 1
         return closed
+
+    # --- leaving ---------------------------------------------------------------
+    # Only what the handlers that run on this store need. Making a leave effective and
+    # the retention task exist in PostgreSQL only (tests/test_offboarding_postgres.py).
+
+    async def is_suspended(self, google_sub: str) -> bool:
+        return google_sub in self.suspended
+
+    async def purge_superseded(self, google_sub: str, now: datetime) -> dict[str, int]:
+        return {}

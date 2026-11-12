@@ -14,6 +14,7 @@ from app.adapters.google_oauth.real import RealGoogleOAuth
 from app.adapters.google_profile.fake import demo_facts
 from app.adapters.job_queue.demo import DemoSyncQueue
 from app.adapters.job_queue.memory import MemoryJobQueue
+from app.adapters.mailer.fake import FakeMailer
 from app.adapters.places.fake import FakePlaces
 from app.adapters.places.google import GooglePlaces
 from app.adapters.screenshot_reader.prompt import PROMPT_VERSION
@@ -24,17 +25,21 @@ from app.adapters.worker_store.memory import MemoryWorkerStore
 from app.api.diagnosis_out import DiagnosisResponse, to_response
 from app.api.google_oauth import build_router as build_google_router
 from app.api.me import build_router as build_me_router
+from app.api.offboarding import build_router as build_offboarding_router
 from app.api.reviews import build_router as build_reviews_router
 from app.api.screenshot import build_reader as build_reply_writer
 from app.api.screenshot import build_router_from_settings as build_screenshot_router
 from app.api.waitlist import SOURCE_PATTERN, build_router
 from app.application.diagnosis_service import DiagnosisService, RateLimited
+from app.application.offboarding import Offboarding
 from app.application.profile_sync import ProfileSync
 from app.application.rate_limit import SlidingWindowLimiter
 from app.application.review_replies import ReviewReplies
 from app.config import Settings
 from app.domain.calendar import NATIONAL, Holiday
 from app.domain.jobs import Job
+from app.domain.offboarding import SEND_MAIL_KIND
+from app.mail_config import MailSettings
 from app.ports.google_oauth import GoogleOAuth
 from app.ports.job_queue import JobEnqueuer
 from app.ports.places import PlacesGateway, PlacesUnavailable
@@ -44,6 +49,7 @@ from app.screenshot_config import ScreenshotSettings
 from app.sentiment_config import SentimentSettings
 from app.worker.analyze_sentiment import KIND as SENTIMENT_KIND
 from app.worker.analyze_sentiment import AnalyzeSentiment
+from app.worker.send_mail import SendMail
 
 log = logging.getLogger("fichaitor.api")
 
@@ -90,6 +96,28 @@ class DemoProfileQueue(DemoSyncQueue):
         return created
 
 
+class InlineMail:
+    """Without a database there is no worker to send the emails of a leave: with
+    FICHAITOR_FAKE_MAIL they are "sent" right here (written to the log), so that the
+    flow can be walked in a demo. Every other job goes to the queue it wraps."""
+
+    def __init__(self, inner: JobEnqueuer, public_base_url: str) -> None:
+        self._inner = inner
+        self._send = SendMail(None, FakeMailer(), public_base_url)
+
+    def __getattr__(self, name: str):
+        return getattr(self._inner, name)
+
+    async def enqueue(self, kind: str, payload: dict, **options) -> bool:
+        if kind != SEND_MAIL_KIND:
+            return await self._inner.enqueue(kind, payload, **options)
+        try:
+            await self._send(Job("demo", kind, dict(payload)))
+        except Exception as exc:  # the demo must not break the route that enqueued
+            log.warning("correo de ejemplo no enviado: %s", type(exc).__name__)
+        return True
+
+
 class _DemoBar:
     """The in-memory worker store, for a demo profile whose category is "Bar"."""
 
@@ -129,11 +157,13 @@ def create_app(
     reply_writer: ReplyWriter | None = None,
     screenshot_settings: ScreenshotSettings | None = None,
     sentiment_settings: SentimentSettings | None = None,
+    mail_settings: MailSettings | None = None,
 ) -> FastAPI:
     settings = settings or Settings()
     screenshot_settings = screenshot_settings or ScreenshotSettings()
     sentiment_settings = sentiment_settings or SentimentSettings()
     sentiment_policy = sentiment_settings.policy()
+    mail_settings = mail_settings or MailSettings()
     if holidays is None:
         holidays = national_holidays()
     if google is None:
@@ -190,7 +220,11 @@ def create_app(
         else:
             jobs = MemoryJobQueue()
     if isinstance(store, MemoryStore) and store.jobs is None:
-        store.jobs = jobs  # where a confirmed reply is enqueued; PostgreSQL has `job`
+        # Where a confirmed reply and the emails of a leave are enqueued; PostgreSQL
+        # has `job`.
+        store.jobs = (
+            InlineMail(jobs, mail_settings.public_base_url) if mail_settings.fake_mail else jobs
+        )
     sync = ProfileSync(
         store,
         jobs,
@@ -309,6 +343,31 @@ def create_app(
                 clock=clock,
                 prompt_version=PROMPT_VERSION,
             ),
+            clock=clock,
+        )
+    )
+
+    # Leaving: disconnect the profile or delete the account. The emails and the
+    # leave itself are the worker's; without mail configured, asking for a code is a 503.
+    app.include_router(
+        build_offboarding_router(
+            store=store,
+            offboarding=Offboarding(
+                store,
+                secret=settings.offboarding_secret or settings.oauth_state_secret,
+                mail_available=mail_settings.available,
+                clock=clock,
+                code_ttl_seconds=settings.offboarding_code_ttl_seconds,
+                max_attempts=settings.offboarding_code_max_attempts,
+                grace_hours=settings.offboarding_grace_hours,
+                code_limit=settings.offboarding_code_rate_limit,
+                code_window_seconds=settings.offboarding_code_rate_window_seconds,
+            ),
+            sync=sync,
+            restore_limiter=SlidingWindowLimiter(
+                settings.offboarding_restore_rate_limit, 3600, clock
+            ),
+            client_ip=client_ip,
             clock=clock,
         )
     )

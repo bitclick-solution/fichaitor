@@ -38,6 +38,10 @@ class SummaryRequest:
     praised: Sequence[tuple[str, int]]  # topic, reviews that mention it
     complaints: Sequence[tuple[str, int]]
     excerpts: Sequence[tuple[int, str]]  # stars, text
+    # What the topics do not show, counted by the code.
+    low_without_text: int = 0  # ratings of 1 or 2 stars without a comment
+    unanswered: int = 0  # reviews without a reply of the owner
+    unanswered_low: int = 0  # of those, the ones of 1 or 2 stars
 
 
 class SentimentModel(Protocol):
@@ -52,5 +56,6 @@ class SentimentModel(Protocol):
         ...
 
     async def summarize(self, request: SummaryRequest) -> tuple[Mapping[str, object], ModelUsage]:
-        """Raw texts: {"summary": ..., "suggestion": ...}."""
+        """Raw texts: {"summary": ..., "suggestion": ...}. The suggestion is used only
+        where the fixed rules of the domain leave room for it."""
         ...

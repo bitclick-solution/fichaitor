@@ -2,6 +2,7 @@
 
 The API role can only INSERT contacts, events and Google connections. On accounts,
 profiles and sessions it can read, insert and update a few columns; it never deletes.
+A leave is scheduled and restored here; the worker makes it effective and deletes.
 Every statement on profiles is filtered by account_id: the isolation between accounts.
 Of the worker's tables it can only INSERT jobs and SELECT profile summaries
 (figures and facts), reviews, and the sentiment analysis with its monthly history
@@ -18,6 +19,20 @@ import asyncpg
 from app.adapters.job_queue.postgres import PostgresJobQueue
 from app.domain.actions import EVENT_CONFIRMED, REPLY_REVIEW
 from app.domain.jobs import DEFAULT_MAX_ATTEMPTS
+from app.domain.offboarding import (
+    APPLY_KIND,
+    APPLY_MAX_ATTEMPTS,
+    CODE_GONE,
+    CODE_LOCKED,
+    CODE_OK,
+    CODE_WRONG,
+    MAIL_MAX_ATTEMPTS,
+    SCOPE_ACCOUNT,
+    SEND_MAIL_KIND,
+    CodeCheck,
+    PendingDeletion,
+    same_hash,
+)
 from app.domain.profile_summary import ProfileFacts, facts_from_json
 from app.domain.sentiment import Analysis, Figures, TopicCount, first_history_month
 from app.ports.google_oauth import ProfileLocation
@@ -38,25 +53,53 @@ from app.ports.store import (
 
 REPLY_MAX_ATTEMPTS = 3  # 30 s and 60 s of waiting: the owner is looking at the screen
 
-# The reviews an account may see: those of its own selected profile, reached through
-# its own Google identity. $1 is always the account of the session; no identifier from
-# the request takes part in choosing the profile.
-_OWN_REVIEWS = """
+# A leave closes the access to what was obtained from Google at once, long before
+# anything is deleted: while it is scheduled (it may be restored) and, once effective,
+# until the worker has deleted the data. Looked up by the Google identity, so that an
+# account created later for the same identity does not inherit what is left.
+_NO_OPEN_LEAVE = """
+    NOT EXISTS (SELECT 1 FROM offboarding o
+                WHERE o.google_sub = a.google_sub
+                  AND o.restored_at IS NULL AND o.purged_at IS NULL)
+"""
+# The selected profile of an account, unless it has a scheduled leave.
+_SELECTED = """
     FROM account a
     JOIN location l
       ON l.id = a.selected_location_id AND l.account_id = a.id AND l.removed_at IS NULL
+     AND a.deleted_at IS NULL
+     AND NOT EXISTS (SELECT 1 FROM offboarding o
+                     WHERE o.account_id = a.id
+                       AND o.restored_at IS NULL AND o.effective_at IS NULL)
+"""
+
+# The reviews an account may see: those of its own selected profile, reached through
+# its own Google identity. $1 is always the account of the session; no identifier from
+# the request takes part in choosing the profile.
+_OWN_REVIEWS = f"""
+    {_SELECTED}
     JOIN review r
       ON r.google_sub = a.google_sub AND r.location = l.gbp_location AND r.removed_at IS NULL
+     AND {_NO_OPEN_LEAVE}
 """
 
 
 class PostgresStore:
-    def __init__(self, dsn: str, reply_job_kind: str = REPLY_REVIEW) -> None:
+    def __init__(
+        self,
+        dsn: str,
+        reply_job_kind: str = REPLY_REVIEW,
+        mail_job_kind: str = SEND_MAIL_KIND,
+        apply_job_kind: str = APPLY_KIND,
+    ) -> None:
         self._dsn = dsn
         self._pool: asyncpg.Pool | None = None
-        # Kind of the job that carries out a confirmed reply. Tests use one of their
-        # own, so that no worker running on the same database takes their jobs.
+        # Kinds of the jobs that carry out a confirmed reply, send an email and make a
+        # leave effective. Tests use their own, so that no worker running on the same
+        # database takes their jobs.
         self._reply_job_kind = reply_job_kind
+        self._mail_job_kind = mail_job_kind
+        self._apply_job_kind = apply_job_kind
 
     async def connect(self) -> None:
         self._pool = await asyncpg.create_pool(self._dsn, min_size=1, max_size=5)
@@ -122,7 +165,8 @@ class PostgresStore:
         return await self._require_pool().fetchval(
             """
             INSERT INTO account (google_sub, email) VALUES ($1, $2)
-            ON CONFLICT (google_sub) DO UPDATE SET email = EXCLUDED.email
+            ON CONFLICT (google_sub) DO UPDATE
+                SET email = EXCLUDED.email, disconnected_at = NULL
             RETURNING id::text
             """,
             google_sub,
@@ -196,14 +240,28 @@ class PostgresStore:
     async def account_for_session(self, token_hash: str, now: datetime) -> Account | None:
         row = await self._require_pool().fetchrow(
             """
-            SELECT a.id::text AS id, a.email, a.selected_location_id
+            SELECT a.id::text AS id, a.email, a.selected_location_id, s.id::text AS session_id,
+                   o.scope, o.delete_at, a.disconnected_at IS NULL AS connected
             FROM session s JOIN account a ON a.id = s.account_id
+            LEFT JOIN offboarding o
+              ON o.account_id = a.id AND o.restored_at IS NULL AND o.effective_at IS NULL
             WHERE s.token_hash = $1 AND s.revoked_at IS NULL AND s.expires_at > $2
+              AND a.deleted_at IS NULL
             """,
             token_hash,
             now,
         )
-        return Account(row["id"], row["email"], row["selected_location_id"]) if row else None
+        if row is None:
+            return None
+        pending = PendingDeletion(row["scope"], row["delete_at"]) if row["scope"] else None
+        return Account(
+            row["id"],
+            row["email"],
+            row["selected_location_id"],
+            row["session_id"],
+            pending,
+            row["connected"],
+        )
 
     async def revoke_session(self, token_hash: str, now: datetime) -> None:
         await self._require_pool().execute(
@@ -256,20 +314,19 @@ class PostgresStore:
         # One statement: the summary is joined through the account's own google_sub and
         # its own selected profile, so no identifier from outside takes part in the lookup.
         row = await self._require_pool().fetchrow(
-            """
+            f"""
             SELECT a.google_sub, l.gbp_location, l.title, l.place_id,
                    p.facts::text AS facts,
                    p.status, p.status_at, p.synced_at, p.review_count, p.average_rating,
                    p.unanswered_count, p.unanswered_low_count, p.last_review_at,
                    p.has_regular_hours, p.upcoming_special_hours, p.google_changed,
                    p.google_changed_fields, p.reviews_synced_at
-            FROM account a
-            JOIN location l
-              ON l.id = a.selected_location_id AND l.account_id = a.id AND l.removed_at IS NULL
+            {_SELECTED}
             LEFT JOIN profile_summary p
               ON p.google_sub = a.google_sub AND p.location = l.gbp_location
+             AND {_NO_OPEN_LEAVE}
             WHERE a.id = $1::uuid
-            """,
+            """,  # noqa: S608
             account_id,
         )
         if row is None:
@@ -443,33 +500,31 @@ class PostgresStore:
         # google_sub and its own selected profile. Nothing from the request takes part.
         pool = self._require_pool()
         row = await pool.fetchrow(
-            """
+            f"""
             SELECT s.google_sub, s.location, s.status, s.generated_at, s.based_on,
                    s.with_text, s.provisional, s.period, s.score, s.overall, s.summary,
                    s.suggestion, s.summary_source, s.praised::text AS praised,
                    s.complaints::text AS complaints, s.trigger
-            FROM account a
-            JOIN location l
-              ON l.id = a.selected_location_id AND l.account_id = a.id AND l.removed_at IS NULL
+            {_SELECTED}
             JOIN sentiment_analysis s
               ON s.google_sub = a.google_sub AND s.location = l.gbp_location
+             AND {_NO_OPEN_LEAVE}
             WHERE a.id = $1::uuid
-            """,
+            """,  # noqa: S608
             account_id,
         )
         if row is None:
             return None
         history = await pool.fetch(
-            """
+            f"""
             SELECT h.month, h.score
-            FROM account a
-            JOIN location l
-              ON l.id = a.selected_location_id AND l.account_id = a.id AND l.removed_at IS NULL
+            {_SELECTED}
             JOIN sentiment_history h
               ON h.google_sub = a.google_sub AND h.location = l.gbp_location
+             AND {_NO_OPEN_LEAVE}
             WHERE a.id = $1::uuid AND h.month >= $2
             ORDER BY h.month
-            """,
+            """,  # noqa: S608
             account_id,
             first_history_month(now),
         )
@@ -493,6 +548,199 @@ class PostgresStore:
             row["generated_at"],
         )
         return StoredSentiment(analysis, tuple((h["month"], h["score"]) for h in history))
+
+    # --- leaving: code, scheduled leave and restore -------------------------------
+
+    async def create_offboarding_code(
+        self,
+        account_id: str,
+        session_id: str,
+        scope: str,
+        code_hash: str,
+        now: datetime,
+        expires_at: datetime,
+        mail: dict,
+    ) -> None:
+        async with self._require_pool().acquire() as conn, conn.transaction():
+            # A new code voids every earlier one of the account.
+            await conn.execute(
+                """
+                UPDATE offboarding_code SET invalidated_at = $2
+                WHERE account_id = $1::uuid AND used_at IS NULL AND invalidated_at IS NULL
+                """,
+                account_id,
+                now,
+            )
+            code_id = await conn.fetchval(
+                """
+                INSERT INTO offboarding_code
+                    (account_id, session_id, scope, code_hash, created_at, expires_at)
+                VALUES ($1::uuid, $2::uuid, $3, $4, $5, $6)
+                RETURNING id::text
+                """,
+                account_id,
+                session_id,
+                scope,
+                code_hash,
+                now,
+                expires_at,
+            )
+            # The code travels in the job and nowhere else; the worker empties the
+            # payload as soon as the email is out.
+            await conn.execute(
+                "INSERT INTO job (kind, payload, max_attempts) VALUES ($1, $2::jsonb, $3)",
+                self._mail_job_kind,
+                json.dumps({**mail, "code_id": code_id}),
+                MAIL_MAX_ATTEMPTS,
+            )
+
+    async def offboarding_code_mail(self, account_id: str) -> str | None:
+        return await self._require_pool().fetchval(
+            """
+            SELECT mail_state FROM offboarding_code
+            WHERE account_id = $1::uuid AND used_at IS NULL AND invalidated_at IS NULL
+            ORDER BY created_at DESC, id LIMIT 1
+            """,
+            account_id,
+        )
+
+    async def confirm_offboarding(
+        self,
+        account_id: str,
+        candidate_hash: str,
+        scope: str,
+        now: datetime,
+        *,
+        max_attempts: int,
+        delete_at: datetime,
+        restore_hash: str,
+        mail: dict,
+    ) -> CodeCheck:
+        async with self._require_pool().acquire() as conn, conn.transaction():
+            row = await conn.fetchrow(
+                """
+                SELECT id, code_hash, attempts, expires_at, used_at, invalidated_at
+                FROM offboarding_code
+                WHERE account_id = $1::uuid
+                ORDER BY created_at DESC, id LIMIT 1
+                FOR UPDATE
+                """,
+                account_id,
+            )
+            if (
+                row is None
+                or row["used_at"] is not None
+                or row["invalidated_at"] is not None
+                or row["expires_at"] <= now
+            ):
+                return CodeCheck(CODE_GONE)
+            if row["attempts"] >= max_attempts:
+                await conn.execute(
+                    "UPDATE offboarding_code SET invalidated_at = $2 WHERE id = $1", row["id"], now
+                )
+                return CodeCheck(CODE_LOCKED)
+            attempts = row["attempts"] + 1
+            # A wrong code, a code for another scope and a code from another session
+            # all end here: the fingerprint covers the three.
+            if not same_hash(row["code_hash"], candidate_hash):
+                locked = attempts >= max_attempts
+                await conn.execute(
+                    """
+                    UPDATE offboarding_code
+                    SET attempts = $2,
+                        invalidated_at = CASE WHEN $3::boolean THEN $4::timestamptz END
+                    WHERE id = $1
+                    """,
+                    row["id"],
+                    attempts,
+                    locked,
+                    now,
+                )
+                return CodeCheck(CODE_LOCKED if locked else CODE_WRONG, max_attempts - attempts)
+            await conn.execute(
+                "UPDATE offboarding_code SET attempts = $2, used_at = $3 WHERE id = $1",
+                row["id"],
+                attempts,
+                now,
+            )
+            # A leave already scheduled is replaced by this one: its link stops working.
+            await conn.execute(
+                """
+                UPDATE offboarding SET restored_at = $2, restore_token_hash = NULL
+                WHERE account_id = $1::uuid AND restored_at IS NULL AND effective_at IS NULL
+                """,
+                account_id,
+                now,
+            )
+            offboarding_id = await conn.fetchval(
+                """
+                INSERT INTO offboarding
+                    (account_id, scope, google_sub, confirmed_at, delete_at, restore_token_hash)
+                SELECT a.id, $2, a.google_sub, $3, $4, $5 FROM account a
+                WHERE a.id = $1::uuid AND a.deleted_at IS NULL
+                RETURNING id::text
+                """,
+                account_id,
+                scope,
+                now,
+                delete_at,
+                restore_hash,
+            )
+            if offboarding_id is None:
+                return CodeCheck(CODE_GONE)
+            if scope == SCOPE_ACCOUNT:
+                await conn.execute(
+                    """
+                    UPDATE session SET revoked_at = $2
+                    WHERE account_id = $1::uuid AND revoked_at IS NULL
+                    """,
+                    account_id,
+                    now,
+                )
+            await conn.execute(
+                "INSERT INTO job (kind, payload, max_attempts) VALUES ($1, $2::jsonb, $3)",
+                self._mail_job_kind,
+                json.dumps(mail),
+                MAIL_MAX_ATTEMPTS,
+            )
+            # The job that makes it effective waits until the date. It decides again
+            # when it runs: a restored leave is left alone.
+            await conn.execute(
+                """
+                INSERT INTO job (kind, payload, run_at, idempotency_key, max_attempts)
+                VALUES ($1, $2::jsonb, $3, $4, $5)
+                """,
+                self._apply_job_kind,
+                json.dumps({"offboarding_id": offboarding_id}),
+                delete_at,
+                f"{self._apply_job_kind}:{offboarding_id}",
+                APPLY_MAX_ATTEMPTS,
+            )
+        return CodeCheck(CODE_OK, delete_at=delete_at)
+
+    async def restore_offboarding(self, account_id: str, now: datetime) -> bool:
+        status = await self._require_pool().execute(
+            """
+            UPDATE offboarding SET restored_at = $2, restore_token_hash = NULL
+            WHERE account_id = $1::uuid AND restored_at IS NULL AND effective_at IS NULL
+            """,
+            account_id,
+            now,
+        )
+        return status.endswith(" 1")
+
+    async def restore_offboarding_by_token(self, token_hash: str, now: datetime) -> str | None:
+        # One statement: the token is spent by the same write that restores.
+        return await self._require_pool().fetchval(
+            """
+            UPDATE offboarding SET restored_at = $2, restore_token_hash = NULL
+            WHERE restore_token_hash = $1 AND restored_at IS NULL AND effective_at IS NULL
+              AND delete_at > $2
+            RETURNING account_id::text
+            """,
+            token_hash,
+            now,
+        )
 
 
 def _topic_counts(raw: str | None) -> tuple[TopicCount, ...]:

@@ -34,6 +34,10 @@ from app.domain.profile_summary import (
 from app.ports.google_profile import GoogleProfileError, GoogleRejected, ReconnectRequired
 
 TOKEN_URL = "https://oauth2.googleapis.com/token"
+# https://developers.google.com/identity/protocols/oauth2/web-server#tokenrevoke
+# POST, application/x-www-form-urlencoded, parameter `token` (an access token or a
+# refresh token). 200 when revoked; 400 with an error code otherwise.
+REVOKE_URL = "https://oauth2.googleapis.com/revoke"
 REVIEWS_URL = "https://mybusiness.googleapis.com/v4/{account}/{location}/reviews"
 REVIEW_URL = REVIEWS_URL + "/{review_id}"
 REPLY_URL = REVIEW_URL + "/reply"
@@ -116,6 +120,21 @@ class RealGoogleProfile:
             if attempt < RETRIES - 1:
                 await asyncio.sleep(self._retry_delay)
         raise GoogleProfileError(f"no se pudo renovar el acceso ({last})")
+
+    async def revoke_token(self, refresh_token: str) -> None:
+        # The token goes in the body, never in the URL: URLs end up in logs.
+        try:
+            resp = await self._client.post(REVOKE_URL, data={"token": refresh_token})
+        except httpx.HTTPError:
+            raise GoogleProfileError("sin respuesta de Google al revocar") from None
+        status = resp.status_code
+        if status == 200:
+            return
+        if status == 400 and _oauth_error_code(resp) == "invalid_token":
+            return  # expired or revoked already: there is nothing left to revoke
+        if status < 500 and status != 429:
+            raise GoogleRejected(f"revocación rechazada (estado {status})", status)
+        raise GoogleProfileError(f"no se pudo revocar el acceso (estado {status})", status)
 
     async def reviews(self, access_token: str, account: str, location: str) -> ReviewSet:
         url = REVIEWS_URL.format(account=_checked(_ACCOUNT, account), location=_loc(location))

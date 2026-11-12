@@ -15,7 +15,9 @@ El principio es el del [HLD](02-hld.md): el modelo propone y el código decide. 
 | La nota de 0 a 100 y la valoración general | El código | Fórmula determinista |
 | Los recuentos por tema | El código | Cuenta reseñas. El modelo no puede decir "7 menciones" |
 | Decidir cuándo se recalcula | El código | Función pura con pruebas |
-| Redactar el resumen y la sugerencia | El modelo, en una segunda llamada | Se validan en código. Si no pasan, se usan textos construidos por reglas fijas, que existen siempre |
+| Redactar el resumen | El modelo, en una segunda llamada | Se valida en código. Si no pasa, se usa el construido por reglas fijas, que existe siempre. El código le añade la frase sobre las valoraciones bajas sin comentario |
+| Elegir la sugerencia | El código, por reglas fijas con prioridad | Primero, responder las reseñas sin respuesta. La sugerencia que redacta el modelo solo se usa donde las reglas le dejan sitio, y validada |
+| Contar las valoraciones de 1 o 2 estrellas sin comentario y las reseñas sin responder | El código | Cuenta reseñas guardadas. El modelo recibe las cifras, no las calcula |
 
 ## Clasificación de las reseñas
 
@@ -81,13 +83,29 @@ La valoración general sale de la nota:
 |---|---|---|
 | La ficha no tiene reseñas | `insuficiente` | Sin nota. Un mensaje útil y la sugerencia de conseguir las primeras reseñas |
 | Al menos una reseña y menos de 5 con texto | `ok` con `provisional: true` | Nota y valoración. Temas con lo que haya. Resumen y sugerencia por reglas, honestos sobre la base. **Ninguna llamada al modelo para el resumen** |
-| 5 reseñas con texto o más | `ok` | Todo. El modelo redacta el resumen y la sugerencia |
+| 5 reseñas con texto o más | `ok` | Todo. El modelo redacta el resumen; la sugerencia la eligen las reglas |
 
 Decisión del propietario (2026-11-12): el análisis tiene que estar a la vista nada más conectar con Google y casi nunca debe salir vacío. Por eso basta una reseña para dar nota, y `insuficiente` queda solo para la ficha sin ninguna.
 
 ## Resumen y sugerencia
 
-Solo cuando el análisis no es provisional, una segunda llamada al modelo redacta `summary` (2 frases como máximo) y `suggestion` (una acción concreta). Recibe la nota, la valoración, el número de reseñas, los recuentos por tema y hasta 6 extractos de reseñas recientes (las 3 más recientes que no son positivas y las 3 positivas más recientes), cada uno con sus estrellas y cortado a 280 caracteres. Sin autores.
+Desde la versión 2 de la fórmula (2026-11-12), el resumen nombra siempre las valoraciones bajas sin comentario y la sugerencia la elige el código. Motivo: en el primer análisis real, el resumen decía "no se han registrado quejas" con una valoración de 1 estrella sin texto, y la sugerencia era genérica con 13 reseñas sin responder.
+
+### Lo que cuenta el código
+
+Antes de redactar nada, el código cuenta sobre las reseñas guardadas de la ficha (`attention_of`):
+
+| Cifra | Qué cuenta |
+|---|---|
+| Valoraciones bajas sin comentario | Reseñas de 1 o 2 estrellas sin texto. No tienen temas, así que no aparecen en `complaints` |
+| Reseñas sin responder | Reseñas sin respuesta del propietario |
+| Reseñas bajas sin responder | De las anteriores, las de 1 o 2 estrellas |
+
+Una reseña a la que Fichaitor acaba de enviar la respuesta ya cuenta como respondida.
+
+### Resumen
+
+Solo cuando el análisis no es provisional, una segunda llamada al modelo redacta `summary` (2 frases como máximo) y propone una `suggestion`. Recibe la nota, la valoración, el número de reseñas, los recuentos por tema, las tres cifras de la tabla anterior y hasta 6 extractos de reseñas recientes (las 3 más recientes que no son positivas y las 3 positivas más recientes), cada uno con sus estrellas y cortado a 280 caracteres. Sin autores.
 
 El código valida cada texto (`validate_summary` y `validate_suggestion`):
 
@@ -96,9 +114,45 @@ El código valida cada texto (`validate_summary` y `validate_suggestion`):
 - Sin datos de contacto, enlaces ni cifras con forma de teléfono.
 - Sin promesas.
 - Sin emojis ni marcas de formato.
-- **Sin cifras que contradigan los datos.** Cualquier número del texto, en cifras o en letra, tiene que ser uno de los del análisis: la nota, 100, el número de reseñas, el de reseñas con texto, los recuentos por tema o los meses del periodo. Porcentajes y decimales se rechazan siempre.
+- **Sin cifras que contradigan los datos.** Cualquier número del texto, en cifras o en letra, tiene que ser uno de los del análisis: la nota, 100, el número de reseñas, el de reseñas con texto, los recuentos por tema, los meses del periodo, o las cifras de reseñas bajas y sin responder. Porcentajes y decimales se rechazan siempre.
+- **Sin negar las quejas cuando las hay.** Si la ficha tiene alguna queja por tema o alguna reseña de 1 o 2 estrellas, con texto o sin él, se rechaza un resumen que diga que no hay quejas ("no se han registrado quejas", "sin quejas", "ninguna queja", "no hay críticas").
 
-Si el resumen no pasa, se descarta y se usan los textos construidos por reglas fijas a partir de los recuentos (`rule_summary` y `rule_suggestion`). Si solo falla la sugerencia, se usa la sugerencia por reglas. Los textos por reglas existen siempre y pasan las mismas validaciones; hay una prueba que lo comprueba para todas las combinaciones.
+Si el resumen no pasa, se descarta y se usa el construido por reglas fijas a partir de los recuentos (`rule_summary`), que existe siempre y nunca dice que no hay quejas.
+
+Al resumen final, sea del modelo o de reglas, el código le añade una frase fija cuando hay valoraciones bajas sin comentario (`complete_summary`):
+
+- `Hay 1 valoración de 1 o 2 estrellas sin comentario.`
+- `Hay N valoraciones de 1 o 2 estrellas sin comentario.`
+
+El modelo no escribe esa frase ni decide si aparece. Con ella, el resumen mide como mucho unos 400 caracteres; la columna admite 600.
+
+### Sugerencia
+
+La sugerencia se elige por reglas fijas, en este orden (`choose_suggestion`). Gana la primera que se cumple:
+
+| Prioridad | Condición | Sugerencia |
+|---|---|---|
+| 1 | Hay reseñas de 1 o 2 estrellas sin responder | `Responde primero a las N reseñas de 1 o 2 estrellas que siguen sin respuesta.` Si además hay otras sin responder, añade `En total tienes M reseñas sin responder.` |
+| 2 | Hay reseñas sin responder | `Responde a las N reseñas que siguen sin respuesta: quien las lea verá que las atiendes.` |
+| 3 | Hay una queja repetida (`complaints` no está vacío) | Sobre el tema con más quejas: la del modelo si pasa `validate_suggestion`; si no, el consejo fijo de ese tema |
+| 4 | Nada de lo anterior | La del modelo si pasa la validación; si no, la genérica |
+
+- Con una sola reseña, los textos van en singular.
+- Una ficha sin reseñas (`insuficiente`) recibe siempre la sugerencia de conseguir las primeras.
+- Un análisis provisional sin reseñas pendientes de respuesta recibe la de pedir más reseñas con texto.
+- El modelo nunca decide la prioridad: su sugerencia solo se usa en las prioridades 3 y 4. Que la suya no pase la validación no descarta el resumen, y al revés.
+
+### Versión de la fórmula
+
+`FORMULA_VERSION` (`app/domain/sentiment.py`) vale 2 y se guarda en `sentiment_analysis.formula_version`. Un análisis `ok` guardado con una versión anterior se rehace en la siguiente sincronización de la ficha, con el disparador `formula_update` y sin esperar el tope de 24 horas:
+
+- **No se vuelve a clasificar ninguna reseña.** Las clasificaciones guardadas valen; solo se envían al modelo las reseñas nuevas o cambiadas, como siempre. Lo normal es una única llamada, la del resumen.
+- **Ocurre una vez.** El análisis nuevo se guarda con la versión actual.
+- Un análisis `insuficiente` o `error` no se rehace por la versión: no tiene textos que corregir.
+
+Sube `FORMULA_VERSION` cuando cambie la fórmula de la nota o las reglas del resumen o de la sugerencia. Sube `PROMPT_VERSION` (`app/adapters/sentiment_model/prompt.py`) cuando cambie un prompt o un esquema.
+
+> **Nota:** Hace falta que el worker en marcha tenga ya este código. Un worker anterior guarda los análisis con la versión 1.
 
 ## Cuándo se calcula
 
@@ -113,9 +167,11 @@ El análisis es un job propio del worker, `analyze_sentiment`. Al terminar cada 
 | `low_rating` | Llega una reseña nueva de 1 o 2 estrellas |
 | `new_reviews` | Hay 3 reseñas nuevas desde el último análisis |
 | `monthly` | Han pasado 30 días y hay al menos una reseña nueva |
+| `formula_update` | El análisis guardado es de una versión anterior de la fórmula. Sin tope de 24 horas y sin necesidad de reseñas nuevas. Consulta [Versión de la fórmula](#versión-de-la-fórmula) |
 
 - **Reseña nueva** es la que ningún análisis ha visto todavía o cuyo texto o estrellas han cambiado. La cuenta sale del estado guardado, no de eventos: una reseña que llega dentro del tope de 24 horas no se pierde, dispara el análisis en la primera sincronización posterior al tope.
-- **Sin reseñas nuevas no se recalcula**, aunque pasen meses.
+- **Sin reseñas nuevas no se recalcula**, aunque pasen meses, salvo por un cambio de versión de la fórmula.
+- **Responder una reseña no dispara un análisis.** La sugerencia de responder se actualiza en el siguiente recálculo.
 - **El job es idempotente.** Vuelve a decidir al ejecutarse: lanzado dos veces, el segundo no hace nada y no cuesta nada. Su clave de idempotencia agrupa por ficha y minuto.
 - **Si el job agota sus intentos**, se anota `error` solo si la ficha no tenía análisis. Un análisis bueno nunca se sustituye por un error.
 
@@ -189,7 +245,7 @@ Las tablas están en `db/schema_worker.sql`.
 | Tabla | Qué guarda | Qué no guarda |
 |---|---|---|
 | `review_sentiment` | Por reseña: la huella de lo que se clasificó, el sentimiento, hasta 3 temas con polaridad, cómo se clasificó (`model`, `stars`, `stars_fallback` o `pending`) y cuántas veces se envió al modelo | Ningún texto de la reseña ni nada sobre quien la escribió |
-| `sentiment_analysis` | Por ficha y conexión, el último análisis: estado, fecha, reseñas en las que se basa, nota, valoración, periodo, temas con sus recuentos, resumen, sugerencia, si los textos son del modelo o de reglas, y el disparador | Extractos de reseñas |
+| `sentiment_analysis` | Por ficha y conexión, el último análisis: estado, fecha, reseñas en las que se basa, nota, valoración, periodo, temas con sus recuentos, resumen, sugerencia, si el resumen es del modelo o de reglas (`summary_source`), el disparador y la versión de la fórmula | Extractos de reseñas |
 | `sentiment_history` | Por ficha y mes: la nota y el número de reseñas | — |
 | `sentiment_usage` | Por análisis: contadores de llamadas y tokens | Textos |
 
@@ -209,7 +265,7 @@ Las tablas están en `db/schema_worker.sql`.
 | Llamada | Se envía | No se envía |
 |---|---|---|
 | Clasificación | La lista de temas y, por reseña, un número de orden, las estrellas y el texto | Autor, nombre del negocio, identificadores de Google o nuestros, fechas, respuestas del propietario |
-| Resumen | Nota, valoración, número de reseñas, recuentos por tema y hasta 6 extractos con sus estrellas | Lo mismo |
+| Resumen | Nota, valoración, número de reseñas, recuentos por tema, cuántas valoraciones de 1 o 2 estrellas no tienen comentario, cuántas reseñas están sin responder (total y de 1 o 2 estrellas) y hasta 6 extractos con sus estrellas | Lo mismo |
 
 Las reseñas son públicas en Google, pero su texto puede contener datos personales que escribió el cliente (por ejemplo, el nombre de un empleado). Tenlo en cuenta al elegir proveedor y región.
 

@@ -80,7 +80,8 @@ REVOKE ALL ON google_connection FROM fichaitor_worker;
 GRANT INSERT (kind, payload, run_at, idempotency_key, max_attempts) ON job TO fichaitor_api;
 GRANT SELECT ON profile_summary TO fichaitor_api;
 
--- Worker: gestiona la cola y los resúmenes. No borra.
+-- Worker: gestiona la cola y los resúmenes. Solo borra en la baja y en la tarea de
+-- retención (privilegios al final de este archivo).
 -- De google_connection lee solo lo que necesita para actuar; el email, no.
 GRANT SELECT, INSERT, UPDATE ON job, profile_summary TO fichaitor_worker;
 GRANT SELECT (id, google_sub, connected_at, refresh_token_enc, key_version, locations)
@@ -123,8 +124,10 @@ CREATE TABLE IF NOT EXISTS review (
 
 -- Último borrador que el modelo redactó para cada reseña. Evita pagar dos veces por
 -- la misma reseña: source_hash cambia si cambian las estrellas, el texto o el prompt.
+-- ON DELETE CASCADE: al borrar una reseña (retención), su borrador se va con ella sin
+-- que el worker necesite acceso a esta tabla.
 CREATE TABLE IF NOT EXISTS review_draft (
-    review_id   text PRIMARY KEY REFERENCES review (id),
+    review_id   text PRIMARY KEY REFERENCES review (id) ON DELETE CASCADE,
     source_hash text NOT NULL CHECK (length(source_hash) = 64),
     draft       text NOT NULL CHECK (length(draft) BETWEEN 1 AND 4096),
     created_at  timestamptz NOT NULL DEFAULT now()
@@ -142,7 +145,8 @@ CREATE TABLE IF NOT EXISTS action (
     type          text NOT NULL CHECK (type IN ('reply_review')),
     google_sub    text NOT NULL CHECK (length(google_sub) BETWEEN 1 AND 255),
     location      text NOT NULL CHECK (length(location) BETWEEN 1 AND 200),
-    review_id     text NOT NULL REFERENCES review (id),
+    -- Sin clave ajena: la acción (el registro de lo que se publicó) dura más que la reseña.
+    review_id     text NOT NULL CHECK (length(review_id) <= 64),
     text          text NOT NULL CHECK (octet_length(text) BETWEEN 1 AND 4096),
     state         text NOT NULL DEFAULT 'pending'
                   CHECK (state IN ('pending', 'running', 'done', 'failed')),
@@ -162,7 +166,8 @@ CREATE INDEX IF NOT EXISTS action_account ON action (account_id);
 CREATE UNIQUE INDEX IF NOT EXISTS action_one_live_per_review ON action (review_id)
     WHERE state IN ('pending', 'running');
 
--- Registro de auditoría. Solo se añaden filas: nadie las cambia ni las borra.
+-- Registro de auditoría. Solo se añaden filas: nadie las cambia, y solo se borran las
+-- de una cuenta que lleva más de 12 meses de baja (política al final de este archivo).
 -- Dos filas por acción: 'reply_confirmed' (la escribe la API cuando el dueño confirma)
 -- y 'reply_sent' o 'reply_failed' (la escribe el worker con el resultado de Google).
 -- at y written_by los pone la base de datos: quien inserta no puede fijarlos.
@@ -311,7 +316,8 @@ CREATE INDEX IF NOT EXISTS sentiment_usage_at ON sentiment_usage (at);
 REVOKE ALL ON review_sentiment, sentiment_analysis, sentiment_history, sentiment_usage
     FROM PUBLIC, fichaitor_api, fichaitor_worker;
 
--- Worker: escribe clasificaciones, análisis e historia. No borra. Del uso solo añade.
+-- Worker: escribe clasificaciones, análisis e historia. Del uso solo añade.
+-- Solo borra en la baja y en la tarea de retención (al final de este archivo).
 GRANT SELECT, INSERT, UPDATE ON review_sentiment, sentiment_analysis, sentiment_history
     TO fichaitor_worker;
 GRANT INSERT (google_sub, location, trigger, classify_calls, summary_calls, failed_calls,
@@ -320,6 +326,168 @@ GRANT INSERT (google_sub, location, trigger, classify_calls, summary_calls, fail
 
 -- API: solo lee el análisis y la historia. La clasificación por reseña y el uso, no.
 GRANT SELECT ON sentiment_analysis, sentiment_history TO fichaitor_api;
+
+-- ---------------------------------------------------------------------------
+-- Baja y retención (2026-11-12). Consulta docs/retencion.md.
+-- Necesita las tablas account, location, session, waitlist_entry y google_connection
+-- de schema.sql y todas las de más arriba.
+
+-- Bases anteriores: las claves ajenas que impedían borrar una reseña.
+DO $$
+BEGIN
+    IF EXISTS (SELECT FROM pg_constraint
+               WHERE conname = 'review_draft_review_id_fkey' AND confdeltype <> 'c') THEN
+        ALTER TABLE review_draft DROP CONSTRAINT review_draft_review_id_fkey;
+        ALTER TABLE review_draft ADD CONSTRAINT review_draft_review_id_fkey
+            FOREIGN KEY (review_id) REFERENCES review (id) ON DELETE CASCADE;
+    END IF;
+END
+$$;
+ALTER TABLE action DROP CONSTRAINT IF EXISTS action_review_id_fkey;
+
+-- Códigos de un solo uso para confirmar una baja. El código no se guarda: code_hash es
+-- un HMAC-SHA256 con un secreto del servidor sobre la cuenta, la sesión, el alcance y
+-- el código, así que un código pedido para 'ficha' no vale para 'cuenta' ni desde otra
+-- sesión. Pedir otro pone invalidated_at en los anteriores.
+-- mail_state: lo anota el worker al enviar el correo ('sent') o al rendirse ('failed').
+CREATE TABLE IF NOT EXISTS offboarding_code (
+    id             uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+    account_id     uuid NOT NULL REFERENCES account (id) ON DELETE CASCADE,
+    session_id     uuid NOT NULL REFERENCES session (id) ON DELETE CASCADE,
+    scope          text NOT NULL CHECK (scope IN ('ficha', 'cuenta')),
+    code_hash      text NOT NULL CHECK (code_hash ~ '^[0-9a-f]{64}$'),
+    created_at     timestamptz NOT NULL,
+    expires_at     timestamptz NOT NULL,
+    attempts       smallint NOT NULL DEFAULT 0 CHECK (attempts BETWEEN 0 AND 1000),
+    used_at        timestamptz,
+    invalidated_at timestamptz,
+    mail_state     text NOT NULL DEFAULT 'pending'
+                   CHECK (mail_state IN ('pending', 'sent', 'failed')),
+    CHECK (expires_at > created_at AND expires_at <= created_at + interval '1 hour')
+);
+
+CREATE INDEX IF NOT EXISTS offboarding_code_account ON offboarding_code (account_id, created_at);
+
+-- Bajas. Una fila por baja confirmada con código.
+-- Programada: restored_at y effective_at a NULL. Hasta delete_at se puede restaurar
+-- (restored_at); pasada esa fecha el worker la hace efectiva (effective_at): revoca y
+-- borra los tokens, y la cuenta queda sin fichas ('ficha') o dada de baja ('cuenta').
+-- google_sub: de quién son los datos obtenidos de Google que hay que borrar. Se copia
+-- de la cuenta al confirmar y se vacía al borrarlos (purged_at).
+-- restore_token_hash: SHA-256 del token del enlace del correo; el token no se guarda.
+-- Se vacía al restaurar y al hacerse efectiva la baja.
+-- revoke_state: 'revoked' (Google revocó o el token ya no valía), 'failed' (no se pudo
+-- revocar; el token se borró igualmente), 'superseded' (el dueño ya había vuelto a
+-- conectar: no se revoca para no cortar la conexión nueva) o 'none' (no había tokens).
+CREATE TABLE IF NOT EXISTS offboarding (
+    id                 uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+    account_id         uuid NOT NULL REFERENCES account (id) ON DELETE CASCADE,
+    scope              text NOT NULL CHECK (scope IN ('ficha', 'cuenta')),
+    google_sub         text CHECK (length(google_sub) BETWEEN 1 AND 255),
+    confirmed_at       timestamptz NOT NULL,
+    delete_at          timestamptz NOT NULL,
+    restore_token_hash text CHECK (restore_token_hash ~ '^[0-9a-f]{64}$'),
+    restored_at        timestamptz,
+    effective_at       timestamptz,
+    revoke_state       text CHECK (revoke_state IN ('revoked', 'failed', 'superseded', 'none')),
+    purged_at          timestamptz,
+    CHECK (delete_at >= confirmed_at),
+    CHECK (restored_at IS NULL OR effective_at IS NULL),
+    CHECK (purged_at IS NULL OR effective_at IS NOT NULL)
+);
+
+-- Como mucho una baja programada por cuenta.
+CREATE UNIQUE INDEX IF NOT EXISTS offboarding_one_pending_per_account ON offboarding (account_id)
+    WHERE restored_at IS NULL AND effective_at IS NULL;
+CREATE UNIQUE INDEX IF NOT EXISTS offboarding_restore_token ON offboarding (restore_token_hash)
+    WHERE restore_token_hash IS NOT NULL;
+-- Las que todavía cierran el acceso a los datos de Google de ese usuario.
+CREATE INDEX IF NOT EXISTS offboarding_open_sub ON offboarding (google_sub)
+    WHERE restored_at IS NULL AND purged_at IS NULL;
+
+-- Pasadas de la tarea de retención: cuántas filas borró de cada tabla. Solo recuentos.
+CREATE TABLE IF NOT EXISTS retention_run (
+    id      bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+    at      timestamptz NOT NULL DEFAULT now(),
+    deleted jsonb NOT NULL CHECK (jsonb_typeof(deleted) = 'object')
+);
+
+REVOKE ALL ON offboarding_code, offboarding, retention_run
+    FROM PUBLIC, fichaitor_api, fichaitor_worker;
+
+-- Códigos: la API los crea, cuenta los intentos y los gasta o invalida. No puede
+-- cambiarles la huella, la cuenta, la sesión ni la caducidad, ni borrarlos.
+-- El worker solo anota si el correo salió, y borra los antiguos.
+GRANT SELECT ON offboarding_code TO fichaitor_api;
+GRANT INSERT (account_id, session_id, scope, code_hash, created_at, expires_at)
+    ON offboarding_code TO fichaitor_api;
+GRANT UPDATE (attempts, used_at, invalidated_at) ON offboarding_code TO fichaitor_api;
+GRANT SELECT (id, expires_at, mail_state) ON offboarding_code TO fichaitor_worker;
+GRANT UPDATE (mail_state) ON offboarding_code TO fichaitor_worker;
+GRANT DELETE ON offboarding_code TO fichaitor_worker;
+
+-- Bajas: la API las programa y las restaura; no puede hacerlas efectivas ni dar nada
+-- por borrado. El worker las hace efectivas y anota el resultado; no puede crearlas,
+-- restaurarlas ni cambiarles la fecha.
+GRANT SELECT ON offboarding TO fichaitor_api, fichaitor_worker;
+GRANT INSERT (account_id, scope, google_sub, confirmed_at, delete_at, restore_token_hash)
+    ON offboarding TO fichaitor_api;
+GRANT UPDATE (restored_at, restore_token_hash) ON offboarding TO fichaitor_api;
+GRANT UPDATE (effective_at, revoke_state, purged_at, google_sub, restore_token_hash)
+    ON offboarding TO fichaitor_worker;
+
+GRANT INSERT (deleted) ON retention_run TO fichaitor_worker;
+
+-- El borrado físico lo hace el worker y nadie más: la API sigue sin poder borrar nada.
+-- No hay un rol aparte para la retención: lo usaría el mismo proceso, con la misma
+-- cadena de conexión al lado, así que no separaría nada y añadiría un secreto más.
+-- Cada DELETE lleva lo mínimo que necesita su WHERE.
+GRANT DELETE ON google_connection, profile_summary, review, sentiment_analysis,
+                sentiment_history, sentiment_usage, action, job
+    TO fichaitor_worker;
+-- review_sentiment y review_draft se van con su reseña (ON DELETE CASCADE).
+GRANT SELECT (google_sub, location) ON sentiment_usage TO fichaitor_worker;
+
+-- De las tablas de schema.sql, lo justo para hacer efectiva una baja y para la retención.
+-- No se retira antes nada sobre account ni location: schema_channels.sql concede ahí
+-- otras columnas al worker y este archivo puede volver a aplicarse solo.
+REVOKE ALL ON session, waitlist_entry FROM fichaitor_worker;
+-- Cuenta: fechar la desconexión y la baja. El correo y el google_sub no se cambian
+-- (el disparador account_baja_guard los vacía al dar de baja la cuenta).
+GRANT SELECT (id, google_sub, disconnected_at, deleted_at) ON account TO fichaitor_worker;
+GRANT UPDATE (disconnected_at, deleted_at, selected_location_id) ON account TO fichaitor_worker;
+-- Fichas: retirarlas y, vencido el plazo, borrarlas.
+GRANT SELECT (id, account_id, gbp_location, removed_at) ON location TO fichaitor_worker;
+GRANT UPDATE (removed_at) ON location TO fichaitor_worker;
+GRANT DELETE ON location TO fichaitor_worker;
+-- Sesiones: cerrarlas al dar de baja la cuenta y borrar las vencidas. La huella del
+-- token no se lee.
+GRANT SELECT (id, account_id, expires_at, revoked_at) ON session TO fichaitor_worker;
+GRANT UPDATE (revoked_at) ON session TO fichaitor_worker;
+GRANT DELETE ON session TO fichaitor_worker;
+-- Lista de espera: borrar por antigüedad. El contacto no se lee.
+GRANT SELECT (id, created_at) ON waitlist_entry TO fichaitor_worker;
+GRANT DELETE ON waitlist_entry TO fichaitor_worker;
+
+-- Registro de auditoría: el worker puede borrar, y solo, las filas de una cuenta que
+-- lleva más de 12 meses sin conexión con Google (baja de la ficha o de la cuenta).
+-- Sigue sin poder leerlas ni cambiarlas: no hay política de SELECT ni de UPDATE, y el
+-- DELETE del worker no lleva WHERE (no puede: no tiene SELECT sobre ninguna columna);
+-- qué filas caen lo decide esta política.
+-- Los 12 meses son un suelo fijo en la base. La aplicación puede pedir un plazo más
+-- largo, o un "ahora" anterior (las pruebas), con el parámetro de sesión
+-- fichaitor.audit_cutoff; nunca uno más corto.
+GRANT DELETE ON audit_log TO fichaitor_worker;
+DROP POLICY IF EXISTS audit_log_worker_delete_expired ON audit_log;
+CREATE POLICY audit_log_worker_delete_expired ON audit_log FOR DELETE TO fichaitor_worker
+    USING (EXISTS (
+        SELECT 1 FROM account a
+        WHERE a.id = audit_log.account_id
+          AND a.disconnected_at <= least(
+              now() - interval '12 months',
+              coalesce(nullif(current_setting('fichaitor.audit_cutoff', true), '')::timestamptz,
+                       now() - interval '12 months'))
+    ));
 
 -- ---------------------------------------------------------------------------
 -- Solo desarrollo local y pruebas: copiar a db/dev-init.sql.

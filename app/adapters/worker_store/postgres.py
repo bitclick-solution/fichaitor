@@ -5,6 +5,9 @@ and the usage of the model).
 
 The worker role cannot create an action or change what one says (its text, its review,
 its account): it only records progress and outcome. It can only add to the audit log.
+
+It is also the only one that deletes: it makes a leave effective and runs the
+retention task (docs/retencion.md).
 """
 
 import json
@@ -21,6 +24,7 @@ from app.domain.actions import (
     EVENT_SENT,
     FAILED,
 )
+from app.domain.offboarding import SCOPE_ACCOUNT, RetentionPolicy
 from app.domain.profile_summary import (
     LOW_RATING_MAX,
     STATUS_ERROR,
@@ -47,7 +51,13 @@ from app.domain.sentiment import (
     topics_to_json,
 )
 from app.ports.sentiment_store import SentimentContext
-from app.ports.worker_store import ClaimedAction, ConnectedLocation, StoredConnection
+from app.ports.worker_store import (
+    ClaimedAction,
+    ConnectedLocation,
+    EffectiveLeave,
+    StoredConnection,
+    TokenToRevoke,
+)
 
 _AUDIT_FROM_ACTION = """
     INSERT INTO audit_log
@@ -386,7 +396,7 @@ class PostgresWorkerStore:
     async def sentiment_context(self, google_sub: str, location: str) -> SentimentContext:
         row = await self._pool.fetchrow(
             """
-            SELECT s.status, s.generated_at, s.based_on,
+            SELECT s.status, s.generated_at, s.based_on, s.formula_version,
                    (SELECT p.facts->>'category' FROM profile_summary p
                     WHERE p.google_sub = $1 AND p.location = $2) AS category
             FROM (SELECT 1) AS one
@@ -397,13 +407,16 @@ class PostgresWorkerStore:
         )
         last = None
         if row["status"] is not None:
-            last = LastAnalysis(row["status"], row["generated_at"], row["based_on"])
+            last = LastAnalysis(
+                row["status"], row["generated_at"], row["based_on"], row["formula_version"]
+            )
         return SentimentContext(last, row["category"] or "")
 
     async def sentiment_reviews(self, google_sub: str, location: str) -> list[SentimentReview]:
         rows = await self._pool.fetch(
             """
             SELECT r.id, r.rating, r.comment, r.created_at,
+                   r.reply_text IS NOT NULL AS replied,
                    c.source_hash, c.sentiment, c.topics::text AS topics, c.method, c.attempts
             FROM review r LEFT JOIN review_sentiment c ON c.review_id = r.id
             WHERE r.google_sub = $1 AND r.location = $2 AND r.removed_at IS NULL
@@ -424,7 +437,14 @@ class PostgresWorkerStore:
                     row["attempts"],
                 )
             reviews.append(
-                SentimentReview(row["id"], row["rating"], row["comment"], row["created_at"], stored)
+                SentimentReview(
+                    row["id"],
+                    row["rating"],
+                    row["comment"],
+                    row["created_at"],
+                    stored,
+                    replied=row["replied"],
+                )
             )
         return reviews
 
@@ -478,9 +498,9 @@ class PostgresWorkerStore:
                 INSERT INTO sentiment_analysis
                     (google_sub, location, status, generated_at, based_on, with_text,
                      provisional, period, score, overall, summary, suggestion,
-                     summary_source, praised, complaints, trigger)
+                     summary_source, praised, complaints, trigger, formula_version)
                 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13,
-                        $14::jsonb, $15::jsonb, $16)
+                        $14::jsonb, $15::jsonb, $16, $17)
                 ON CONFLICT (google_sub, location) DO UPDATE SET
                     status = EXCLUDED.status,
                     generated_at = EXCLUDED.generated_at,
@@ -495,7 +515,8 @@ class PostgresWorkerStore:
                     summary_source = EXCLUDED.summary_source,
                     praised = EXCLUDED.praised,
                     complaints = EXCLUDED.complaints,
-                    trigger = EXCLUDED.trigger
+                    trigger = EXCLUDED.trigger,
+                    formula_version = EXCLUDED.formula_version
                 """,
                 google_sub,
                 location,
@@ -513,6 +534,7 @@ class PostgresWorkerStore:
                 counts(figures.praised),
                 counts(figures.complaints),
                 analysis.trigger,
+                analysis.formula_version,
             )
             if figures.status == SENTIMENT_OK:
                 # One snapshot per month: the current month follows the latest analysis.
@@ -565,3 +587,366 @@ class PostgresWorkerStore:
             SENTIMENT_ERROR,
             at,
         )
+
+    # --- leaving and retention ----------------------------------------------------
+    # The only place in the product where rows are deleted. Every date comes from the
+    # caller's clock, never from now() in SQL: what is deleted is exactly what is past
+    # its term at that moment.
+
+    async def is_suspended(self, google_sub: str) -> bool:
+        return await self._pool.fetchval(
+            """
+            SELECT EXISTS (SELECT 1 FROM offboarding
+                           WHERE google_sub = $1 AND restored_at IS NULL
+                             AND effective_at IS NULL)
+            """,
+            google_sub,
+        )
+
+    async def purge_superseded(self, google_sub: str, now: datetime) -> dict[str, int]:
+        ids = await self._pool.fetch(
+            """
+            SELECT o.id FROM offboarding o
+            WHERE o.google_sub = $1 AND o.effective_at IS NOT NULL AND o.purged_at IS NULL
+              AND EXISTS (SELECT 1 FROM google_connection c
+                          WHERE c.google_sub = o.google_sub AND c.connected_at > o.effective_at)
+            """,
+            google_sub,
+        )
+        total: dict[str, int] = {}
+        for row in ids:
+            _add(total, await self._purge_leave(row["id"], now))
+        return total
+
+    async def begin_offboarding(self, offboarding_id: str, now: datetime) -> EffectiveLeave | None:
+        async with self._pool.acquire() as conn, conn.transaction():
+            # One statement decides it: a leave restored a moment ago is not touched,
+            # and once this is written it can no longer be restored.
+            begun = await conn.fetchrow(
+                """
+                UPDATE offboarding SET effective_at = $2, restore_token_hash = NULL
+                WHERE id = $1::uuid AND restored_at IS NULL AND effective_at IS NULL
+                  AND delete_at <= $2
+                RETURNING account_id, scope
+                """,
+                offboarding_id,
+                now,
+            )
+            if begun is not None:
+                account_id = begun["account_id"]
+                await conn.execute(
+                    "UPDATE location SET removed_at = $2"
+                    " WHERE account_id = $1 AND removed_at IS NULL",
+                    account_id,
+                    now,
+                )
+                if begun["scope"] == SCOPE_ACCOUNT:
+                    await conn.execute(
+                        "UPDATE session SET revoked_at = $2"
+                        " WHERE account_id = $1 AND revoked_at IS NULL",
+                        account_id,
+                        now,
+                    )
+                    # The trigger empties the email and frees the Google identity.
+                    await conn.execute(
+                        """
+                        UPDATE account
+                        SET deleted_at = $2, disconnected_at = $2, selected_location_id = NULL
+                        WHERE id = $1
+                        """,
+                        account_id,
+                        now,
+                    )
+                else:
+                    await conn.execute(
+                        """
+                        UPDATE account SET disconnected_at = $2, selected_location_id = NULL
+                        WHERE id = $1
+                        """,
+                        account_id,
+                        now,
+                    )
+            row = await conn.fetchrow(
+                """
+                SELECT id::text AS id, scope, google_sub FROM offboarding
+                WHERE id = $1::uuid AND effective_at IS NOT NULL AND revoke_state IS NULL
+                  AND google_sub IS NOT NULL
+                """,
+                offboarding_id,
+            )
+        return EffectiveLeave(row["id"], row["scope"], row["google_sub"]) if row else None
+
+    async def leave_tokens(self, offboarding_id: str) -> tuple[list[TokenToRevoke], bool]:
+        rows = await self._pool.fetch(
+            """
+            SELECT c.id::text AS id, c.refresh_token_enc, c.key_version,
+                   c.connected_at > o.effective_at AS newer
+            FROM offboarding o JOIN google_connection c ON c.google_sub = o.google_sub
+            WHERE o.id = $1::uuid AND o.effective_at IS NOT NULL
+            ORDER BY c.connected_at, c.id
+            """,
+            offboarding_id,
+        )
+        tokens = [
+            TokenToRevoke(r["id"], r["refresh_token_enc"], r["key_version"])
+            for r in rows
+            if not r["newer"]
+        ]
+        return tokens, any(r["newer"] for r in rows)
+
+    async def delete_connection(self, connection_id: str) -> None:
+        await self._pool.execute("DELETE FROM google_connection WHERE id = $1::uuid", connection_id)
+
+    async def finish_revocation(self, offboarding_id: str, state: str) -> None:
+        await self._pool.execute(
+            """
+            UPDATE offboarding SET revoke_state = $2
+            WHERE id = $1::uuid AND effective_at IS NOT NULL AND revoke_state IS NULL
+            """,
+            offboarding_id,
+            state,
+        )
+
+    async def due_offboardings(self, now: datetime) -> list[tuple[str, bool]]:
+        rows = await self._pool.fetch(
+            """
+            SELECT id::text AS id,
+                   coalesce(effective_at <= $1::timestamptz - interval '1 day', false) AS give_up
+            FROM offboarding
+            WHERE restored_at IS NULL AND revoke_state IS NULL AND google_sub IS NOT NULL
+              AND (effective_at <= $1 OR (effective_at IS NULL AND delete_at <= $1))
+            ORDER BY delete_at, id
+            """,
+            now,
+        )
+        return [(r["id"], r["give_up"]) for r in rows]
+
+    async def _purge_leave(self, offboarding_id: object, now: datetime) -> dict[str, int]:
+        """Delete everything obtained from Google for the user of an effective leave.
+        The row is locked: two workers never purge the same leave, and a second call
+        finds it done."""
+        counts: dict[str, int] = {}
+        async with self._pool.acquire() as conn, conn.transaction():
+            leave = await conn.fetchrow(
+                """
+                SELECT account_id, google_sub, effective_at FROM offboarding
+                WHERE id = $1 AND effective_at IS NOT NULL AND purged_at IS NULL
+                FOR UPDATE SKIP LOCKED
+                """,
+                offboarding_id,
+            )
+            if leave is None:
+                return counts
+            sub, effective_at = leave["google_sub"], leave["effective_at"]
+            if sub is not None:
+                counts["review_sentiment"] = await conn.fetchval(
+                    """
+                    SELECT count(*) FROM review_sentiment s JOIN review r ON r.id = s.review_id
+                    WHERE r.google_sub = $1
+                    """,
+                    sub,
+                )
+                # review_sentiment and review_draft go with their review (ON DELETE CASCADE).
+                for table in (
+                    "review",
+                    "profile_summary",
+                    "sentiment_analysis",
+                    "sentiment_history",
+                    "sentiment_usage",
+                ):
+                    counts[table] = _deleted(
+                        await conn.execute(
+                            f"DELETE FROM {table} WHERE google_sub = $1",  # noqa: S608
+                            sub,
+                        )
+                    )
+                # Tokens are deleted when the leave becomes effective; this is what a
+                # dead worker may have left behind. A newer connection is not touched.
+                counts["google_connection"] = _deleted(
+                    await conn.execute(
+                        "DELETE FROM google_connection"
+                        " WHERE google_sub = $1 AND connected_at <= $2",
+                        sub,
+                        effective_at,
+                    )
+                )
+                # Jobs of before the leave carry the Google user and the profile.
+                counts["job"] = _deleted(
+                    await conn.execute(
+                        """
+                        DELETE FROM job
+                        WHERE payload->>'google_sub' = $1 AND state <> 'running'
+                          AND created_at <= $2
+                        """,
+                        sub,
+                        effective_at,
+                    )
+                )
+            # The profiles the leave retired. One the owner connected again is a new
+            # read of Google and stays.
+            counts["location"] = _deleted(
+                await conn.execute(
+                    "DELETE FROM location WHERE account_id = $1 AND removed_at IS NOT NULL",
+                    leave["account_id"],
+                )
+            )
+            await conn.execute(
+                "UPDATE offboarding SET purged_at = $2, google_sub = NULL WHERE id = $1",
+                offboarding_id,
+                now,
+            )
+        return counts
+
+    async def run_retention(self, now: datetime, policy: RetentionPolicy) -> dict[str, int]:
+        counts: dict[str, int] = {}
+        due = await self._pool.fetch(
+            """
+            SELECT id FROM offboarding
+            WHERE effective_at IS NOT NULL AND purged_at IS NULL
+              AND effective_at <= $1::timestamptz - make_interval(days => $2)
+            ORDER BY effective_at, id
+            """,
+            now,
+            policy.google_data_days,
+        )
+        for row in due:
+            _add(counts, await self._purge_leave(row["id"], now))
+
+        async with self._pool.acquire() as conn, conn.transaction():
+            removed_before = "$1::timestamptz - make_interval(days => $2)"
+            # Profiles Google stopped listing: what was read from them, then the profile.
+            for table in (
+                "review",
+                "profile_summary",
+                "sentiment_analysis",
+                "sentiment_history",
+                "sentiment_usage",
+            ):
+                _add(
+                    counts,
+                    {
+                        table: _deleted(
+                            await conn.execute(
+                                f"""
+                                DELETE FROM {table} t USING location l, account a
+                                WHERE a.id = l.account_id AND l.removed_at <= {removed_before}
+                                  AND t.google_sub = a.google_sub AND t.location = l.gbp_location
+                                """,  # noqa: S608
+                                now,
+                                policy.removed_days,
+                            )
+                        )
+                    },
+                )
+            _add(
+                counts,
+                {
+                    "location": _deleted(
+                        await conn.execute(
+                            f"DELETE FROM location WHERE removed_at <= {removed_before}",  # noqa: S608
+                            now,
+                            policy.removed_days,
+                        )
+                    )
+                },
+            )
+            # Reviews Google stopped returning.
+            _add(
+                counts,
+                {
+                    "review": _deleted(
+                        await conn.execute(
+                            f"DELETE FROM review WHERE removed_at <= {removed_before}",  # noqa: S608
+                            now,
+                            policy.removed_days,
+                        )
+                    )
+                },
+            )
+            counts["session"] = _deleted(
+                await conn.execute(
+                    """
+                    DELETE FROM session
+                    WHERE revoked_at <= $1::timestamptz - make_interval(days => $2)
+                       OR expires_at <= $1::timestamptz - make_interval(days => $2)
+                    """,
+                    now,
+                    policy.session_days,
+                )
+            )
+            counts["offboarding_code"] = _deleted(
+                await conn.execute(
+                    """
+                    DELETE FROM offboarding_code
+                    WHERE expires_at <= $1::timestamptz - make_interval(days => $2)
+                    """,
+                    now,
+                    policy.code_days,
+                )
+            )
+            launched = policy.waitlist_launched_at
+            counts["waitlist_entry"] = _deleted(
+                await conn.execute(
+                    """
+                    DELETE FROM waitlist_entry
+                    WHERE created_at <= $1::timestamptz - make_interval(months => $2)
+                       OR created_at < $3::timestamptz
+                    """,
+                    now,
+                    policy.waitlist_months,
+                    launched if launched is not None and launched <= now else None,
+                )
+            )
+            # The record of published replies: the actions with their text and the audit
+            # trail of accounts that have been without Google for longer than the term.
+            audit_before = await conn.fetchval(
+                "SELECT $1::timestamptz - make_interval(months => $2)", now, policy.audit_months
+            )
+            counts["action"] = _deleted(
+                await conn.execute(
+                    """
+                    DELETE FROM action x USING account a
+                    WHERE a.id = x.account_id AND a.disconnected_at <= $1
+                    """,
+                    audit_before,
+                )
+            )
+            # The worker cannot read audit_log, so this DELETE has no WHERE: the policy
+            # of the table chooses the rows (accounts on leave for more than 12 months)
+            # and this parameter can only narrow it further.
+            await conn.execute(
+                "SELECT set_config('fichaitor.audit_cutoff', $1, true)", audit_before.isoformat()
+            )
+            counts["audit_log"] = _deleted(await conn.execute("DELETE FROM audit_log"))
+            await conn.execute(
+                "INSERT INTO retention_run (deleted) VALUES ($1::jsonb)", json.dumps(counts)
+            )
+        return counts
+
+    async def scrub_job(self, job_id: str) -> None:
+        await self._pool.execute("UPDATE job SET payload = '{}'::jsonb WHERE id = $1::uuid", job_id)
+
+    async def scrub_finished_jobs(self, kind: str) -> int:
+        status = await self._pool.execute(
+            """
+            UPDATE job SET payload = '{}'::jsonb
+            WHERE kind = $1 AND state IN ('done', 'failed') AND payload <> '{}'::jsonb
+            """,
+            kind,
+        )
+        return _deleted(status)
+
+    async def set_code_mail(self, code_id: str, state: str) -> None:
+        await self._pool.execute(
+            "UPDATE offboarding_code SET mail_state = $2 WHERE id = $1::uuid", code_id, state
+        )
+
+
+def _deleted(status: str) -> int:
+    """Rows affected, from the status of a statement ("DELETE 3")."""
+    return int(status.rsplit(" ", 1)[-1])
+
+
+def _add(total: dict[str, int], counts: dict[str, int]) -> None:
+    for table, count in counts.items():
+        total[table] = total.get(table, 0) + count

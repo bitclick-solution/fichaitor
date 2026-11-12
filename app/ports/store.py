@@ -3,6 +3,7 @@ from dataclasses import dataclass
 from datetime import date, datetime
 from typing import Protocol
 
+from app.domain.offboarding import CodeCheck, PendingDeletion
 from app.domain.profile_summary import ProfileFacts
 from app.domain.sentiment import Analysis
 from app.ports.google_oauth import ProfileLocation
@@ -34,6 +35,12 @@ class Account:
     id: str
     email: str
     selected_location_id: str | None
+    # The session the request came with: a code to leave is tied to it.
+    session_id: str | None = None
+    # A scheduled leave: until it is restored, the account can only see it and undo it.
+    pending_deletion: PendingDeletion | None = None
+    # False after a leave of the profile, until the owner connects with Google again.
+    connected: bool = True
 
 
 @dataclass(frozen=True)
@@ -146,7 +153,11 @@ class Store(Protocol):
         ...
 
     async def upsert_account(self, google_sub: str, email: str) -> str:
-        """Create the account of that Google identity, or refresh its email. Returns its id."""
+        """Create the account of that Google identity, or refresh its email. Returns its id.
+
+        Connecting again after a leave of the profile makes the account connected again.
+        A deleted account is never found: the same Google identity gets a new, empty one.
+        """
         ...
 
     async def sync_locations(
@@ -164,7 +175,9 @@ class Store(Protocol):
     ) -> None: ...
 
     async def account_for_session(self, token_hash: str, now: datetime) -> Account | None:
-        """The account behind a live session. None if unknown, expired or revoked."""
+        """The account behind a live session, with the id of that session and its
+        scheduled leave if it has one. None if the session is unknown, expired or
+        revoked, or the account is deleted."""
         ...
 
     async def revoke_session(self, token_hash: str, now: datetime) -> None: ...
@@ -233,4 +246,58 @@ class Store(Protocol):
         Looked up like the summary: by the Google identity of that very account and its
         own selected profile.
         """
+        ...
+
+    # --- leaving: code, scheduled leave and restore -------------------------------
+
+    async def create_offboarding_code(
+        self,
+        account_id: str,
+        session_id: str,
+        scope: str,
+        code_hash: str,
+        now: datetime,
+        expires_at: datetime,
+        mail: dict,
+    ) -> None:
+        """Keep the fingerprint of a new code, void the earlier ones of that account and
+        enqueue the email that carries it (`mail` is the payload of that job; the id of
+        the code is added to it), all or nothing. The code itself is never stored here."""
+        ...
+
+    async def offboarding_code_mail(self, account_id: str) -> str | None:
+        """How the email of the latest code of that account went: pending, sent or
+        failed. None if it has no code that can still be used."""
+        ...
+
+    async def confirm_offboarding(
+        self,
+        account_id: str,
+        candidate_hash: str,
+        scope: str,
+        now: datetime,
+        *,
+        max_attempts: int,
+        delete_at: datetime,
+        restore_hash: str,
+        mail: dict,
+    ) -> CodeCheck:
+        """Try a code and, if it is the right one, schedule the leave: all or nothing.
+
+        `candidate_hash` is the fingerprint of what was typed, for the session and the
+        scope of the request; it is compared in constant time with the stored one of
+        the latest code of the account. Every try counts; at `max_attempts` the code
+        is dead. A right code is spent, the leave is scheduled for `delete_at`, the
+        email with the restore link is enqueued and, when the scope is the account,
+        every session of the account is closed.
+        """
+        ...
+
+    async def restore_offboarding(self, account_id: str, now: datetime) -> bool:
+        """Cancel the scheduled leave of that account. False if it has none."""
+        ...
+
+    async def restore_offboarding_by_token(self, token_hash: str, now: datetime) -> str | None:
+        """Cancel the scheduled leave that restore token belongs to and return its
+        account. None if the token is unknown, used, or its leave is past its date."""
         ...

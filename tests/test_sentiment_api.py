@@ -382,7 +382,10 @@ def test_few_reviews_give_a_provisional_analysis_with_a_score_and_honest_texts()
     assert body["summary"] == (
         "Basado en 3 valoraciones; aún hay pocas con texto para ver de qué habla la gente."
     )
-    assert "enlace de tu ficha" in body["suggestion"]
+    assert body["suggestion"] == (
+        "Responde primero a la reseña de 1 o 2 estrellas que sigue sin respuesta. "
+        "En total tienes 3 reseñas sin responder."
+    )
     assert body["praised"] == [] and body["complaints"][0]["mentions"] == 1
     assert body["history"] == [{"month": "2026-11", "score": body["score"]}]
     assert world.model.summary_calls == []

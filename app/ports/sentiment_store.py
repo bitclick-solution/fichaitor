@@ -21,6 +21,10 @@ class SentimentContext:
 
 
 class SentimentStore(Protocol):
+    async def is_suspended(self, google_sub: str) -> bool:
+        """Whether that Google user has a scheduled leave: nothing is analysed."""
+        ...
+
     async def sentiment_context(self, google_sub: str, location: str) -> SentimentContext: ...
 
     async def sentiment_reviews(self, google_sub: str, location: str) -> list[SentimentReview]:

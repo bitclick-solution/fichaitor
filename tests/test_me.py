@@ -181,7 +181,14 @@ def test_me_has_the_shape_of_the_contract():
     r = client.get(ME)
     assert r.status_code == 200
     body = r.json()
-    assert set(body) == {"email", "locations", "selected_location_id"}
+    assert set(body) == {
+        "email",
+        "locations",
+        "selected_location_id",
+        "connected",
+        "pending_deletion",
+    }
+    assert body["connected"] is True and body["pending_deletion"] is None
     assert body["email"] == "dueno@example.com"
     assert body["selected_location_id"] is None
     first, second = body["locations"]

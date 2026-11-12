@@ -63,6 +63,17 @@ class SyncProfile:
     async def __call__(self, job: Job) -> None:
         google_sub, location = _target(job)
 
+        # A scheduled leave: the profile is not read until it is restored. Nothing is
+        # written either: restoring asks for a new sync.
+        if await self._store.is_suspended(google_sub):
+            log.event("account_suspended", job_id=job.id, kind=job.kind)
+            return
+        # Connected again after a leave: what was left of before goes first, so that
+        # the new connection starts from nothing.
+        purged = await self._store.purge_superseded(google_sub, self._clock())
+        if purged:
+            log.event("leave_purged_on_reconnect", job_id=job.id, deleted=purged)
+
         # Every way out of here leaves a status in the summary: the API cannot read
         # the queue, so the summary is the only place where the panel sees a failure.
         connection = await self._store.latest_connection(google_sub)

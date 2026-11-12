@@ -64,8 +64,8 @@ uv run ruff format --check .
 uv run ruff check .
 
 # Pruebas, con la base de datos de desarrollo (docker compose up -d db)
-export FICHAITOR_TEST_OWNER_URL=postgresql://fichaitor:dev@127.0.0.1:5433/fichaitor
-export FICHAITOR_TEST_DATABASE_URL=postgresql://fichaitor_api_dev:dev@127.0.0.1:5433/fichaitor
+export FICHAITOR_TEST_OWNER_URL=postgresql://fichaitor:dev@127.0.0.1:5433/fichaitor_test
+export FICHAITOR_TEST_DATABASE_URL=postgresql://fichaitor_api_dev:dev@127.0.0.1:5433/fichaitor_test
 bash scripts/ci/aplicar_esquema.sh
 uv run pytest -q
 
@@ -83,7 +83,7 @@ En Windows con Git Bash:
 
   ```bash
   PSQL="docker run --rm -i postgres:16-alpine psql" \
-  FICHAITOR_TEST_OWNER_URL=postgresql://fichaitor:dev@host.docker.internal:5433/fichaitor \
+  FICHAITOR_TEST_OWNER_URL=postgresql://fichaitor:dev@host.docker.internal:5433/fichaitor_test \
   bash scripts/ci/aplicar_esquema.sh
   ```
 

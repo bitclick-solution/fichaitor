@@ -13,15 +13,18 @@ What it does, in order:
    one of the closed ones; otherwise that review stays pending for the next analysis.
    A failed call leaves its batch pending and never fails the job.
 4. Computes the score, the verdict and the counts per topic in code.
-5. Asks the model for the summary and the suggestion, only when there are enough
-   reviews with text, and keeps them only if they pass the checks of the domain;
-   otherwise the texts built by fixed rules are used.
+5. Asks the model for the summary and a suggestion, only when there are enough
+   reviews with text, and keeps the summary only if it passes the checks of the
+   domain; otherwise the one built by fixed rules is used. The code adds the sentence
+   about low ratings without a comment and chooses the suggestion by fixed rules,
+   unanswered reviews first (`choose_suggestion`).
 6. Stores the analysis, the score of the month and the usage (counters, no text).
 
 A review is data written by a third party: nothing in it is acted upon. Neither the
 reviews nor the summary appear in a log or in an error message.
 """
 
+import dataclasses
 import hashlib
 import logging
 from collections.abc import Callable, Mapping
@@ -47,6 +50,9 @@ from app.domain.sentiment import (
     Usage,
     all_triggers,
     analysis_state,
+    attention_of,
+    choose_suggestion,
+    complete_summary,
     compute,
     current,
     decide,
@@ -54,7 +60,6 @@ from app.domain.sentiment import (
     needs_model,
     parse_classification,
     pick_excerpts,
-    rule_suggestion,
     rule_summary,
     sector_of,
     source_hash,
@@ -139,6 +144,10 @@ class AnalyzeSentiment:
 
     async def __call__(self, job: Job) -> None:
         google_sub, location = _target(job)
+        if await self._store.is_suspended(google_sub):
+            # A scheduled leave: no review of that account goes to the model.
+            log.event("account_suspended", job_id=job.id, kind=job.kind)
+            return
         now = self._clock()
         context = await self._store.sentiment_context(google_sub, location)
         reviews = await self._store.sentiment_reviews(google_sub, location)
@@ -159,10 +168,7 @@ class AnalyzeSentiment:
         if classified:
             await self._store.save_classifications(classified, now)
             reviews = [
-                SentimentReview(
-                    r.id, r.rating, r.text, r.created_at, classified.get(r.id, r.stored)
-                )
-                for r in reviews
+                dataclasses.replace(r, stored=classified.get(r.id, r.stored)) for r in reviews
             ]
 
         figures = compute(reviews, now, self._policy)
@@ -241,9 +247,15 @@ class AnalyzeSentiment:
     async def _texts(
         self, figures: Figures, reviews: list[SentimentReview], now: datetime, meter: _Meter
     ) -> tuple[str, str, str]:
-        """Summary and suggestion: the model's if they pass every check, else the ones
-        built by rules. The model is not asked when the analysis is provisional."""
-        summary, suggestion = rule_summary(figures), rule_suggestion(figures)
+        """Summary, suggestion and where the summary comes from.
+
+        The summary is the model's if it passes every check, else the one built by
+        rules; the code adds the sentence about low ratings without a comment. The
+        suggestion is chosen by fixed rules: the model's is used only where they leave
+        room for it. The model is not asked when the analysis is provisional."""
+        attention = attention_of(reviews)
+        summary = rule_summary(figures, attention)
+        suggestion = choose_suggestion(figures, attention)
         ask = (
             self._model is not None
             and figures.status == STATUS_OK
@@ -259,6 +271,9 @@ class AnalyzeSentiment:
             praised=[(t.topic, t.mentions) for t in figures.praised],
             complaints=[(t.topic, t.mentions) for t in figures.complaints],
             excerpts=pick_excerpts(reviews, now, self._policy),
+            low_without_text=attention.low_without_text,
+            unanswered=attention.unanswered,
+            unanswered_low=attention.unanswered_low,
         )
         meter.summary_calls += 1
         try:
@@ -269,13 +284,14 @@ class AnalyzeSentiment:
             log.event("sentiment_summary_failed", logging.WARNING, error=str(exc))
             return summary, suggestion, SOURCE_RULES
         texts = raw if isinstance(raw, Mapping) else {}
-        written = validate_summary(texts.get("summary"), figures, self._policy)
-        advised = validate_suggestion(texts.get("suggestion"), figures, self._policy)
+        written = validate_summary(texts.get("summary"), figures, self._policy, attention)
+        advised = validate_suggestion(texts.get("suggestion"), figures, self._policy, attention)
+        # The suggestion of the model stands on its own checks, whatever the summary did.
+        suggestion = choose_suggestion(figures, attention, advised)
         if written is None:
             log.event("sentiment_summary_discarded", logging.WARNING)
             return summary, suggestion, SOURCE_RULES
-        # A summary that passed with a suggestion that did not keeps the rule's suggestion.
-        return written, advised or suggestion, SOURCE_MODEL
+        return complete_summary(written, attention), suggestion, SOURCE_MODEL
 
     async def on_exhausted(self, job: Job) -> None:
         """Out of attempts: say so, unless there is an earlier analysis to keep showing."""

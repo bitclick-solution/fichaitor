@@ -30,6 +30,7 @@ from app.domain.actions import (
     ERROR_RECONNECT,
     ERROR_REJECTED,
     ERROR_REVIEW_GONE,
+    ERROR_SUSPENDED,
     ERROR_UNAVAILABLE,
     REASON_ALREADY_APPLIED,
     REPLY_REVIEW,
@@ -61,6 +62,12 @@ class ReplyReview:
         if action is None:
             # Finished already, taken by another job, or never created: nothing to send.
             log.event("action_skipped", job_id=job.id, action_id=action_id)
+            return
+
+        if await self._store.is_suspended(action.google_sub):
+            # A scheduled leave: nothing is sent to Google for that account.
+            await self._fail(action, job, ERROR_SUSPENDED)
+            log.event("account_suspended", job_id=job.id, kind=job.kind)
             return
 
         connection = await self._store.latest_connection(action.google_sub)

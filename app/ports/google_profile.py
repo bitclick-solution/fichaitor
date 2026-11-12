@@ -29,6 +29,13 @@ class ReconnectRequired(Exception):
 class GoogleProfile(Protocol):
     async def refresh_access_token(self, refresh_token: str) -> str: ...
 
+    async def revoke_token(self, refresh_token: str) -> None:
+        """Revoke the owner's grant at Google. Returns normally when Google revoked it
+        or says the token is no longer valid (there is nothing left to revoke).
+        GoogleRejected when Google refuses the request for good; GoogleProfileError
+        when it is worth trying again. One request and no retry inside."""
+        ...
+
     async def reviews(self, access_token: str, account: str, location: str) -> ReviewSet: ...
 
     async def details(self, access_token: str, location: str) -> ProfileDetails:
