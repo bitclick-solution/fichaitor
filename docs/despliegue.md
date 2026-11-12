@@ -81,7 +81,8 @@ En GitHub solo están los secretos de acceso al servidor y a GHCR, con los mismo
    | `SSH_PRIVATE_KEY` | Clave privada SSH de ese usuario |
    | `SSH_PORT` | Puerto SSH. Opcional; por defecto, 22 |
    | `SSH_KNOWN_HOSTS` | Salida de `ssh-keyscan -p <puerto> <host>`, obtenida desde una red de confianza. Obligatorio: sin él, el flujo se detiene antes de conectar |
-   | `GHCR_TOKEN` | Token personal clásico con el permiso `read:packages`. El servidor lo usa para descargar las imágenes |
+   | `GHCR_TOKEN` | Token personal **clásico** (no de grano fino) con el permiso `read:packages`. El servidor lo usa para descargar las imágenes |
+   | `GHCR_USER` | Usuario de GitHub dueño de `GHCR_TOKEN`, con acceso al repositorio. No vale el nombre de la organización |
 
    Los cuatro primeros y `GHCR_TOKEN` son los mismos que usa el repositorio de Bitclick. Los secretos no se comparten entre repositorios: hay que crearlos de nuevo aquí.
 

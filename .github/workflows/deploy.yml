@@ -12,8 +12,9 @@
 #   SSH_KNOWN_HOSTS                       obligatorio: la clave pública del servidor (salida
 #                                         de "ssh-keyscan -p <puerto> <host>"). Sin él, no
 #                                         se despliega
-#   GHCR_TOKEN                            token de larga duración con read:packages, para
+#   GHCR_TOKEN                            token clásico de larga duración con read:packages, para
 #                                         que el servidor descargue las imágenes
+#   GHCR_USER                             usuario de GitHub dueño de GHCR_TOKEN (no la organización)
 #
 # Variables opcionales (Settings > Secrets and variables > Actions > Variables):
 #   FICHAITOR_LEGAL_ESTRICTO   valor de LEGAL_ESTRICTO en los despliegues por etiqueta (por defecto, 1)
@@ -268,14 +269,23 @@ jobs:
       - name: Iniciar sesión en GHCR desde el servidor
         env:
           GHCR_TOKEN: ${{ secrets.GHCR_TOKEN }}
+          # Usuario de GitHub dueño del token. La organización no vale como usuario.
+          GHCR_USER: ${{ secrets.GHCR_USER }}
         run: |
+          if [[ -z "${GHCR_USER}" ]]; then
+            echo "::error::Falta GHCR_USER en el entorno production: el usuario de GitHub dueño de GHCR_TOKEN."
+            exit 1
+          fi
           if [[ -z "${GHCR_TOKEN}" ]]; then
             echo "::error::Falta GHCR_TOKEN en el entorno production."
             exit 1
           fi
           # shellcheck disable=SC2029
           printf '%s' "${GHCR_TOKEN}" |
-            ssh servidor "docker login '${REGISTRY}' --username '${PROPIETARIO}' --password-stdin >/dev/null"
+            ssh servidor "docker login '${REGISTRY}' --username '${GHCR_USER}' --password-stdin >/dev/null" || {
+              echo "::error::GHCR rechaza el token. Comprueba que GHCR_TOKEN es un token clásico (no de grano fino) con read:packages, que no ha caducado, que GHCR_USER es su dueño y que ese usuario tiene acceso a ${GITHUB_REPOSITORY}."
+              exit 1
+            }
 
       - name: Desplegar
         run: |
