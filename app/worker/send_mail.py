@@ -25,7 +25,13 @@ from app.domain.offboarding import (
     MAIL_SENT,
     SCOPES,
 )
-from app.domain.offboarding_mail import code_email, restore_url, restored_email, scheduled_email
+from app.domain.offboarding_mail import (
+    app_url,
+    code_email,
+    restore_url,
+    restored_email,
+    scheduled_email,
+)
 from app.ports.mailer import Email, Mailer, MailerError, MailRejected
 from app.worker import log
 
@@ -67,7 +73,8 @@ def build_email(payload: dict, public_base_url: str) -> Email:
         url = restore_url(public_base_url, _text(payload, "token"))
         return scheduled_email(to, scope, delete_at, url)
     if template == MAIL_RESTORED:
-        return restored_email(to, scope)
+        # Like the restore link: from the configuration alone.
+        return restored_email(to, scope, app_url(public_base_url))
     raise PermanentJobError("payload no válido")
 
 

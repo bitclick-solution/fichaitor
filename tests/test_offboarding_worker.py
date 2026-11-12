@@ -123,7 +123,8 @@ def test_the_restored_email_is_sent_and_its_payload_emptied():
     payload = {"template": "offboarding_restored", "to": ADDRESS, "scope": "cuenta"}
     run(SendMail(store, mailer, "https://fichaitor.test")(Job("job-3", "send_mail", payload)))
     (mail,) = mailer.sent
-    assert mail.to == ADDRESS and mail.subject == "Has restaurado Fichaitor"
+    assert mail.to == ADDRESS and mail.subject == "Has restaurado tu cuenta de Fichaitor"
+    assert "Entrar en Fichaitor: https://fichaitor.test/app/" in mail.text
     assert store.scrubbed == ["job-3"] and store.code_mail == {}
 
 

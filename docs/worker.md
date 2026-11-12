@@ -266,7 +266,7 @@ Envía los correos de una baja. La API los encola; solo el worker habla con el s
 |---|---|---|
 | `offboarding_code` | `to`, `scope`, `code`, `minutes`, `code_id` | Al pedir el código |
 | `offboarding_scheduled` | `to`, `scope`, `delete_at`, `token` | Al confirmar la baja |
-| `offboarding_restored` | `to`, `scope` | Al restaurar, desde la sesión o desde el enlace, en la misma transacción que restaura. `to` es el correo que tiene la cuenta en ese momento; si ya no tiene, no se encola |
+| `offboarding_restored` | `to`, `scope` | Al restaurar, desde la sesión o desde el enlace, en la misma transacción que restaura. `to` es el correo que tiene la cuenta en ese momento; si ya no tiene, no se encola. Con `scope: cuenta` lleva el botón «Entrar en Fichaitor» a `<FICHAITOR_PUBLIC_BASE_URL>/app/` |
 
 - **La carga del job es el único sitio donde el código y el token de restauración existen en claro.** El job la vacía (`{}`) al enviar el correo, al fallar para siempre y al agotar los intentos. Cada minuto, `on_lost` vacía la de los jobs terminados que la conserven porque su worker murió.
 - **3 intentos.** Un fallo temporal del servidor (4xx de SMTP, red) se reintenta. Un rechazo (5xx de SMTP, credenciales, certificado no válido, servidor sin TLS) no.

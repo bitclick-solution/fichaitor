@@ -498,7 +498,7 @@ Cancela la baja programada de la cuenta de la sesión. Sin cuerpo. Respuesta 204
 - 409 si la cuenta no tiene ninguna baja programada: "No tienes ninguna baja programada."
 - 503 si no se pudo guardar: "No hemos podido hacerlo. Prueba otra vez en un minuto." La baja sigue programada.
 - Tras restaurar, todo vuelve a como estaba y se pide una sincronización. El enlace del correo deja de valer.
-- Se envía un correo que confirma la restauración («Has restaurado Fichaitor»).
+- Se envía un correo que confirma la restauración. Con `scope: "cuenta"` recuerda que las sesiones siguen cerradas y lleva un botón «Entrar en Fichaitor» a `<FICHAITOR_PUBLIC_BASE_URL>/app/`.
 
 ### `POST /api/v1/public/offboarding/restore`
 

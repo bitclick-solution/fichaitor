@@ -24,9 +24,10 @@ _MONTHS = (
 ).split()
 RESTORE_PARAM = "restaurar"
 
-# The same at the end of every plain text email.
+# The same at the end of every plain text email. "-- " with its trailing space is the
+# standard signature separator: mail clients can fold what follows.
 _PLAIN_FOOTER = (
-    "--\n"
+    "-- \n"
     "¿Dudas? Escríbenos a soporte@fichaitor.es.\n"
     "Fichaitor es un producto de Bitclick Solutions S.L.U. · C/ Cuenca nº 17, 18230 Atarfe "
     "(Granada), España.\n"
@@ -39,6 +40,17 @@ def restore_url(public_base_url: str, token: str) -> str:
     fragment, which browsers never send to a server: it cannot end up in the access
     log of a proxy nor in a Referer."""
     return f"{public_base_url.rstrip('/')}/app#{RESTORE_PARAM}={quote(token, safe='')}"
+
+
+def app_url(public_base_url: str) -> str:
+    """Where the owner signs in again: absolute, made only from the public URL of the
+    configuration, like the restore link."""
+    return f"{public_base_url.rstrip('/')}/app/"
+
+
+def spanish_term(minutes: int) -> str:
+    """ "1 minuto", "10 minutos": never "1 minutos"."""
+    return f"{minutes} minuto" if minutes == 1 else f"{minutes} minutos"
 
 
 def spanish_date(moment: datetime) -> str:
@@ -85,9 +97,9 @@ def _email(
 
 def code_email(to: str, scope: str, code: str, minutes: int) -> Email:
     """1. The code that confirms a leave."""
-    what = _what(scope)
+    what, term = _what(scope), spanish_term(minutes)
     asked = f"Has pedido {what}. Escribe este código en Fichaitor para confirmarlo:"
-    expires = f"Caduca en {minutes} minutos y solo sirve una vez."
+    expires = f"Caduca en {term} y solo sirve una vez."
     not_you = (
         "Si no lo has pedido tú, no se hará ningún cambio, pero alguien tiene abierta tu "
         "sesión: escríbenos a soporte@fichaitor.es."
@@ -95,7 +107,7 @@ def code_email(to: str, scope: str, code: str, minutes: int) -> Email:
     return _email(
         to,
         subject="Tu código de confirmación de Fichaitor",
-        preheader=f"Lo necesitas para {what}. Caduca en {minutes} minutos.",
+        preheader=f"Lo necesitas para {what}. Caduca en {term}.",
         headline="Tu código",
         blocks=[
             _block("parrafo", texto=asked),
@@ -161,19 +173,42 @@ def scheduled_email(to: str, scope: str, delete_at: datetime, url: str) -> Email
     )
 
 
-def restored_email(to: str, scope: str) -> Email:
-    """3. The leave is cancelled, from the session or from the link. The same for both
-    scopes."""
+def restored_email(to: str, scope: str, sign_in_url: str) -> Email:
+    """3. The leave is cancelled, from the session or from the link.
+
+    Deleting the account closed every session, and they stay closed: that variant says
+    so and carries a button to sign in again (`sign_in_url`, from app_url)."""
+    reason = "Te llega este correo porque se ha cancelado una baja de tu cuenta de Fichaitor."
+    if scope == SCOPE_ACCOUNT:
+        cancelled = "Hemos cancelado la baja de tu cuenta. No se ha borrado nada."
+        again = (
+            "Al confirmar la baja cerramos tu sesión en todos los dispositivos. Entra de nuevo "
+            "en Fichaitor para seguir donde lo dejaste."
+        )
+        label = "Entrar en Fichaitor"
+        return _email(
+            to,
+            subject="Has restaurado tu cuenta de Fichaitor",
+            preheader="Entra de nuevo para seguir donde lo dejaste.",
+            headline="Restaurada",
+            blocks=[
+                _block("parrafo", texto=cancelled),
+                _block("parrafo", texto=again),
+                _block("boton", etiqueta=label, enlace=sign_in_url),
+            ],
+            plain=[cancelled, again, f"{label}: {sign_in_url}"],
+            reason=reason,
+        )
     paragraphs = [
-        "La baja está cancelada. Todo sigue como estaba y no se ha borrado nada.",
-        "Fichaitor vuelve a leer tu ficha y a avisarte cuando haya algo que decidir.",
+        "Hemos cancelado la desconexión. No se ha borrado nada.",
+        "Fichaitor vuelve a leer tus fichas de Google y a avisarte cuando haya algo que decidir.",
     ]
     return _email(
         to,
         subject="Has restaurado Fichaitor",
-        preheader="Todo sigue como estaba.",
+        preheader="No se ha borrado nada.",
         headline="Restaurada",
         blocks=[_block("parrafo", texto=p) for p in paragraphs],
         plain=paragraphs,
-        reason="Te llega este correo porque se ha cancelado una baja de tu cuenta de Fichaitor.",
+        reason=reason,
     )

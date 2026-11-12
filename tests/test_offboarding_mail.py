@@ -2,6 +2,7 @@
 texts, escaping, the restore link, the headers and the templates that reach the image.
 No database, no network."""
 
+import runpy
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -10,8 +11,10 @@ from pydantic import ValidationError
 
 from app import mail_templates
 from app.adapters.mailer.smtp import build_message
+from app.domain import offboarding_mail
 from app.domain.jobs import PermanentJobError
 from app.domain.offboarding_mail import (
+    app_url,
     code_email,
     restore_url,
     restored_email,
@@ -30,7 +33,7 @@ WHEN = spanish_date(DELETE_AT)
 URL = "https://fichaitor.es/app#restaurar=TOKEN"
 
 FOOTER = (
-    "--\n"
+    "-- \n"  # the standard signature separator, with its space
     "¿Dudas? Escríbenos a soporte@fichaitor.es.\n"
     "Fichaitor es un producto de Bitclick Solutions S.L.U. · C/ Cuenca nº 17, 18230 Atarfe "
     "(Granada), España.\n"
@@ -92,6 +95,7 @@ def test_the_code_email_has_the_exact_texts_of_the_brand():
         "Te llega este correo porque alguien ha pedido desconectar tu ficha desde tu cuenta de"
         " Fichaitor.",
     )
+    assert "\n\n-- \n¿Dudas?" in mail.text  # the separator keeps its trailing space
     html = mail.html
     assert "<title>Tu código de confirmación de Fichaitor</title>" in html
     assert ">Lo necesitas para desconectar tu ficha. Caduca en 10 minutos.</div>" in html
@@ -122,6 +126,16 @@ def test_the_code_email_for_the_account_says_so():
     assert "Has pedido borrar tu cuenta de Fichaitor. Escribe este código" in mail.text
     assert "Lo necesitas para borrar tu cuenta de Fichaitor. Caduca en 10 minutos." in mail.html
     assert "alguien ha pedido borrar tu cuenta de Fichaitor desde tu cuenta" in mail.text
+
+
+def test_the_term_of_the_code_says_its_unit_in_singular_or_plural():
+    one = code_email(ADDRESS, "ficha", CODE, 1)
+    assert ">Lo necesitas para desconectar tu ficha. Caduca en 1 minuto.</div>" in one.html
+    assert "Caduca en 1 minuto y solo sirve una vez." in one.text
+    assert "Caduca en 1 minuto y solo sirve una vez." in one.html
+    assert "1 minutos" not in one.text + one.html
+    many = code_email(ADDRESS, "ficha", CODE, 15)
+    assert "Caduca en 15 minutos." in many.html and "Caduca en 15 minutos y" in many.text
 
 
 @pytest.mark.parametrize("scope", ["ficha", "cuenta"])
@@ -195,20 +209,82 @@ def test_the_token_is_never_in_the_subject_nor_in_the_preheader():
 # --- 3. the leave is cancelled ----------------------------------------------------------
 
 
-@pytest.mark.parametrize("scope", ["ficha", "cuenta"])
-def test_the_restored_email_has_the_exact_texts(scope):
-    mail = restored_email(ADDRESS, scope)
+SIGN_IN = "https://fichaitor.es/app/"
+
+
+def test_the_restored_email_for_the_profile_has_the_exact_texts():
+    mail = restored_email(ADDRESS, "ficha", SIGN_IN)
     assert mail.to == ADDRESS and mail.subject == "Has restaurado Fichaitor"
     assert mail.text == plain(
         "RESTAURADA",
-        "La baja está cancelada. Todo sigue como estaba y no se ha borrado nada.",
-        "Fichaitor vuelve a leer tu ficha y a avisarte cuando haya algo que decidir.",
+        "Hemos cancelado la desconexión. No se ha borrado nada.",
+        "Fichaitor vuelve a leer tus fichas de Google y a avisarte cuando haya algo que decidir.",
         "Te llega este correo porque se ha cancelado una baja de tu cuenta de Fichaitor.",
     )
-    assert ">Todo sigue como estaba.</div>" in mail.html
+    assert ">No se ha borrado nada.</div>" in mail.html
     assert ">Restaurada<span" in mail.html
-    assert "La baja está cancelada. Todo sigue como estaba y no se ha borrado nada." in mail.html
+    assert "Hemos cancelado la desconexión. No se ha borrado nada." in mail.html
+    assert SIGN_IN not in mail.html  # no button: the session is still open
     assert "${" not in mail.html
+
+
+def test_the_restored_email_for_the_account_has_the_exact_texts_and_a_sign_in_button():
+    mail = restored_email(ADDRESS, "cuenta", SIGN_IN)
+    assert mail.subject == "Has restaurado tu cuenta de Fichaitor"
+    assert mail.text == plain(
+        "RESTAURADA",
+        "Hemos cancelado la baja de tu cuenta. No se ha borrado nada.",
+        "Al confirmar la baja cerramos tu sesión en todos los dispositivos. Entra de nuevo en"
+        " Fichaitor para seguir donde lo dejaste.",
+        f"Entrar en Fichaitor: {SIGN_IN}",
+        "Te llega este correo porque se ha cancelado una baja de tu cuenta de Fichaitor.",
+    )
+    assert ">Entra de nuevo para seguir donde lo dejaste.</div>" in mail.html
+    assert f'<a href="{SIGN_IN}" style="display:inline-block;' in mail.html
+    assert "Entrar en Fichaitor &rarr;" in mail.html
+    order = [
+        mail.html.index("Hemos cancelado la baja"),
+        mail.html.index("Al confirmar la baja"),
+        mail.html.index("Entrar en Fichaitor &rarr;"),
+    ]
+    assert order == sorted(order)
+
+
+def test_the_sign_in_link_is_made_from_the_public_url_of_the_configuration_only():
+    assert app_url("https://fichaitor.es") == SIGN_IN
+    assert app_url("https://fichaitor.es/") == SIGN_IN
+    payload = {
+        "template": "offboarding_restored",
+        "to": ADDRESS,
+        "scope": "cuenta",
+        "url": "https://evil.example/app/",
+        "host": "evil.example",
+    }
+    mail = build_email(payload, "https://fichaitor.es/")
+    assert "evil" not in mail.text + mail.html
+    assert f"Entrar en Fichaitor: {SIGN_IN}\n" in mail.text
+
+
+# --- the same HTML as the preview of brand/correo --------------------------------------------
+
+
+def test_the_html_is_byte_for_byte_the_one_of_the_brand_preview(monkeypatch):
+    # vista.py is only read: run without __main__, it writes nothing.
+    vista = runpy.run_path(str(ROOT / "brand" / "correo" / "vista.py"), run_name="vista")
+    monkeypatch.setattr(offboarding_mail, "spanish_date", lambda _: vista["FECHA"])
+    restore = vista["ENLACE"]
+    sign_in = "https://fichaitor.es/app/"
+    ours = {
+        "1-codigo": code_email(ADDRESS, "ficha", "482913", 10),
+        "2-baja-ficha": scheduled_email(ADDRESS, "ficha", DELETE_AT, restore),
+        "2-baja-cuenta": scheduled_email(ADDRESS, "cuenta", DELETE_AT, restore),
+        "3-restaurada-ficha": restored_email(ADDRESS, "ficha", sign_in),
+        "3-restaurada-cuenta": restored_email(ADDRESS, "cuenta", sign_in),
+    }
+    for name, mail in ours.items():
+        assert mail.html == vista["CORREOS"][name], name
+    # Email 4 is never sent; every other preview is covered.
+    assert set(vista["CORREOS"]) - set(ours) == {"4-completada-ficha", "4-completada-cuenta"}
 
 
 # --- escaping and the link ----------------------------------------------------------------
@@ -265,7 +341,8 @@ def test_the_job_builds_the_restored_email_and_refuses_a_bad_payload():
     mail = build_email(
         {"template": "offboarding_restored", "to": ADDRESS, "scope": "cuenta"}, "https://f.es"
     )
-    assert mail.subject == "Has restaurado Fichaitor" and mail.to == ADDRESS
+    assert mail.subject == "Has restaurado tu cuenta de Fichaitor" and mail.to == ADDRESS
+    assert "Entrar en Fichaitor: https://f.es/app/\n" in mail.text
     for bad in (
         {"template": "offboarding_restored", "scope": "cuenta"},
         {"template": "offboarding_restored", "to": ADDRESS, "scope": "otra"},
