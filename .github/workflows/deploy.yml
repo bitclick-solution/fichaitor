@@ -1,0 +1,297 @@
+# Despliegue de producción de Fichaitor. Se explica en docs/despliegue.md.
+#
+# Sigue el modelo de los demás servicios de Bitclick: imágenes en GHCR
+# etiquetadas por commit, archivos copiados por SSH a /opt/bitclick/<servicio>
+# y un deploy.sh en el servidor que comprueba la salud y vuelve atrás si falla.
+#
+# Solo se lanza a mano o al crear una etiqueta de versión (v1.2.3). Nunca en un push.
+#
+# Secretos del entorno "production" (Settings > Environments > production):
+#   SSH_HOST, SSH_USER, SSH_PRIVATE_KEY   acceso al servidor
+#   SSH_PORT                              opcional; por defecto, 22
+#   SSH_KNOWN_HOSTS                       opcional pero recomendado: la clave pública del
+#                                         servidor (salida de "ssh-keyscan -p <puerto> <host>")
+#   GHCR_TOKEN                            token de larga duración con read:packages, para
+#                                         que el servidor descargue las imágenes
+#
+# Variables opcionales (Settings > Secrets and variables > Actions > Variables):
+#   FICHAITOR_LEGAL_ESTRICTO   valor de LEGAL_ESTRICTO en los despliegues por etiqueta (por defecto, 1)
+#   FICHAITOR_URL_PUBLICA      si existe (https://fichaitor.es), se comprueba al terminar
+#
+# Los secretos de la aplicación NO están en GitHub: viven en el servidor, en
+# /opt/bitclick/fichaitor/{db,api,worker}.env. Este flujo nunca los lee ni los escribe.
+#
+# Las acciones van fijadas por commit, como en ci.yml.
+name: Despliegue
+
+on:
+  workflow_dispatch:
+    inputs:
+      legal_estricto:
+        description: "1 = no publicar si los textos legales tienen marcas [PENDIENTE] o [REVISAR]. 0 = publicar el borrador"
+        type: choice
+        options: ["1", "0"]
+        default: "1"
+  push:
+    tags:
+      - "v[0-9]+.[0-9]+.[0-9]+"
+
+# Permisos mínimos por defecto; cada trabajo pide solo lo que necesita.
+permissions:
+  contents: read
+
+# Los despliegues van en fila, de uno en uno. Nunca se cancela uno a medias.
+concurrency:
+  group: despliegue-produccion
+  cancel-in-progress: false
+
+env:
+  REGISTRY: ghcr.io
+  DEPLOY_DIR: /opt/bitclick/fichaitor
+  TMP_DIR: /opt/bitclick/fichaitor-ci-tmp
+
+jobs:
+  comprobar:
+    name: Comprobar el commit
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      actions: read
+    outputs:
+      propietario: ${{ steps.datos.outputs.propietario }}
+      legal_estricto: ${{ steps.datos.outputs.legal_estricto }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: El commit está en la rama principal
+        run: |
+          git fetch --quiet origin main
+          if ! git merge-base --is-ancestor "${GITHUB_SHA}" origin/main; then
+            echo "::error::El commit ${GITHUB_SHA} no está en main: solo se despliega desde la rama principal."
+            exit 1
+          fi
+
+      - name: La integración continua de este commit terminó bien
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          correctas="$(gh api \
+            "repos/${GITHUB_REPOSITORY}/actions/workflows/ci.yml/runs?head_sha=${GITHUB_SHA}&status=success&per_page=1" \
+            --jq '.total_count')"
+          if [[ "${correctas}" -lt 1 ]]; then
+            echo "::error::No hay ninguna ejecución correcta de la CI para ${GITHUB_SHA}. Espera a que termine o corrígela."
+            exit 1
+          fi
+
+      - id: datos
+        name: Datos del despliegue
+        env:
+          LEGAL_ESTRICTO: ${{ inputs.legal_estricto || vars.FICHAITOR_LEGAL_ESTRICTO || '1' }}
+        run: |
+          # GHCR solo admite nombres en minúsculas.
+          echo "propietario=${GITHUB_REPOSITORY_OWNER,,}" >>"${GITHUB_OUTPUT}"
+          if [[ "${LEGAL_ESTRICTO}" != "0" && "${LEGAL_ESTRICTO}" != "1" ]]; then
+            echo "::error::LEGAL_ESTRICTO debe ser 0 o 1."
+            exit 1
+          fi
+          echo "legal_estricto=${LEGAL_ESTRICTO}" >>"${GITHUB_OUTPUT}"
+          if [[ "${LEGAL_ESTRICTO}" == "0" ]]; then
+            echo "::warning::LEGAL_ESTRICTO=0: se publican los textos legales aunque tengan marcas de borrador."
+          fi
+
+  imagenes:
+    name: Construir y subir las imágenes
+    needs: comprobar
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      packages: write
+    env:
+      API_IMAGE: ghcr.io/${{ needs.comprobar.outputs.propietario }}/fichaitor-api
+      WEB_IMAGE: ghcr.io/${{ needs.comprobar.outputs.propietario }}/fichaitor-web
+      LEGAL_ESTRICTO: ${{ needs.comprobar.outputs.legal_estricto }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Iniciar sesión en GHCR
+        env:
+          GHCR_PASSWORD: ${{ github.token }}
+        run: printf '%s' "${GHCR_PASSWORD}" | docker login "${REGISTRY}" --username "${GITHUB_ACTOR}" --password-stdin
+
+      - name: Construir la imagen de la API y del worker
+        run: |
+          docker build --pull \
+            --label "org.opencontainers.image.source=${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}" \
+            --label "org.opencontainers.image.revision=${GITHUB_SHA}" \
+            --tag "${API_IMAGE}:${GITHUB_SHA}" .
+
+      # El contexto es la raíz del repositorio: la web se genera con brand/ y docs/legal/.
+      - name: Construir la imagen de la web
+        run: |
+          docker build --pull \
+            --file web/Dockerfile \
+            --build-arg "LEGAL_ESTRICTO=${LEGAL_ESTRICTO}" \
+            --label "org.opencontainers.image.source=${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}" \
+            --label "org.opencontainers.image.revision=${GITHUB_SHA}" \
+            --tag "${WEB_IMAGE}:${GITHUB_SHA}" .
+
+      # Solo se sube si las dos se han construido. La etiqueta de despliegue es
+      # siempre el commit; la de versión es una ayuda para las personas.
+      - name: Subir las imágenes
+        run: |
+          docker push "${API_IMAGE}:${GITHUB_SHA}"
+          docker push "${WEB_IMAGE}:${GITHUB_SHA}"
+          if [[ "${GITHUB_REF_TYPE}" == "tag" ]]; then
+            for imagen in "${API_IMAGE}" "${WEB_IMAGE}"; do
+              docker tag "${imagen}:${GITHUB_SHA}" "${imagen}:${GITHUB_REF_NAME}"
+              docker push "${imagen}:${GITHUB_REF_NAME}"
+            done
+          fi
+
+      - name: Cerrar sesión en GHCR
+        if: always()
+        run: docker logout "${REGISTRY}"
+
+  desplegar:
+    name: Desplegar en el servidor
+    needs: [comprobar, imagenes]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    # El entorno permite exigir una aprobación antes de que este trabajo empiece.
+    environment: production
+    permissions:
+      contents: read
+    env:
+      PROPIETARIO: ${{ needs.comprobar.outputs.propietario }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      # Los secretos entran por variables de entorno, no interpolados en el texto
+      # de las órdenes. La conexión queda con el alias "servidor".
+      - name: Preparar SSH
+        env:
+          SSH_HOST: ${{ secrets.SSH_HOST }}
+          SSH_USER: ${{ secrets.SSH_USER }}
+          SSH_PORT: ${{ secrets.SSH_PORT || '22' }}
+          SSH_PRIVATE_KEY: ${{ secrets.SSH_PRIVATE_KEY }}
+          SSH_KNOWN_HOSTS: ${{ secrets.SSH_KNOWN_HOSTS }}
+        run: |
+          if [[ -z "${SSH_HOST}" || -z "${SSH_USER}" || -z "${SSH_PRIVATE_KEY}" ]]; then
+            echo "::error::Faltan SSH_HOST, SSH_USER o SSH_PRIVATE_KEY en el entorno production."
+            exit 1
+          fi
+          install -m 700 -d "${HOME}/.ssh"
+          ( umask 077; printf '%s\n' "${SSH_PRIVATE_KEY}" >"${HOME}/.ssh/id_despliegue" )
+          if [[ -n "${SSH_KNOWN_HOSTS}" ]]; then
+            printf '%s\n' "${SSH_KNOWN_HOSTS}" >"${HOME}/.ssh/known_hosts"
+            comprobacion="yes"
+          else
+            # Como en los demás flujos de Bitclick. Define SSH_KNOWN_HOSTS para
+            # que la identidad del servidor sí se verifique.
+            echo "::warning::SSH_KNOWN_HOSTS no está definido: no se verifica la identidad del servidor."
+            comprobacion="no"
+          fi
+          {
+            echo "Host servidor"
+            echo "  HostName ${SSH_HOST}"
+            echo "  User ${SSH_USER}"
+            echo "  Port ${SSH_PORT}"
+            echo "  IdentityFile ${HOME}/.ssh/id_despliegue"
+            echo "  IdentitiesOnly yes"
+            echo "  StrictHostKeyChecking ${comprobacion}"
+            echo "  BatchMode yes"
+            echo "  ServerAliveInterval 30"
+          } >"${HOME}/.ssh/config"
+          chmod 600 "${HOME}/.ssh/config"
+
+      # Se copia a una carpeta temporal y de ahí a la definitiva, como en los
+      # demás servicios. Nunca se tocan db.env, api.env, worker.env ni backups/.
+      - name: Copiar los archivos del despliegue
+        run: |
+          # Las variables se expanden aquí, en el ejecutor, a propósito.
+          # shellcheck disable=SC2029
+          ssh servidor "mkdir -p '${TMP_DIR}/db' '${DEPLOY_DIR}/db'"
+          scp deploy/docker-compose.prod.yml "servidor:${TMP_DIR}/docker-compose.yml"
+          scp deploy/deploy.sh deploy/backup.sh deploy/init-roles.sh "servidor:${TMP_DIR}/"
+          scp db/schema.sql db/schema_worker.sql "servidor:${TMP_DIR}/db/"
+          # shellcheck disable=SC2029
+          ssh servidor "set -e
+            cp '${TMP_DIR}/docker-compose.yml' '${DEPLOY_DIR}/docker-compose.yml'
+            cp '${TMP_DIR}/deploy.sh' '${TMP_DIR}/backup.sh' '${TMP_DIR}/init-roles.sh' '${DEPLOY_DIR}/'
+            cp '${TMP_DIR}/db/schema.sql' '${TMP_DIR}/db/schema_worker.sql' '${DEPLOY_DIR}/db/'
+            chmod +x '${DEPLOY_DIR}/deploy.sh' '${DEPLOY_DIR}/backup.sh' '${DEPLOY_DIR}/init-roles.sh'
+            rm -rf '${TMP_DIR}'"
+
+      # El token viaja por la entrada estándar de SSH: no aparece en la línea de
+      # órdenes del servidor ni en el registro.
+      - name: Iniciar sesión en GHCR desde el servidor
+        env:
+          GHCR_TOKEN: ${{ secrets.GHCR_TOKEN }}
+        run: |
+          if [[ -z "${GHCR_TOKEN}" ]]; then
+            echo "::error::Falta GHCR_TOKEN en el entorno production."
+            exit 1
+          fi
+          # shellcheck disable=SC2029
+          printf '%s' "${GHCR_TOKEN}" |
+            ssh servidor "docker login '${REGISTRY}' --username '${PROPIETARIO}' --password-stdin >/dev/null"
+
+      - name: Desplegar
+        run: |
+          # Las variables se expanden aquí, en el ejecutor, a propósito.
+          # shellcheck disable=SC2029
+          ssh servidor "'${DEPLOY_DIR}/deploy.sh' '${GITHUB_SHA}' '${PROPIETARIO}' '${DEPLOY_DIR}'"
+
+      - name: Comprobar la dirección pública
+        env:
+          URL_PUBLICA: ${{ vars.FICHAITOR_URL_PUBLICA }}
+        run: |
+          if [[ -z "${URL_PUBLICA}" ]]; then
+            echo "FICHAITOR_URL_PUBLICA no está definida: no se comprueba la dirección pública."
+            exit 0
+          fi
+          for intento in 1 2 3 4 5 6; do
+            codigo="$(curl --silent --output /dev/null --max-time 10 --write-out '%{http_code}' "${URL_PUBLICA}/" || true)"
+            echo "intento ${intento} - ${URL_PUBLICA}/: ${codigo}"
+            if [[ "${codigo}" == "200" ]]; then exit 0; fi
+            sleep 10
+          done
+          echo "::error::${URL_PUBLICA}/ no responde 200. Los contenedores están sanos: revisa el host en Nginx Proxy Manager y el DNS."
+          exit 1
+
+      - name: Borrar la clave SSH del ejecutor
+        if: always()
+        run: rm -f "${HOME}/.ssh/id_despliegue" "${HOME}/.ssh/config"
+
+      - name: Resumen
+        env:
+          LEGAL_ESTRICTO: ${{ needs.comprobar.outputs.legal_estricto }}
+        run: |
+          {
+            echo "## Despliegue de Fichaitor"
+            echo ""
+            echo "| Campo | Valor |"
+            echo "|---|---|"
+            echo "| Commit | \`${GITHUB_SHA}\` |"
+            echo "| Referencia | \`${GITHUB_REF_NAME}\` |"
+            echo "| Imágenes | \`ghcr.io/${PROPIETARIO}/fichaitor-api\` y \`fichaitor-web\` |"
+            echo "| LEGAL_ESTRICTO | ${LEGAL_ESTRICTO} |"
+            echo "| Entorno | production |"
+            echo ""
+            echo "### Vuelta atrás"
+            echo ""
+            echo "En el servidor, con una etiqueta de \`${DEPLOY_DIR}/.versions\`:"
+            echo ""
+            echo '```bash'
+            echo "${DEPLOY_DIR}/deploy.sh rollback <commit-anterior> ${PROPIETARIO} ${DEPLOY_DIR}"
+            echo '```'
+          } >>"${GITHUB_STEP_SUMMARY}"

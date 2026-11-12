@@ -1,0 +1,189 @@
+# Fichaitor — Compose de PRODUCCIÓN. Se explica en docs/despliegue.md.
+#
+# No es el de desarrollo (docker-compose.yml, en la raíz). Diferencias:
+#   - No construye nada: usa las imágenes de GHCR, etiquetadas por commit.
+#   - No publica ningún puerto en el servidor. Nginx Proxy Manager (bitclick-proxy)
+#     llega a fichaitor-web:8080 por la red externa bitclick-network.
+#   - No monta db/dev-init.sql ni usa contraseñas de desarrollo.
+#   - Cada servicio recibe su propio archivo de entorno. La clave privada de los
+#     tokens solo está en worker.env.
+#
+# En el servidor vive en /opt/bitclick/fichaitor/docker-compose.yml, junto a:
+#   db.env, api.env, worker.env   secretos (modo 600); nunca salen del servidor
+#   .env                          lo escribe deploy.sh: solo las dos imágenes en uso
+#
+# No lo arranques a mano con "up": usa deploy.sh, que aplica el esquema antes.
+# Para mirar el estado sí vale: docker compose ps | logs.
+#
+# PRECAUCIÓN: "docker compose down -v" borra el volumen de la base de datos.
+
+name: fichaitor
+
+# Registro acotado: sin esto, json-file crece sin límite en el disco del servidor.
+x-registro: &registro
+  driver: json-file
+  options:
+    max-size: "10m"
+    max-file: "5"
+
+# Común a los contenedores de la aplicación (no a la base de datos, que necesita
+# cambiar de usuario al arrancar).
+x-endurecido: &endurecido
+  security_opt:
+    - no-new-privileges:true
+  cap_drop:
+    - ALL
+
+services:
+  fichaitor-db:
+    image: postgres:16-alpine
+    container_name: fichaitor-db
+    restart: unless-stopped
+    # db.env solo trae POSTGRES_PASSWORD (la del propietario, generada en el servidor).
+    # PostgreSQL solo la lee al crear el volumen.
+    env_file:
+      - ${FICHAITOR_ENV_DIR:-.}/db.env
+    environment:
+      POSTGRES_USER: fichaitor
+      POSTGRES_DB: fichaitor
+    volumes:
+      - fichaitor-db-data:/var/lib/postgresql/data
+      # A propósito, nada en /docker-entrypoint-initdb.d: el esquema lo aplica
+      # deploy.sh en cada despliegue y los usuarios los crea init-roles.sh.
+    networks:
+      - fichaitor-interna
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U fichaitor -d fichaitor"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+      start_period: 20s
+    # La copia de seguridad y el esquema entran por "docker exec": no hace falta puerto.
+    stop_grace_period: 60s
+    logging: *registro
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+
+  fichaitor-api:
+    image: ${FICHAITOR_API_IMAGE:?Falta FICHAITOR_API_IMAGE. La fija deploy.sh}
+    container_name: fichaitor-api
+    restart: unless-stopped
+    env_file:
+      - ${FICHAITOR_ENV_DIR:-.}/api.env
+    # Valores fijos de producción. Lo que se pone aquí gana a lo que diga api.env,
+    # así que un despiste en el archivo no activa un modo de ejemplo.
+    environment:
+      FICHAITOR_POST_CONNECT_URL: https://fichaitor.es/app
+      FICHAITOR_GOOGLE_REDIRECT_URI: https://fichaitor.es/api/v1/google/oauth/callback
+      FICHAITOR_COOKIE_SECURE: "true"
+      # La API va detrás del nginx de fichaitor-web, que le entrega una sola IP ya saneada.
+      FICHAITOR_TRUST_PROXY_HEADERS: "true"
+      FICHAITOR_FAKE_PLACES: "false"
+      FICHAITOR_FAKE_GOOGLE: "false"
+      FICHAITOR_FAKE_SCREENSHOT: "false"
+    depends_on:
+      fichaitor-db:
+        condition: service_healthy
+    networks:
+      - fichaitor-interna
+    # La misma comprobación que trae la imagen, con un intervalo más corto para
+    # que deploy.sh no espere 30 s a la primera respuesta.
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8000/healthz', timeout=3).status==200 else 1)"
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+    read_only: true
+    tmpfs:
+      - /tmp
+    <<: *endurecido
+    logging: *registro
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+
+  fichaitor-worker:
+    # La misma imagen que la API, con otro comando.
+    image: ${FICHAITOR_API_IMAGE:?Falta FICHAITOR_API_IMAGE. La fija deploy.sh}
+    container_name: fichaitor-worker
+    command: ["python", "-m", "app.worker"]
+    restart: unless-stopped
+    # El único archivo con FICHAITOR_TOKEN_PRIVATE_KEY.
+    env_file:
+      - ${FICHAITOR_ENV_DIR:-.}/worker.env
+    environment:
+      FICHAITOR_FAKE_GOOGLE: "false"
+    depends_on:
+      fichaitor-db:
+        condition: service_healthy
+    networks:
+      - fichaitor-interna
+    # La imagen trae la comprobación HTTP de la API; el worker no escucha en ningún
+    # puerto. deploy.sh comprueba que sigue en marcha y que no se reinicia.
+    healthcheck:
+      disable: true
+    read_only: true
+    tmpfs:
+      - /tmp
+    # Da tiempo a terminar el job en curso (FICHAITOR_WORKER_JOB_TIMEOUT_SECONDS, 120 s).
+    stop_grace_period: 130s
+    <<: *endurecido
+    logging: *registro
+    deploy:
+      resources:
+        limits:
+          memory: 384M
+
+  # Sitio público y aplicación /app. Reenvía /api/ a la API: mismo origen, sin CORS.
+  fichaitor-web:
+    image: ${FICHAITOR_WEB_IMAGE:?Falta FICHAITOR_WEB_IMAGE. La fija deploy.sh}
+    container_name: fichaitor-web
+    restart: unless-stopped
+    environment:
+      # Nombre único: en bitclick-network puede haber otro servicio llamado "api".
+      API_UPSTREAM: fichaitor-api:8000
+    # nginx resuelve el nombre de la API al arrancar: la API tiene que existir antes.
+    depends_on:
+      fichaitor-api:
+        condition: service_healthy
+    networks:
+      - fichaitor-interna
+      # El único servicio visible para Nginx Proxy Manager.
+      - bitclick-network
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O /dev/null http://127.0.0.1:8080/ || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+    # La imagen escribe solo en /tmp y en /etc/nginx/conf.d (genera ahí la
+    # configuración a partir de la plantilla). 101 es el usuario nginx de la imagen.
+    read_only: true
+    tmpfs:
+      - /tmp:uid=101,gid=101
+      - /etc/nginx/conf.d:uid=101,gid=101
+    <<: *endurecido
+    logging: *registro
+    deploy:
+      resources:
+        limits:
+          memory: 96M
+
+networks:
+  fichaitor-interna:
+    name: fichaitor-interna
+  bitclick-network:
+    external: true
+    name: bitclick-network
+
+volumes:
+  fichaitor-db-data:
+    name: fichaitor-db-data
