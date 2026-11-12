@@ -81,7 +81,24 @@ def fuente_web() -> None:
     opts.layout_features = ["kern", "liga", "locl", "tnum", "case"]
     font = subset.load_font(str(SRC), opts)
     sub = subset.Subsetter(opts)
-    sub.populate(unicodes=list(range(0x20, 0x17F)) + [0x2013, 0x2014, 0x2018, 0x2019, 0x201C, 0x201D, 0x2022, 0x2026, 0x20AC, 0x2192, 0x2605, 0x00AB, 0x00BB])
+    sub.populate(
+        unicodes=list(range(0x20, 0x17F))
+        + [
+            0x2013,
+            0x2014,
+            0x2018,
+            0x2019,
+            0x201C,
+            0x201D,
+            0x2022,
+            0x2026,
+            0x20AC,
+            0x2192,
+            0x2605,
+            0x00AB,
+            0x00BB,
+        ]
+    )
     sub.subset(font)
     subset.save_font(font, str(out), opts)
     print(f"ok  {out.relative_to(ROOT)}  {out.stat().st_size // 1024} KB")
@@ -89,10 +106,18 @@ def fuente_web() -> None:
 
 def main() -> None:
     b = ROOT / "brand"
-    (b / "fichaitor-wordmark-tinta.svg").write_text(svg_wordmark(TINTA), encoding="utf-8", newline="\n")
-    (b / "fichaitor-wordmark-papel.svg").write_text(svg_wordmark(PAPEL), encoding="utf-8", newline="\n")
-    (b / "fichaitor-lockup-tinta.svg").write_text(svg_lockup(TINTA, PAPEL, TINTA), encoding="utf-8", newline="\n")
-    (b / "fichaitor-lockup-papel.svg").write_text(svg_lockup(PAPEL, TINTA, PAPEL), encoding="utf-8", newline="\n")
+    (b / "fichaitor-wordmark-tinta.svg").write_text(
+        svg_wordmark(TINTA), encoding="utf-8", newline="\n"
+    )
+    (b / "fichaitor-wordmark-papel.svg").write_text(
+        svg_wordmark(PAPEL), encoding="utf-8", newline="\n"
+    )
+    (b / "fichaitor-lockup-tinta.svg").write_text(
+        svg_lockup(TINTA, PAPEL, TINTA), encoding="utf-8", newline="\n"
+    )
+    (b / "fichaitor-lockup-papel.svg").write_text(
+        svg_lockup(PAPEL, TINTA, PAPEL), encoding="utf-8", newline="\n"
+    )
     print("ok  brand/fichaitor-wordmark-*.svg, brand/fichaitor-lockup-*.svg")
     fuente_web()
 

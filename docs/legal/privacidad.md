@@ -2,7 +2,7 @@
 
 > **BORRADOR — no publicar sin revisión.** Este texto debe revisarlo un profesional de protección de datos antes de publicarse en `https://fichaitor.es/privacidad/`. Los datos marcados como `[PENDIENTE]` faltan por confirmar. Borra este aviso al publicar.
 
-BITCLICK SOLUTIONS S.L.U. · C.I.F. B88994777 · Última revisión: 11 de noviembre de 2026
+BITCLICK SOLUTIONS S.L.U. · C.I.F. B88994777 · Última revisión: 12 de noviembre de 2026
 
 Fichaitor es un producto de Bitclick Solutions. Es un asistente que ayuda a los dueños de negocios locales a llevar su ficha de Google Business Profile. Esta política explica qué datos tratamos, para qué y qué puedes hacer al respecto.
 
@@ -19,10 +19,12 @@ Bitclick Solutions no ha designado Delegado de Protección de Datos porque no co
 
 ## 2. Qué datos tratamos y para qué
 
+Fichaitor está en pruebas. Hoy están activos la prueba con una captura, la lista de espera, la conexión con Google y los registros del servidor. Las demás filas describen funciones previstas (avisos por correo, Telegram y WhatsApp, planes de pago, analítica) y se aplicarán cuando cada una se active.
+
 | Finalidad | Datos | Base jurídica | Conservación |
 |---|---|---|---|
-| Diagnóstico público de una ficha | El nombre o la búsqueda del negocio que escribes y los datos públicos de esa ficha que devuelve Google (nombre, dirección, horarios, categoría, valoración) | Medidas precontractuales a tu petición — art. 6.1.b | No se guarda asociado a ti, salvo que te apuntes a la lista de espera |
-| Lista de espera: avisarte cuando Fichaitor esté disponible | Tu WhatsApp o tu correo, el nombre del negocio, la nota del diagnóstico, el canal por el que llegaste, y la fecha y la versión del texto de consentimiento que aceptaste | Consentimiento — art. 6.1.a | 12 meses desde el alta o hasta el lanzamiento, lo que ocurra antes, o hasta que te des de baja |
+| Prueba con una captura de pantalla de tus reseñas | La captura que subes y lo que se ve en ella: el nombre de tu negocio y las reseñas, con el nombre y la foto de perfil públicos de quienes las escribieron, su puntuación y su texto | Interés legítimo — art. 6.1.f: enseñarte cómo funciona Fichaitor con tus propias reseñas, que ya son públicas, sin guardar la imagen ni los datos de sus autores | Fichaitor procesa la imagen en memoria y no la guarda. No devuelve ni guarda los nombres ni las fotos de los autores |
+| Lista de espera: avisarte cuando Fichaitor esté disponible | Tu WhatsApp o tu correo, el canal por el que llegaste, y la fecha y la versión del texto de consentimiento que aceptaste | Consentimiento — art. 6.1.a | 12 meses desde el alta o hasta el lanzamiento, lo que ocurra antes, o hasta que te des de baja |
 | Crear y gestionar tu cuenta | Nombre, correo, teléfono vinculado, canal elegido (web, correo, Telegram o WhatsApp), plan y preferencias | Ejecución del contrato — art. 6.1.b | Mientras dure la cuenta |
 | Prestar el servicio sobre tu ficha de Google | Los datos obtenidos de las API de Google que se detallan en el apartado 3 | Ejecución del contrato — art. 6.1.b | Mientras la cuenta de Google esté conectada; ver apartado 3 |
 | Conversar contigo y proponerte acciones | Los mensajes, audios y fotos que envías al asistente, y las propuestas y confirmaciones | Ejecución del contrato — art. 6.1.b | Mientras dure la cuenta |
@@ -43,7 +45,7 @@ Un único permiso: `https://www.googleapis.com/auth/business.manage`, que permit
 ### Qué leemos
 
 - **Datos de la ficha:** nombre del negocio, dirección, teléfono, sitio web, categorías, atributos, horarios y horarios especiales.
-- **Reseñas:** texto, puntuación, fecha, y nombre y foto de perfil públicos de quien la escribe, además de las respuestas publicadas.
+- **Reseñas:** texto, puntuación, fecha y respuestas publicadas. Fichaitor no guarda el nombre ni la foto de perfil de quien escribió la reseña.
 - **Publicaciones y fotos** de la ficha.
 - **Métricas de rendimiento:** búsquedas, visualizaciones, llamadas, solicitudes de ruta y clics al sitio web.
 - **Avisos** de reseñas nuevas y de cambios en la ficha.
@@ -82,13 +84,21 @@ Al desconectar, dejamos de acceder a tu ficha de inmediato y borramos los tokens
 
 ## 4. Datos de terceros en tu ficha
 
-Las reseñas incluyen datos personales de quienes las escriben (nombre público y texto). Respecto de esos datos, tú eres el responsable del tratamiento como titular del negocio y Fichaitor actúa como encargado: los trata solo siguiendo tus instrucciones y para prestarte el servicio, conforme al artículo 28 del RGPD y a las Condiciones de uso.
+Las reseñas pueden incluir datos personales de quienes las escriben: su texto puede identificarlos, aunque Fichaitor no guarde su nombre ni su foto. Respecto de esos datos, tú eres el responsable del tratamiento como titular del negocio y Fichaitor actúa como encargado: los trata solo siguiendo tus instrucciones y para prestarte el servicio, conforme al artículo 28 del RGPD y a las Condiciones de uso.
 
 ## 5. Inteligencia artificial
 
 Fichaitor usa un modelo de lenguaje para redactar propuestas (por ejemplo, la respuesta a una reseña) y para entender tus mensajes. Para ello se envía al proveedor del modelo el contenido necesario: el texto de la reseña, datos de tu ficha y tu mensaje.
 
-El proveedor actúa como encargado del tratamiento, no usa esos datos para entrenar sus modelos y no los conserva más allá de lo necesario para responder. Publicaremos su nombre en el apartado 6 antes de activar esta función.
+También lo usa en la prueba con una captura de tus reseñas: para contar cuántas se ven y cuántas están sin contestar, y para redactar una propuesta de respuesta. Conviene que sepas esto antes de subirla: la captura muestra el nombre y la foto de perfil de quienes escribieron las reseñas, y **la imagen completa se envía a Google, a través de la API de Gemini**, que es el proveedor del modelo de inteligencia artificial. Fichaitor no guarda la captura: la procesa en memoria y la descarta. Tampoco devuelve ni guarda los nombres ni las fotos de los autores. La respuesta propuesta se redacta en una segunda consulta, que recibe solo la puntuación y el texto de una reseña, sin la imagen ni nombres.
+
+Fichaitor usa el servicio de pago de la API de Gemini. Según sus condiciones:
+
+- Google trata lo que se le envía y sus respuestas por cuenta de Fichaitor, como encargado del tratamiento, conforme a su anexo de tratamiento de datos.
+- Google no usa lo que se le envía ni sus respuestas para mejorar sus productos.
+- Google registra lo que se le envía y sus respuestas durante un periodo limitado, solo para detectar y prevenir usos prohibidos del servicio.
+- Los datos pueden tratarse en cualquier país en el que Google o sus subencargados tengan instalaciones, por lo que puede haber transferencias fuera del Espacio Económico Europeo, con las garantías del apartado 7.
+
 
 Las propuestas son orientativas. Ninguna decisión con efectos jurídicos o similares se toma de forma automatizada: quien decide qué se publica eres tú.
 
@@ -98,11 +108,16 @@ No vendemos ni cedemos datos a terceros, salvo obligación legal. Acceden a ello
 
 | Proveedor | Para qué | Qué datos ve | Dónde trata |
 |---|---|---|---|
-| IONOS `[PENDIENTE: entidad contratante, IONOS Cloud S.L.U. o IONOS SE]` | Alojamiento del servicio y de la base de datos | Todos los datos del servicio y los registros técnicos | España / Unión Europea |
+| IONOS Cloud S.L.U., Madre de Dios nº 21, 26004 Logroño (La Rioja), España | Alojamiento del servicio y de la base de datos, y buzón de correo de soporte | Todos los datos del servicio, los registros técnicos y los mensajes que envíes a soporte@fichaitor.es | España / Unión Europea |
 | Google Ireland Ltd. | API de Google Business Profile y de Google Places | Las consultas y los cambios que Fichaitor hace en tu ficha en tu nombre | Unión Europea y Estados Unidos |
-| Proveedor del modelo de lenguaje `[PENDIENTE: nombre]` | Redacción de propuestas y comprensión de mensajes | Lo indicado en el apartado 5 | `[PENDIENTE]` |
+| Google (la entidad del grupo Google con la que está contratado el servicio), API de Gemini | Modelo de inteligencia artificial: lectura de la captura de reseñas, redacción de propuestas y comprensión de mensajes | Lo indicado en el apartado 5 | Unión Europea y terceros países, incluido Estados Unidos |
+
+Los siguientes proveedores todavía no tratan ningún dato: lo harán cuando se active la función correspondiente, y esta política se actualizará antes.
+
+| Proveedor | Para qué | Qué datos verá | Dónde trata |
+|---|---|---|---|
 | WhatsApp Ireland Ltd. / Meta Platforms Ireland Ltd. | Envío y recepción de mensajes por WhatsApp (plan Pro WhatsApp) | Tu número de teléfono y el contenido de los mensajes | Unión Europea y Estados Unidos |
-| Proveedor de correo `[PENDIENTE: nombre]` | Envío de avisos por correo | Tu dirección de correo y el contenido del mensaje | `[PENDIENTE]` |
+| IONOS Cloud S.L.U. | Envío de avisos por correo | Tu dirección de correo y el contenido del mensaje | España / Unión Europea |
 | Stripe Payments Europe Ltd. | Cobro de los planes de pago | Datos de facturación y de pago | Unión Europea y Estados Unidos |
 | Google Ireland Ltd. | Google Analytics, solo si aceptas la categoría analítica | Identificador de cookie, páginas vistas y datos de navegación | Unión Europea y Estados Unidos |
 | TikTok Technology Ltd. | Píxel de TikTok, solo si aceptas la categoría de publicidad | Identificador de cookie y eventos de navegación | Unión Europea y terceros países |
@@ -111,7 +126,12 @@ Si eliges Telegram como canal, los mensajes pasan por Telegram, que trata tus da
 
 ## 7. Transferencias internacionales
 
-Algunos de los proveedores anteriores tratan datos fuera del Espacio Económico Europeo o pertenecen a grupos con matriz en otros países. Esas transferencias se amparan en las Cláusulas Contractuales Tipo aprobadas por la Comisión Europea y, cuando procede, en el Marco de Privacidad de Datos UE-EE. UU. Puedes pedir copia de las garantías en soporte@fichaitor.es.
+Algunos de los proveedores anteriores tratan datos fuera del Espacio Económico Europeo o pertenecen a grupos con matriz en otros países. Esas transferencias se hacen con alguna de estas garantías:
+
+- Una decisión de adecuación de la Comisión Europea, cuando el país de destino la tiene. Incluye el Marco de Privacidad de Datos UE-EE. UU. para las entidades estadounidenses certificadas.
+- En su defecto, las Cláusulas Contractuales Tipo aprobadas por la Comisión Europea.
+
+En el caso de Google, es el orden que fija su anexo de tratamiento de datos: no exige garantías adicionales para los países con nivel adecuado de protección; para el resto, aplica el marco de protección de datos que haya adoptado y, si no lo hay, las Cláusulas Contractuales Tipo. Puedes pedir copia de las garantías en soporte@fichaitor.es.
 
 ## 8. Tus derechos
 
@@ -119,13 +139,15 @@ Puedes ejercer en cualquier momento los derechos de acceso, rectificación, supr
 
 Para ejercerlos, escribe a soporte@fichaitor.es con el asunto «Protección de datos» e indica cuál quieres ejercer. Respondemos en el plazo de un mes, prorrogable en los términos del artículo 12.3 del RGPD.
 
+Cuando la base del tratamiento es el interés legítimo, puedes oponerte en cualquier momento por ese mismo medio.
+
 Para darte de baja de la lista de espera, basta con responder «baja» al mensaje que recibas o escribir a ese mismo correo.
 
 Si crees que no hemos tratado bien tus datos, puedes reclamar ante la Agencia Española de Protección de Datos (C/ Jorge Juan 6, 28001 Madrid — www.aepd.es).
 
 ## 9. De dónde salen los datos
 
-De ti: de los formularios de este sitio, de tus mensajes al asistente y de la relación contractual. De Google: los datos de tu ficha, cuando conectas tu cuenta, y los datos públicos de la ficha que consultas en el diagnóstico. No compramos listas ni obtenemos datos de terceros para prospección comercial.
+De ti: de los formularios de este sitio, de tus mensajes al asistente y de la relación contractual. De Google: los datos de tu ficha, cuando conectas tu cuenta, y, si usas la prueba, de la captura de pantalla que subes. No compramos listas ni obtenemos datos de terceros para prospección comercial.
 
 ## 10. Seguridad
 
@@ -133,4 +155,4 @@ Aplicamos las medidas técnicas y organizativas del artículo 32 del RGPD según
 
 ## 11. Cambios en esta política
 
-Puede actualizarse para adaptarse a cambios normativos o del servicio. Si el cambio afecta al uso de los datos obtenidos de Google, te avisaremos y, cuando sea necesario, te pediremos de nuevo el consentimiento. La versión vigente es siempre la publicada aquí, con su fecha: la de este texto es el 11 de noviembre de 2026.
+Puede actualizarse para adaptarse a cambios normativos o del servicio. Si el cambio afecta al uso de los datos obtenidos de Google, te avisaremos y, cuando sea necesario, te pediremos de nuevo el consentimiento. La versión vigente es siempre la publicada aquí, con su fecha: la de este texto es el 12 de noviembre de 2026.

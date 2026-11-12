@@ -1,0 +1,13 @@
+app/node_modules/
+app/dist/
+
+# Generados por web/build.py a partir de web/src, docs/legal y brand
+site/index.html
+site/privacidad/
+site/condiciones-de-uso/
+site/logo.svg
+site/favicon.ico
+site/favicon-32.png
+site/apple-touch-icon.png
+site/icon-192.png
+site/icon-512.png

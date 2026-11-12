@@ -106,17 +106,17 @@ Una sola familia, **Archivo** (SIL Open Font License), variable en peso (100–9
 | **Cartel** | Peso 900, ancho 125, mayúsculas, interlineado 0,86–0,92, tracking −0,04 em | Titulares h1 y h2, cifras grandes |
 | **Rótulo** | Peso 800, ancho 112, tracking −0,02 em | h3, botones, navegación, etiquetas |
 | **Texto** | Peso 400–500, ancho 100, interlineado 1,45, tracking −0,011 em | Párrafos, formularios, tablas |
-| **Nota** | Peso 600, ancho 100, 13–14 px, mayúsculas, tracking 0,06 em | Numeración de pasos, metadatos |
+| **Nota** | Peso 600–700, ancho 100, 13–15 px | Metadatos y letra pequeña. Nunca como antetítulo |
 
 ### Escala
 
 | Nivel | Tamaño |
 |---|---|
-| Cartel XL (héroe) | `clamp(3.25rem, 13.5vw, 15rem)` |
-| Cartel L (sección) | `clamp(2.5rem, 8.5vw, 9rem)` |
-| Cartel M | `clamp(2rem, 5vw, 4.5rem)` |
-| Rótulo | `clamp(1.25rem, 1.8vw, 1.75rem)` |
-| Lead | `clamp(1.125rem, 1.6vw, 1.5rem)` |
+| Cartel XL (héroe) | `clamp(2.5rem, 10.4vw, 9.9rem)` |
+| Cartel L (sección) | `clamp(2.1rem, 7vw, 6.8rem)` |
+| Cartel M | `clamp(1.9rem, 4.6vw, 4.25rem)` |
+| Rótulo | `clamp(1.2rem, 1.7vw, 1.65rem)` |
+| Lead | `clamp(1.1rem, 1.5vw, 1.4rem)` |
 | Texto | `1.0625rem` |
 | Nota | `0.8125rem` |
 
@@ -125,6 +125,7 @@ Una sola familia, **Archivo** (SIL Open Font License), variable en peso (100–9
 - Un titular, una idea. Termina en punto, y el punto es rojo.
 - Como mucho una palabra en rojo por titular.
 - Sin cursivas, sin tipografía manuscrita y sin monoespaciada.
+- **Sin antetítulos.** Ninguna etiqueta en mayúsculas, con o sin punto, encima de un titular. El titular va solo.
 
 ## 5. Forma
 
@@ -174,7 +175,7 @@ Burbujas de conversación con botones de respuesta rápida, según los patrones 
 
 ### Paso numerado
 
-Número en Nota (`01`), título en Rótulo y una frase. En rejilla con bordes de 2 px compartidos.
+Número grande en Cartel (`01`), título en Rótulo y una frase. En rejilla con bordes de 2 px compartidos.
 
 ### Tabla de planes
 
@@ -223,7 +224,7 @@ La del asistente, descrita en `docs/04-ux-conversacional.md`: tutea, frases cort
 
 ### No
 
-- Píldoras, insignias, etiquetas flotantes o esquinas redondeadas fuera de las maquetas.
+- Píldoras, insignias, etiquetas flotantes, antetítulos en mayúsculas con punto, o esquinas redondeadas fuera de las maquetas.
 - Degradados, brillos, vidrio esmerilado fuera del menú, o sombras difusas.
 - Iconos decorativos en cada tarjeta ni emojis.
 - Fondos blancos puros como lienzo.
@@ -246,11 +247,11 @@ La del asistente, descrita en `docs/04-ux-conversacional.md`: tutea, frases cort
   --hilo: rgba(11, 11, 11, 0.16);
 
   --fuente: "Archivo", system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
-  --cartel-xl: clamp(3.25rem, 13.5vw, 15rem);
-  --cartel-l: clamp(2.5rem, 8.5vw, 9rem);
-  --cartel-m: clamp(2rem, 5vw, 4.5rem);
-  --rotulo: clamp(1.25rem, 1.8vw, 1.75rem);
-  --lead: clamp(1.125rem, 1.6vw, 1.5rem);
+  --cartel-xl: clamp(2.5rem, 10.4vw, 9.9rem);
+  --cartel-l: clamp(2.1rem, 7vw, 6.8rem);
+  --cartel-m: clamp(1.9rem, 4.6vw, 4.25rem);
+  --rotulo: clamp(1.2rem, 1.7vw, 1.65rem);
+  --lead: clamp(1.1rem, 1.5vw, 1.4rem);
 
   --borde: 2px solid var(--tinta);
   --sombra: 6px 6px 0 var(--tinta);
