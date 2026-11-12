@@ -39,7 +39,7 @@ export function Resenas({ fichaId, onSinSesion, onCambio }: { fichaId: string; o
 
     const pedir = async () => {
       try {
-        const r = await api.resenas(filtro);
+        const r = await api.resenas(filtro, fichaId);
         if (!vivo) return;
         if (r.status === "pendiente") {
           intentos += 1;

@@ -32,11 +32,47 @@ export interface Diagnosis {
   stale?: boolean;
 }
 
+export type PlanFicha = "gratis" | "pro" | "pro_whatsapp";
+
 export interface Location {
   id: string;
   title: string;
   place_id: string | null;
   verified: boolean;
+  // ── Multinegocio (docs/multinegocio.md, 5.2). Ausentes en un backend anterior: entonces hay una sola ficha.
+  /** Fichaitor la vigila y avisa de ella. Ver una ficha no pausa las demás. */
+  active?: boolean;
+  plan?: PlanFicha | null;
+  active_since?: string | null;
+  /** Solo en las activas. */
+  /** Los mismos valores que el `status` del resumen; null si está inactiva. */
+  status?: "ok" | "pendiente" | "error" | "needs_reconnect" | null;
+  /** Reseñas sin responder y fechas clave por contestar. Solo en las activas. */
+  pending?: { reviews: number; key_dates: number } | null;
+}
+
+/** Uso de los planes de la cuenta (docs/multinegocio.md, 5.2). */
+export interface PlanesCuenta {
+  active: number;
+  free_available: boolean;
+  available: { pro: number; pro_whatsapp: number };
+}
+
+/**
+ * Precios (docs/multinegocio.md, «Precios en la respuesta»). Importes en céntimos; los totales los calcula
+ * la API: la web no guarda ni calcula ninguna cifra. `charging: false` en la beta: precios de referencia.
+ */
+export interface Precios {
+  currency: string;
+  period: "month" | "year";
+  charging: boolean;
+  plans: Record<"pro" | "pro_whatsapp", { first: number; additional: number }>;
+  /** Lo que paga hoy la cuenta por sus fichas activas. */
+  total: number;
+  /** Total resultante de activar una ficha más en cada plan. */
+  if_activate: Partial<Record<"pro" | "pro_whatsapp", number>>;
+  /** Total resultante de desactivar cada ficha activa. */
+  if_deactivate: Record<string, number>;
 }
 
 export interface Me {
@@ -47,6 +83,9 @@ export interface Me {
   pending_deletion?: BajaPendiente | null;
   /** Si la cuenta tiene Google conectado. */
   connected?: boolean;
+  /** Multinegocio: uso de los planes. */
+  plans?: PlanesCuenta;
+  pricing?: Precios;
 }
 
 /** Qué se da de baja: la ficha conectada o la cuenta entera. */
@@ -230,21 +269,35 @@ async function pedir<T>(method: "GET" | "POST" | "DELETE", path: string, body?: 
   throw new ApiError(r.status, detalle, estado);
 }
 
+/**
+ * Lecturas de una ficha (docs/multinegocio.md, 5.1): `?location=` con la ficha que se ve. Si la respuesta
+ * trae `location_id` y es de otra (el dueño cambió de negocio mientras cargaba), se descarta.
+ */
+function deFicha(ruta: string, ficha: string): string {
+  return `${ruta}${ruta.includes("?") ? "&" : "?"}location=${encodeURIComponent(ficha)}`;
+}
+async function leerFicha<T>(ruta: string, ficha: string): Promise<T> {
+  const r = await pedir<T & { location_id?: string }>("GET", deFicha(ruta, ficha));
+  if (r && typeof r === "object" && typeof r.location_id === "string" && r.location_id !== ficha)
+    throw new ApiError(409, "Esa información era de otra ficha. Vuelve a cargar.");
+  return r;
+}
+
 export const api = {
   me: () => pedir<Me>("GET", "/api/v1/me"),
   elegirFicha: (locationId: string) => pedir<Me>("POST", "/api/v1/me/location", { location_id: locationId }),
-  diagnostico: () => pedir<Diagnosis>("GET", "/api/v1/me/diagnosis"),
-  resumen: () => pedir<Summary>("GET", "/api/v1/me/summary"),
-  resenas: async (filtro: "unanswered" | "all"): Promise<ReviewsResponse> => {
-    const r = await pedir<Partial<ReviewsResponse> & Pick<ReviewsResponse, "status">>("GET", `/api/v1/me/reviews?filter=${filtro}&limit=50`);
+  diagnostico: (ficha: string) => leerFicha<Diagnosis>("/api/v1/me/diagnosis", ficha),
+  resumen: (ficha: string) => leerFicha<Summary>("/api/v1/me/summary", ficha),
+  resenas: async (filtro: "unanswered" | "all", ficha: string): Promise<ReviewsResponse> => {
+    const r = await leerFicha<Partial<ReviewsResponse> & Pick<ReviewsResponse, "status">>(`/api/v1/me/reviews?filter=${filtro}&limit=50`, ficha);
     return { status: r.status, synced_at: r.synced_at ?? null, stale: r.stale ?? false, total: r.total ?? 0, reviews: r.reviews ?? [] };
   },
   borrador: (id: string) => pedir<{ review_id: string; text: string; cached: boolean }>("POST", `/api/v1/me/reviews/${encodeURIComponent(id)}/draft`),
   /** El texto va tal cual: sin recortar ni normalizar. */
   responder: (id: string, text: string) => pedir<Action>("POST", `/api/v1/me/reviews/${encodeURIComponent(id)}/reply`, { text }),
   accion: (id: string) => pedir<Action>("GET", `/api/v1/me/actions/${encodeURIComponent(id)}`),
-  sentimiento: async (): Promise<Sentiment> => {
-    const s = await pedir<Partial<Sentiment> & Pick<Sentiment, "status">>("GET", "/api/v1/me/sentiment");
+  sentimiento: async (ficha: string): Promise<Sentiment> => {
+    const s = await leerFicha<Partial<Sentiment> & Pick<Sentiment, "status">>("/api/v1/me/sentiment", ficha);
     // Con `pendiente` o `insuficiente` pueden faltar campos: se normalizan para no romper la pantalla.
     return {
       status: s.status,
@@ -270,8 +323,13 @@ export const api = {
   canales: async () => (await pedir<{ channels: Canal[] }>("GET", "/api/v1/me/channels")).channels ?? [],
   codigoVinculacion: () => pedir<CodigoVinculacion>("POST", "/api/v1/channels/link-code"),
   desvincularCanal: (id: string) => pedir<void>("DELETE", `/api/v1/me/channels/${encodeURIComponent(id)}`),
+  // ── Multinegocio (docs/multinegocio.md, 5.3). Las dos responden con el cuerpo de GET /me.
+  /** Sin plan, el servidor elige: gratis si está libre y, si no, el primer plan con hueco. 402: no queda hueco. */
+  activarFicha: (id: string, plan?: PlanFicha) =>
+    pedir<Me>("POST", `/api/v1/me/locations/${encodeURIComponent(id)}/activation`, plan ? { plan } : {}),
+  desactivarFicha: (id: string) => pedir<Me>("DELETE", `/api/v1/me/locations/${encodeURIComponent(id)}/activation`),
   // ── Fechas clave. Con filter=all también las resueltas desde hoy, para enseñar el resultado.
-  fechasClave: async () => (await pedir<{ dates: FechaClave[] }>("GET", "/api/v1/me/key-dates?filter=all")).dates ?? [],
+  fechasClave: async (ficha: string) => (await leerFicha<{ dates: FechaClave[] }>("/api/v1/me/key-dates?filter=all", ficha)).dates ?? [],
   responderFecha: (id: string, r: RespuestaFecha) => pedir<FechaClave>("POST", `/api/v1/me/key-dates/${encodeURIComponent(id)}/answer`, r),
   descartarFecha: (id: string) => pedir<void>("POST", `/api/v1/me/key-dates/${encodeURIComponent(id)}/dismiss`),
   // ── Baja con código de un solo uso y 48 horas para restaurar (docs/contrato-web-api.md).

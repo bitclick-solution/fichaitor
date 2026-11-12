@@ -51,6 +51,8 @@ Un único permiso: `https://www.googleapis.com/auth/business.manage`, que permit
 - **Avisos** de reseñas nuevas y de cambios en la ficha.
 - **Identificadores** de la cuenta y de las fichas a las que tienes acceso, y los tokens de acceso que emite Google, que guardamos cifrados. Si vuelves a conectar, borramos los tokens anteriores en cuanto los nuevos leen tu ficha correctamente.
 
+Si desactivas una ficha en «Tus negocios», dejamos de leerla y de avisarte de ella, y cancelamos sus propuestas pendientes. Si no la vuelves a activar en 30 días, borramos lo que tenemos de ella. Para retirar el acceso de Fichaitor a tu cuenta de Google, usa «Desconectar Google».
+
 Si Google deja de darnos acceso a una ficha, por ejemplo porque te han quitado como gestor, la ficha deja de mostrarse en tu panel y lo guardado de ella se borra a los 30 días, salvo que vuelvas a conectar antes con una cuenta que la gestione.
 
 ### Para qué los usamos

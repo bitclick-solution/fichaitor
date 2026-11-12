@@ -48,7 +48,7 @@ export function Resumen({
 
     const pedir = async () => {
       try {
-        const s = await api.resumen();
+        const s = await api.resumen(fichaId);
         if (!vivo) return;
         if (s.status === "pendiente") {
           intentos += 1;

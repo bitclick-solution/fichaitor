@@ -69,9 +69,12 @@ export function Ajustes({
   onDespedida,
   soloCuenta = false,
   variasFichas = false,
+  onDesactivarFicha,
 }: {
   email: string;
   variasFichas?: boolean;
+  /** Multinegocio: desactivar la ficha que se ve (lleva a «Tus negocios» con la confirmación abierta). */
+  onDesactivarFicha?: (() => void) | undefined;
   /** Sin ficha conectada solo queda borrar la cuenta. */
   soloCuenta?: boolean;
   onSinSesion: () => void;
@@ -97,6 +100,15 @@ export function Ajustes({
         )}
       </p>
       <div className="ajustes-lista">
+        {onDesactivarFicha && (
+          <div>
+            <h3 className="rotulo">Desactivar esta ficha</h3>
+            <p className="sec">Fichaitor deja de leerla y de avisarte de ella. Tus otros negocios siguen igual.</p>
+            <button className="btn sec" type="button" onClick={onDesactivarFicha}>
+              Desactivar esta ficha
+            </button>
+          </div>
+        )}
         {!soloCuenta && (
           <div>
             <h3 className="rotulo">Desconectar Google</h3>

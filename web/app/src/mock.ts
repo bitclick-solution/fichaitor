@@ -1,7 +1,7 @@
 // Respuestas simuladas de las rutas con sesión, según docs/contrato-web-api.md.
 // Solo se usan con `npm run dev:mock`. Nunca en la compilación de producción.
 //
-// Escenario por URL: /app/?mock=sin-sesion | sin-fichas | una | sin-resenas | caducado | falla | varias (por defecto)
+// Escenario por URL: /app/?mock=sin-sesion | sin-fichas | una | sin-resenas | caducado | falla | gratis (sin derecho beta) | cobro (precios con cobro) | varias (por defecto)
 
 const CLAVE = "fichaitor_mock";
 
@@ -9,6 +9,8 @@ interface Estado {
   sesion: boolean;
   elegida: string | null;
   baja?: { scope: string; delete_at: string } | null;
+  /** Multinegocio: plan de cada ficha activa. */
+  planes?: Record<string, string>;
 }
 
 const FICHAS = [
@@ -107,8 +109,8 @@ const yo = (e: Estado) => {
   const desconectada = escenario() === "desconectada";
   // «sin-acceso»: Google niega la ficha elegida; sigue elegida, pero desaparece de la lista.
   if (escenario() === "sin-acceso")
-    return { email: "dueno@example.com", locations: FICHAS.slice(1), selected_location_id: FICHAS[0]!.id, pending_deletion: null, connected: true };
-  return { email: "dueno@example.com", locations: desconectada ? [] : fichas(), selected_location_id: desconectada ? null : e.elegida, pending_deletion: e.baja ?? null, connected: !desconectada };
+    return { email: "dueno@example.com", locations: conPlanes(e, FICHAS.slice(1)), selected_location_id: FICHAS[0]!.id, pending_deletion: null, connected: true, plans: planesCuenta(e), pricing: precios(e) };
+  return { email: "dueno@example.com", plans: planesCuenta(e), pricing: precios(e), locations: desconectada ? [] : conPlanes(e, fichas()), selected_location_id: desconectada ? null : e.elegida, pending_deletion: e.baja ?? null, connected: !desconectada };
 };
 
 // Fechas clave (docs/contrato-web-api.md, «Fechas clave»). Se calculan desde hoy para que siempre estén
@@ -144,9 +146,71 @@ const fechasClave = () =>
 const textoFranjas = (r: FranjaSim[]) => r.map((x) => `de ${x.open} a ${x.close}`).join(" y ");
 const sinVueltas = ({ vueltas: _v, ...f }: FechaSim) => f;
 
+// Multinegocio (docs/multinegocio.md, 5.2 y 5.3). Al empezar no hay ninguna ficha activa: elegir la
+// primera la activa en Gratis. El derecho beta da 3 fichas Pro; con ?mock=gratis no hay derecho.
+// Los precios del catálogo son los decididos por el propietario (apartado 15); el catálogo es una
+// propuesta de la web al backend.
+const PENDIENTES: Record<string, { reviews: number; key_dates: number }> = {
+  loc_3f2a: { reviews: 3, key_dates: 2 },
+  loc_81bc: { reviews: 1, key_dates: 0 },
+  loc_c07d: { reviews: 0, key_dates: 1 },
+};
+const BETA_PRO = 3;
+function conPlanes(e: Estado, lista: typeof FICHAS) {
+  return lista.map((f) => {
+    const plan = e.planes?.[f.id] ?? null;
+    return {
+      ...f,
+      active: plan !== null,
+      plan,
+      active_since: plan ? "2026-11-12T10:00:00Z" : null,
+      // La tercera, sin verificar, sale con error para ver el aviso del selector.
+      status: plan ? (f.id === "loc_c07d" ? "error" : "ok") : null,
+      pending: plan ? (PENDIENTES[f.id] ?? { reviews: 0, key_dates: 0 }) : null,
+    };
+  });
+}
+function planesCuenta(e: Estado) {
+  const usados = Object.values(e.planes ?? {});
+  const beta = escenario() === "gratis" ? 0 : BETA_PRO;
+  return {
+    active: usados.length,
+    free_available: !usados.includes("gratis"),
+    available: { pro: Math.max(0, beta - usados.filter((p) => p === "pro").length), pro_whatsapp: 0 },
+  };
+}
+// Precios de la API (docs/multinegocio.md, «Precios en la respuesta»): el descuento se aplica desde la
+// segunda ficha de pago; la gratuita no cuenta. Beta: charging false.
+const TARIFAS = { pro: { first: 3500, additional: 3325 }, pro_whatsapp: { first: 5900, additional: 5605 } } as const;
+function totalDe(planes: string[]): number {
+  const pago = planes.filter((p): p is "pro" | "pro_whatsapp" => p === "pro" || p === "pro_whatsapp");
+  // La de precio completo es la de plan más caro.
+  pago.sort((a, b) => TARIFAS[b].first - TARIFAS[a].first);
+  return pago.reduce((s, p, i) => s + (i === 0 ? TARIFAS[p].first : TARIFAS[p].additional), 0);
+}
+function precios(e: Estado) {
+  const actuales = e.planes ?? {};
+  const usados = Object.values(actuales);
+  return {
+    currency: "EUR",
+    period: "year",
+    charging: escenario() === "cobro",
+    plans: TARIFAS,
+    total: totalDe(usados),
+    if_activate: { pro: totalDe([...usados, "pro"]), pro_whatsapp: totalDe([...usados, "pro_whatsapp"]) },
+    if_deactivate: Object.fromEntries(Object.keys(actuales).map((id) => [id, totalDe(Object.entries(actuales).filter(([k]) => k !== id).map(([, v]) => v))])),
+  };
+}
+
 export async function mockFetch(method: string, path: string, body: unknown): Promise<Response> {
   await new Promise((r) => setTimeout(r, 350));
   const e = leer();
+  // Las lecturas llevan ?location= (multinegocio). El simulador sirve lo mismo para todas: se quita.
+  {
+    const u = new URL(path, "http://simulador");
+    u.searchParams.delete("location");
+    path = u.pathname + u.search;
+  }
 
   // Restauración por el enlace del correo, sin sesión. Token válido en el simulador: «bueno»
   if (method === "POST" && path === "/api/v1/public/offboarding/restore") {
@@ -176,6 +240,26 @@ export async function mockFetch(method: string, path: string, body: unknown): Pr
       telegram_url: "https://t.me/FichaitorBot?start=Qm3v0X5k1y2Zt8pW-aR4sLd9_fHj6cNe7uBoVgIiT0Q",
       whatsapp_url: null,
     });
+  }
+  const activacion = /^\/api\/v1\/me\/locations\/([^/]+)\/activation$/.exec(path);
+  if (activacion && (method === "POST" || method === "DELETE")) {
+    const id = activacion[1]!;
+    if (!fichas().some((f) => f.id === id)) return json(404, { detail: "Esa ficha no está en tu cuenta." });
+    e.planes ??= {};
+    if (method === "POST") {
+      const p = planesCuenta(e);
+      const pedido = (body as { plan?: string } | undefined)?.plan;
+      const plan = pedido ?? (p.free_available ? "gratis" : p.available.pro > 0 ? "pro" : null);
+      const hueco = plan === "gratis" ? p.free_available : plan === "pro" ? p.available.pro > 0 : false;
+      if (!plan || !hueco) return json(402, { detail: "No te quedan fichas libres en tu plan." });
+      e.planes[id] = plan;
+      e.elegida ??= id;
+    } else {
+      delete e.planes[id];
+      if (e.elegida === id) e.elegida = Object.keys(e.planes)[0] ?? null;
+    }
+    guardar(e);
+    return json(200, yo(e));
   }
   if (method === "GET" && path.startsWith("/api/v1/me/key-dates")) {
     if (escenario() === "sin-fichas") return json(200, { dates: [] });
@@ -255,6 +339,8 @@ export async function mockFetch(method: string, path: string, body: unknown): Pr
     const id = (body as { location_id?: string }).location_id;
     if (!fichas().some((f) => f.id === id)) return json(404, { detail: "Esa ficha no es de tu cuenta." });
     e.elegida = id ?? null;
+    e.planes ??= {};
+    if (id && Object.keys(e.planes).length === 0) e.planes[id] = "gratis";
     guardar(e);
     return json(200, yo(e));
   }

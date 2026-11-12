@@ -5,6 +5,7 @@ import { Ajustes, AvisoBaja, cuando } from "./Ajustes";
 import { Canales } from "./Canales";
 import { Fechas } from "./Fechas";
 import { Indice } from "./Indice";
+import { esMultinegocio, SelectorNegocio, TusNegocios, type PreguntaNegocio } from "./Negocios";
 import { Instalar } from "./Instalar";
 import { Tour } from "./Tour";
 import { Cuenta, Seccion, SelloEstrellas } from "./movimiento";
@@ -19,6 +20,8 @@ type Vista =
   | { tipo: "sin-fichas"; email: string }
   | { tipo: "elegir"; me: Me }
   | { tipo: "panel"; me: Me; ficha: Location }
+  // Multinegocio (docs/multinegocio.md, 12): activar y desactivar fichas; puede llegar con una pregunta abierta.
+  | { tipo: "negocios"; me: Me; pregunta?: PreguntaNegocio }
   // Baja programada: solo el aviso con la fecha y «Restaurar». No se piden datos (la API responde 409).
   | { tipo: "baja"; baja: BajaPendiente }
   // La baja de la ficha ya es efectiva y la cuenta sigue: solo un estado vacío, sin pedir datos.
@@ -67,6 +70,13 @@ function vistaDe(me: Me, fichasPendientes: boolean): Vista {
   // Antes que «sin fichas»: si era la única, `locations` llega vacía pero la ficha sigue elegida.
   if (me.selected_location_id !== null && !ficha) return { tipo: "sin-acceso", me };
   if (me.locations.length === 0) return fichasPendientes ? { tipo: "pendiente" } : { tipo: "sin-fichas", email: me.email };
+  if (esMultinegocio(me)) {
+    // Sin ninguna activa, «elegir» es activar la primera. Con activas, el panel enseña la preferida si
+    // está activa y, si no, la primera activa.
+    const activas = me.locations.filter((l) => l.active);
+    if (activas.length === 0) return { tipo: "elegir", me };
+    return { tipo: "panel", me, ficha: ficha?.active ? ficha : activas[0]! };
+  }
   return ficha ? { tipo: "panel", me, ficha } : { tipo: "elegir", me };
 }
 
@@ -125,6 +135,16 @@ export function App() {
     else void cargar();
   }, [cargar, restaurar]);
 
+  /** Cambia la ficha que se ve. Las demás activas siguen vigiladas. */
+  const verNegocio = useCallback(async (id: string) => {
+    try {
+      setVista(vistaDe(await api.elegirFicha(id), false));
+    } catch (e) {
+      if (e instanceof ApiError && e.status === 401) setVista({ tipo: "conectar" });
+      else setVista({ tipo: "error", mensaje: e instanceof Error ? e.message : "No hemos podido abrir esa ficha." });
+    }
+  }, []);
+
   const salir = useCallback(async () => {
     try {
       await api.salir();
@@ -144,9 +164,20 @@ export function App() {
           <span>Fichaitor</span>
         </a>
         {conSesion && (
-          <button className="enlace" type="button" onClick={() => void salir()}>
-            Salir
-          </button>
+          <div className="barra-derecha">
+            {vista.tipo === "panel" && esMultinegocio(vista.me) && (
+              <SelectorNegocio
+                me={vista.me}
+                actual={vista.ficha.id}
+                onElegir={verNegocio}
+                onActivar={(id) => setVista({ tipo: "negocios", me: vista.me, pregunta: { n: "activar", id } })}
+                onTusNegocios={() => setVista({ tipo: "negocios", me: vista.me })}
+              />
+            )}
+            <button className="enlace" type="button" onClick={() => void salir()}>
+              Salir
+            </button>
+          </div>
         )}
       </header>
 
@@ -158,12 +189,30 @@ export function App() {
         {vista.tipo === "elegir" && <Elegir me={vista.me} onElegida={(me) => setVista(vistaDe(me, false))} />}
         {vista.tipo === "panel" && (
           <Panel
+            // Al cambiar de negocio el panel se monta de nuevo: nada de la ficha anterior se queda pintado.
+            key={vista.ficha.id}
             ficha={vista.ficha}
             email={vista.me.email}
             onRecargar={() => void cargar()}
             onDespedida={(borrado) => setVista({ tipo: "despedida", borrado })}
             variasFichas={vista.me.locations.length > 1}
-            onCambiar={() => setVista({ tipo: "elegir", me: vista.me })}
+            // Con multinegocio, se cambia desde el selector de la barra.
+            onCambiar={esMultinegocio(vista.me) ? undefined : () => setVista({ tipo: "elegir", me: vista.me })}
+            onDesactivarFicha={
+              esMultinegocio(vista.me)
+                ? () => setVista({ tipo: "negocios", me: vista.me, pregunta: { n: "desactivar", id: vista.ficha.id } })
+                : undefined
+            }
+            onSinSesion={() => setVista({ tipo: "conectar" })}
+          />
+        )}
+        {vista.tipo === "negocios" && (
+          <TusNegocios
+            me={vista.me}
+            preguntaInicial={vista.pregunta}
+            onCambio={(me) => setVista({ tipo: "negocios", me })}
+            onVer={verNegocio}
+            onVolver={() => void cargar()}
             onSinSesion={() => setVista({ tipo: "conectar" })}
           />
         )}
@@ -391,14 +440,17 @@ function SinFichas({ email }: { email: string }) {
 function Elegir({ me, onElegida }: { me: Me; onElegida: (me: Me) => void }) {
   const [enviando, setEnviando] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const multi = esMultinegocio(me);
 
   const elegir = async (id: string) => {
     setEnviando(id);
     setError(null);
     try {
+      if (multi) await api.activarFicha(id);
       onElegida(await api.elegirFicha(id));
     } catch (e) {
-      setError(e instanceof Error ? e.message : "No hemos podido elegir esa ficha.");
+      if (e instanceof ApiError && e.status === 402) setError("Ya usas todas las fichas de tu plan. Escríbenos para activar más fichas: soporte@fichaitor.es.");
+      else setError(e instanceof Error ? e.message : "No hemos podido elegir esa ficha.");
       setEnviando(null);
     }
   };
@@ -406,11 +458,19 @@ function Elegir({ me, onElegida }: { me: Me; onElegida: (me: Me) => void }) {
   return (
     <section className="pantalla">
       <h1 className="cartel">
-        ¿Cuál es tu ficha<span className="pt">?</span>
+        {multi ? (
+          <>
+            Activa tu primera ficha<span className="pt">.</span>
+          </>
+        ) : (
+          <>
+            ¿Cuál es tu ficha<span className="pt">?</span>
+          </>
+        )}
       </h1>
       <p className="lead">
-        {me.locations.length === 1 ? "Esta es la ficha que administra" : "Estas son las fichas que administra"} <strong>{me.email}</strong>.
-        Elige con cuál quieres trabajar.
+        {me.locations.length === 1 ? "Esta es la ficha que administra" : "Estas son las fichas que administra"} <strong>{me.email}</strong>.{" "}
+        {multi ? "Elige con cuál empiezas. Después podrás activar las demás." : "Elige con cuál quieres trabajar."}
       </p>
       <ul className="fichas">
         {me.locations.map((l) => (
@@ -473,6 +533,7 @@ function Panel({
   onDespedida,
   variasFichas,
   onCambiar,
+  onDesactivarFicha,
   onSinSesion,
 }: {
   ficha: Location;
@@ -482,7 +543,9 @@ function Panel({
   /** Tras confirmar el borrado de la cuenta, con el momento del borrado. */
   onDespedida: (borrado: string) => void;
   variasFichas: boolean;
-  onCambiar: () => void;
+  onCambiar?: (() => void) | undefined;
+  /** Multinegocio: desactivar la que se ve (también la última: se vuelve a «activa tu primera ficha»). */
+  onDesactivarFicha?: (() => void) | undefined;
   onSinSesion: () => void;
 }) {
   type Estado =
@@ -504,7 +567,7 @@ function Panel({
 
     const pedir = async () => {
       try {
-        const d = await api.diagnostico();
+        const d = await api.diagnostico(ficha.id);
         if (vivo) setEstado({ tipo: "ok", d });
       } catch (e) {
         if (!vivo) return;
@@ -553,7 +616,7 @@ function Panel({
               <p className="sec fuente">{!estado.d.attribution || estado.d.attribution === "Google Maps" ? "Datos de Google Maps" : estado.d.attribution}</p>
             </>
           )}
-          {variasFichas && (
+          {variasFichas && onCambiar && (
             <button className="enlace" type="button" onClick={onCambiar}>
               Cambiar de ficha
             </button>
@@ -656,7 +719,14 @@ function Panel({
 
       <Instalar />
 
-      <Ajustes email={email} variasFichas={variasFichas} onSinSesion={onSinSesion} onCambio={onRecargar} onDespedida={onDespedida} />
+      <Ajustes
+        email={email}
+        variasFichas={variasFichas}
+        onDesactivarFicha={onDesactivarFicha}
+        onSinSesion={onSinSesion}
+        onCambio={onRecargar}
+        onDespedida={onDespedida}
+      />
 
       <Tour />
     </section>

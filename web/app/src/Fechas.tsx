@@ -42,7 +42,7 @@ export function Fechas({ fichaId, onSinSesion }: { fichaId: string; onSinSesion:
 
   const cargar = async () => {
     try {
-      setFechas(await api.fechasClave());
+      setFechas(await api.fechasClave(fichaId));
       setError(null);
     } catch (e) {
       if (e instanceof ApiError && e.status === 401) onSinSesion();

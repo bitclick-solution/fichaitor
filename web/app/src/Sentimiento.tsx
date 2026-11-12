@@ -47,7 +47,7 @@ export function Sentimiento({ fichaId, version, onSinSesion }: { fichaId: string
 
     const pedir = async () => {
       try {
-        const s = await api.sentimiento();
+        const s = await api.sentimiento(fichaId);
         if (!vivo) return;
         if (s.status === "pendiente") {
           intentos += 1;

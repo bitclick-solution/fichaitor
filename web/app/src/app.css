@@ -354,3 +354,41 @@ html.lenis, html.lenis body { height: auto; }
 @media (max-width: 760px) {
   .opciones { grid-template-columns: 1fr; }
 }
+
+/* ───── Multinegocio ───── */
+.barra-derecha { display: flex; align-items: center; gap: clamp(14px, 3vw, 28px); min-width: 0; }
+.selector { position: relative; min-width: 0; }
+.selector-boton { display: flex; align-items: center; gap: 8px; max-width: min(42vw, 360px); padding: 8px 12px; border: 2px solid var(--tinta); background: var(--papel); color: var(--tinta); font: inherit; font-weight: 800; cursor: pointer; border-radius: 0; }
+.selector-boton[aria-expanded="true"] { background: var(--tinta); color: var(--papel); }
+.selector-nombre { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.selector-lista { position: absolute; right: 0; top: calc(100% + 8px); z-index: 30; width: min(360px, calc(100vw - 32px)); display: grid; gap: 10px; padding: 14px 16px; background: var(--papel); border: 2px solid var(--tinta); box-shadow: 6px 6px 0 var(--tinta); }
+.selector-lista ul { list-style: none; margin: 0; padding: 0; border: 2px solid var(--tinta); }
+.selector-lista li + li { border-top: 2px solid var(--tinta); }
+.selector-lista li button { display: grid; gap: 2px; width: 100%; padding: 10px 12px; border: 0; background: transparent; color: inherit; font: inherit; text-align: left; cursor: pointer; }
+.selector-lista li button:hover { background: rgba(11, 11, 11, 0.06); }
+.selector-lista li button[aria-current="true"] { background: var(--tinta); color: var(--papel); }
+.selector-lista li button[aria-current="true"] .sec { color: inherit; opacity: 0.8; }
+.negocios-plan { display: grid; gap: 6px; padding: clamp(16px, 2vw, 22px); border: 2px solid var(--tinta); max-width: 44em; }
+.negocios-total { font-size: 1.15rem; }
+.negocios-lista { list-style: none; margin: 0; padding: 0; border: 2px solid var(--tinta); }
+.negocios-lista > li { display: flex; flex-wrap: wrap; justify-content: space-between; align-items: center; gap: 14px 28px; padding: clamp(16px, 2.2vw, 24px); }
+.negocios-lista > li + li { border-top: 2px solid var(--tinta); }
+.negocios-lista > li > div:first-child { display: grid; gap: 4px; min-width: 0; }
+.negocios-lista .acciones { margin-top: 0; align-items: center; }
+.negocios-estado { font-weight: 800; }
+.negocios-lista > li[data-activo="true"] .negocios-estado { color: var(--tinta); }
+.negocios-lista > li[data-activo="false"] .negocios-estado { color: var(--gris); }
+.negocios-lista > li[data-activo="true"] .negocios-estado::before { content: ""; display: inline-block; width: 10px; height: 10px; margin-right: 8px; background: var(--rojo); vertical-align: 1px; }
+@media (max-width: 760px) {
+  .marca span { display: none; }
+  .selector-boton { max-width: 52vw; }
+  /* La lista ocupa el ancho bajo la barra: anclada al botón se saldría por la izquierda */
+  .selector { position: static; }
+  .selector-lista { left: -2px; right: -2px; top: calc(100% + 6px); width: auto; }
+  .barra { position: relative; }
+}
+.selector-marca { min-width: 22px; padding: 2px 6px; background: var(--rojo); color: var(--papel); font-size: 0.85rem; line-height: 1.3; text-align: center; }
+.selector-otras li { display: flex; justify-content: space-between; align-items: center; gap: 12px; padding: 10px 12px; }
+.pendientes { display: flex; flex-wrap: wrap; gap: 4px 12px; font-size: 0.9rem; font-weight: 600; }
+.pendiente-aviso { color: var(--rojo-tinta); font-weight: 800; }
+.selector-lista li button[aria-current="true"] .pendiente-aviso { color: var(--papel); text-decoration: underline; }
