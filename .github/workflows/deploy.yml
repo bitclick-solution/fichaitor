@@ -54,7 +54,8 @@ concurrency:
 env:
   REGISTRY: ghcr.io
   DEPLOY_DIR: /opt/bitclick/fichaitor
-  TMP_DIR: /opt/bitclick/fichaitor-ci-tmp
+  # Dentro de DEPLOY_DIR: el usuario de despliegue solo puede escribir ahí, no en /opt/bitclick.
+  TMP_DIR: /opt/bitclick/fichaitor/.ci-tmp
 
 jobs:
   comprobar:
