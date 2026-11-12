@@ -88,7 +88,7 @@ El uso que Fichaitor hace de la información recibida de las API de Google, y su
 
 - **Desde Fichaitor:** en Ajustes, al final de tu panel, pulsa «Desconectar Google» o «Borrar mi cuenta». Para confirmarlo te enviamos un código de un solo uso al correo de tu cuenta, válido 10 minutos: una sesión abierta en otro ordenador no basta.
 - **Desde Google:** en [myaccount.google.com/connections](https://myaccount.google.com/connections), elige Fichaitor y quita el acceso. Fichaitor no puede leer tu ficha desde ese momento. La próxima vez que intente acceder a ella, detectará que has retirado el acceso, borrará la credencial que guardaba y dejará de leer tus fichas. Si no vuelves a conectar en los 30 días siguientes, borraremos todo lo obtenido de Google de todas tus fichas: los datos de la ficha, las reseñas, su clasificación, los resúmenes, el historial de notas, los borradores de respuesta y las conversaciones que los citan. Si vuelves a conectar antes, no se borra nada más. Tu cuenta sigue existiendo, y el registro de las respuestas que publicaste se conserva 12 meses.
-- **Por correo:** escribe a soporte@fichaitor.es desde el correo de tu cuenta y dinos si quieres desconectar Google o borrar tu cuenta. Si nos escribes desde otra dirección, te pediremos que lo confirmes desde la de tu cuenta. Tramitamos la baja en un plazo máximo de un mes, sin código ni espera de 48 horas: es efectiva en ese momento. Retiramos el acceso de Fichaitor a tu cuenta de Google, borramos la credencial y, en un máximo de 30 días, todo lo obtenido de Google. El registro de las respuestas que publicaste se conserva 12 meses. Si pides borrar la cuenta, además cerramos tu sesión en todos tus dispositivos.
+- **Por correo:** también puedes pedir la baja escribiendo a soporte@fichaitor.es desde la dirección de correo de tu cuenta. Indica si quieres desconectar Google o borrar tu cuenta. Solo tramitamos la petición si nuestro servidor de correo confirma que el mensaje procede de verdad de esa dirección (verificación DMARC); si no, te pediremos que hagas la baja desde Ajustes, en tu panel. La tramitamos en un plazo máximo de un mes y funciona igual que la del panel: te enviamos un correo con un enlace para restaurarla durante 48 horas y, pasado ese plazo, revocamos el acceso a tu cuenta de Google, borramos las credenciales y, en un máximo de 30 días, todo lo obtenido de Google. El registro de las respuestas que publicaste se conserva 12 meses. Si pides borrar la cuenta, cerraremos tu sesión en todos tus dispositivos.
 
 Al confirmar la baja desde Fichaitor:
 
@@ -121,6 +121,8 @@ Fichaitor usa el servicio de pago de la API de Gemini. Según sus condiciones:
 - Google registra lo que se le envía y sus respuestas durante un periodo limitado, solo para detectar y prevenir usos prohibidos del servicio.
 - Los datos pueden tratarse en cualquier país en el que Google o sus subencargados tengan instalaciones, por lo que puede haber transferencias fuera del Espacio Económico Europeo, con las garantías del apartado 7.
 
+
+Fichaitor no genera imágenes con inteligencia artificial. Las fotos que se publican en tu ficha son siempre las que tú envías y confirmas.
 
 Las propuestas son orientativas. Ninguna decisión con efectos jurídicos o similares se toma de forma automatizada: quien decide qué se publica eres tú.
 
