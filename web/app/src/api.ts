@@ -130,6 +130,23 @@ export interface Sentiment {
   next_update: string | null;
 }
 
+/** Una dirección por la que Fichaitor escribe al dueño. `address` llega ya enmascarada. */
+export interface Canal {
+  id: string;
+  channel: "telegram" | "whatsapp" | "email";
+  address: string;
+  linked_at: string;
+}
+
+/** Código de vinculación: 6 cifras, un solo uso, 10 minutos. Vale para cualquier canal. */
+export interface CodigoVinculacion {
+  code: string;
+  expires_at: string;
+  telegram_url: string | null;
+  /** null mientras WhatsApp no esté disponible. */
+  whatsapp_url?: string | null;
+}
+
 export const OAUTH_START = "/api/v1/google/oauth/start";
 
 export class ApiError extends Error {
@@ -147,7 +164,7 @@ export class ApiError extends Error {
 const GENERICO = "Algo ha fallado. Prueba de nuevo en un minuto.";
 
 
-async function pedir<T>(method: "GET" | "POST", path: string, body?: unknown): Promise<T> {
+async function pedir<T>(method: "GET" | "POST" | "DELETE", path: string, body?: unknown): Promise<T> {
   const headers: Record<string, string> = {};
   if (method !== "GET") headers["X-Requested-With"] = "fichaitor";
   if (body !== undefined) headers["content-type"] = "application/json";
@@ -217,6 +234,10 @@ export const api = {
     };
   },
   salir: () => pedir<void>("POST", "/api/v1/auth/logout"),
+  // ── Canales (contrato previsto en docs/canales.md, «Paso 3»)
+  canales: async () => (await pedir<{ channels: Canal[] }>("GET", "/api/v1/me/channels")).channels ?? [],
+  codigoVinculacion: () => pedir<CodigoVinculacion>("POST", "/api/v1/channels/link-code"),
+  desvincularCanal: (id: string) => pedir<void>("DELETE", `/api/v1/me/channels/${encodeURIComponent(id)}`),
   // ── Baja con código de un solo uso y 48 horas para restaurar. PROPUESTA de contrato.
   pedirCodigoBaja: (scope: AlcanceBaja) => pedir<{ sent_to: string; expires_in: number }>("POST", "/api/v1/me/offboarding/code", { scope }),
   confirmarBaja: (scope: AlcanceBaja, code: string) => pedir<BajaPendiente>("POST", "/api/v1/me/offboarding/confirm", { scope, code }),

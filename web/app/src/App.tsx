@@ -2,7 +2,9 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import logo from "../../../brand/logo.svg";
 import { api, ApiError, OAUTH_START, type BajaPendiente, type Diagnosis, type Location, type Me, type Summary } from "./api";
 import { Ajustes, AvisoBaja, cuando } from "./Ajustes";
+import { Canales } from "./Canales";
 import { Indice } from "./Indice";
+import { Tour } from "./Tour";
 import { Cuenta, Seccion, SelloEstrellas } from "./movimiento";
 import { Resumen } from "./Resumen";
 import { Resenas } from "./Resenas";
@@ -366,6 +368,7 @@ const SECCIONES = [
   { id: "opinion", nombre: "Opinión" },
   { id: "resenas", nombre: "Reseñas" },
   { id: "mejoras", nombre: "Mejoras" },
+  { id: "avisos", nombre: "Avisos" },
   { id: "ajustes", nombre: "Ajustes" },
 ];
 
@@ -556,7 +559,11 @@ function Panel({
         </Seccion>
       )}
 
+      <Canales onSinSesion={onSinSesion} />
+
       <Ajustes email={email} onSinSesion={onSinSesion} onCambio={onRecargar} onDespedida={onDespedida} />
+
+      <Tour />
     </section>
   );
 }

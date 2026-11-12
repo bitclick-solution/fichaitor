@@ -2,6 +2,7 @@ import { useEffect, useId, useRef, useState, type ReactNode } from "react";
 import { createPortal } from "react-dom";
 import { api, ApiError, type AlcanceBaja, type BajaPendiente } from "./api";
 import { pausarScroll, Seccion } from "./movimiento";
+import { EVENTO_RECORRIDO } from "./Tour";
 
 // Ajustes del panel: desconectar Google y borrar la cuenta.
 //
@@ -64,7 +65,10 @@ export function Ajustes({
     <Seccion id="ajustes" className="ajustes">
       <h2 className="rotulo">Ajustes</h2>
       <p className="sec">
-        Has entrado como <strong>{email}</strong>.
+        Has entrado como <strong>{email}</strong>.{" "}
+        <button className="enlace" type="button" onClick={() => dispatchEvent(new Event(EVENTO_RECORRIDO))}>
+          Ver el recorrido del panel
+        </button>
       </p>
       <div className="ajustes-lista">
         <div>
@@ -284,7 +288,7 @@ function ModalBaja({
 }
 
 /** Ventana modal de la marca: esquinas rectas, borde de 2 px y sombra dura. Foco atrapado y cierre con Escape. */
-function Modal({ titulo, children, onCerrar, bloqueado }: { titulo: string; children: ReactNode; onCerrar: () => void; bloqueado: boolean }) {
+export function Modal({ titulo, children, onCerrar, bloqueado }: { titulo: string; children: ReactNode; onCerrar: () => void; bloqueado: boolean }) {
   const caja = useRef<HTMLDivElement>(null);
   const idTitulo = useId();
 

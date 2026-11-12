@@ -48,6 +48,10 @@ function fichas() {
 
 let llamadasSentimiento = 0;
 
+// Canales: tras pedir un código, la segunda consulta ya lo ve conectado (como si se hubiera enviado).
+const CANALES: { id: string; channel: string; address: string; linked_at: string }[] = [];
+let codigoPendiente: { consultas: number } | null = null;
+
 interface ResenaSimulada {
   id: string;
   stars: number;
@@ -119,6 +123,29 @@ export async function mockFetch(method: string, path: string, body: unknown): Pr
   if (!e.sesion) return json(401, { detail: "No has iniciado sesión." });
 
   if (method === "GET" && path === "/api/v1/me") return json(200, yo(e));
+
+  if (method === "POST" && path === "/api/v1/channels/link-code") {
+    codigoPendiente = { consultas: 0 };
+    return json(200, {
+      code: "482913",
+      expires_at: new Date(Date.now() + 10 * 60 * 1000).toISOString(),
+      telegram_url: "https://t.me/FichaitorBot?start=482913",
+      whatsapp_url: null,
+    });
+  }
+  if (method === "GET" && path === "/api/v1/me/channels") {
+    if (codigoPendiente && ++codigoPendiente.consultas >= 2) {
+      CANALES.push({ id: `ch_${CANALES.length + 1}`, channel: "telegram", address: "Telegram de ••••7342", linked_at: new Date().toISOString() });
+      codigoPendiente = null;
+    }
+    return json(200, { channels: CANALES });
+  }
+  if (method === "DELETE" && path.startsWith("/api/v1/me/channels/")) {
+    const id = path.split("/").pop();
+    const k = CANALES.findIndex((c) => c.id === id);
+    if (k >= 0) CANALES.splice(k, 1);
+    return new Response(null, { status: 204 });
+  }
 
   // ── Baja con código de un solo uso (propuesta de contrato). Código válido en el simulador: 123456
   if (method === "POST" && path === "/api/v1/me/offboarding/code") {

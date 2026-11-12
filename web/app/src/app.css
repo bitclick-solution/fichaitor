@@ -286,3 +286,35 @@ html.lenis, html.lenis body { height: auto; }
 .codigo[aria-invalid="true"] { border-color: var(--rojo-tinta); }
 @keyframes velo { from { opacity: 0; } to { opacity: 1; } }
 @media (prefers-reduced-motion: reduce) { .velo, .modal { animation: none; } }
+
+/* ───── Avisos: canales conectados y vinculación ───── */
+.avisos { padding-top: clamp(20px, 4vh, 36px); border-top: 2px solid var(--tinta); }
+.canales-lista { list-style: none; margin: 0; padding: 0; border: 2px solid var(--tinta); }
+.canales-lista li { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 8px 24px; padding: 14px 18px; }
+.canales-lista li + li { border-top: 2px solid var(--tinta); }
+.vincular { display: grid; gap: 16px; }
+.pasos-vincular { margin: 0; padding-left: 22px; display: grid; gap: 6px; }
+.vincular-medios { display: grid; grid-template-columns: 168px minmax(0, 1fr); gap: 20px; align-items: center; }
+.vincular-medios > div { display: grid; gap: 10px; justify-items: start; }
+.qr { width: 168px; height: 168px; display: block; border: 2px solid var(--tinta); }
+.qr rect { fill: var(--tinta); }
+.qr .qr-fondo { fill: #fff; }
+.codigo-chico { font-weight: 900; font-stretch: 125%; font-size: 1.2rem; letter-spacing: 0.12em; color: var(--tinta); white-space: nowrap; }
+@media (max-width: 520px) {
+  /* En el móvil, el QR no sirve: se abre el chat directamente */
+  .vincular-medios { grid-template-columns: 1fr; }
+  .qr { display: none; }
+}
+
+/* ───── Recorrido de la primera visita ───── */
+.tour { position: fixed; inset: 0; z-index: 60; pointer-events: none; }
+.tour-foco { position: fixed; border: 2px solid var(--rojo); box-shadow: 0 0 0 9999px rgba(11, 11, 11, 0.62); transition: top 0.35s var(--curva), left 0.35s var(--curva), width 0.35s var(--curva), height 0.35s var(--curva); }
+.tour-tarjeta { position: fixed; pointer-events: auto; width: min(420px, calc(100vw - 32px)); display: grid; gap: 10px; padding: 22px 24px; background: var(--papel); color: var(--tinta); border: 2px solid var(--tinta); box-shadow: 8px 8px 0 var(--rojo); outline: none; animation: entra 0.35s var(--curva) both; }
+.tour-tarjeta .acciones { margin-top: 6px; align-items: center; }
+@media (max-width: 760px) {
+  .tour-tarjeta { left: 16px; right: 16px; bottom: 16px; width: auto; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .tour-foco { transition: none; }
+  .tour-tarjeta { animation: none; }
+}
