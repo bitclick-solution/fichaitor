@@ -11,12 +11,33 @@ The name of whoever wrote a review is never part of these facts.
 
 import math
 import re
-import unicodedata
 from collections.abc import Mapping
 from dataclasses import dataclass
 from enum import StrEnum
 
 from app.domain.diagnosis import LOCKED_CHECKS, LockedCheck
+
+# The rules of the suggested reply are shared with the replies to the reviews of a
+# connected profile: they live in app.domain.review_reply and are re-exported here.
+from app.domain.review_reply import (
+    LOW_STARS,
+    REPLY_MAX_LENGTH,
+    REPLY_MAX_SENTENCES,
+    REPLY_MIN_LENGTH,
+    REPLY_MIN_SENTENCES,
+    clean_text,
+    validate_reply,
+)
+
+__all__ = [
+    "LOW_STARS",
+    "REPLY_MAX_LENGTH",
+    "REPLY_MAX_SENTENCES",
+    "REPLY_MIN_LENGTH",
+    "REPLY_MIN_SENTENCES",
+    "clean_text",
+    "validate_reply",
+]
 
 MAX_REVIEWS = 10
 MAX_REVIEW_TEXT_LENGTH = 600
@@ -24,13 +45,6 @@ MAX_AGE_LENGTH = 40
 MAX_NAME_LENGTH = 120
 EXCERPT_LENGTH = 200
 DEFAULT_MIN_CONFIDENCE = 0.6
-LOW_STARS = 2  # 1 and 2 stars: the reviews that hurt most when left unanswered
-
-REPLY_MIN_LENGTH = 40
-REPLY_MAX_LENGTH = 600
-REPLY_MIN_SENTENCES = 2
-REPLY_MAX_SENTENCES = 4
-
 SCREENSHOT_ATTRIBUTION = "Según la captura que has enviado"
 # "Cuántas reseñas tienes sin responder" is already the first of them: the capture only
 # shows a handful, the total is only known by connecting the listing.
@@ -102,15 +116,6 @@ def _stars(value: object) -> int | None:
     if number is None or number != int(number) or not 1 <= number <= 5:
         return None
     return int(number)
-
-
-def clean_text(value: object, max_length: int) -> str:
-    """One line of printable text, cut to a maximum. Anything that is not text is empty."""
-    if not isinstance(value, str):
-        return ""
-    # Control and format characters (line breaks, bidi overrides, zero width) go away.
-    printable = "".join(" " if unicodedata.category(ch)[0] == "C" else ch for ch in value)
-    return " ".join(printable.split())[:max_length].strip()
 
 
 def _screen(value: object) -> Screen | None:
@@ -264,63 +269,3 @@ def excerpt(text: str, max_length: int = EXCERPT_LENGTH) -> str:
     if len(text) <= max_length:
         return text
     return text[: max_length - 1].rstrip() + "…"
-
-
-# --- the suggested reply: written by a model, accepted only if it meets the rules ------
-
-_SENTENCE_END = re.compile(r"[.!?…]+(?=\s|$)")
-_CONTACT = re.compile(
-    r"@|https?:|www\.|\.(?:com|es|net|org)\b|(?:\d[\s.\-]?){6,}|whatsapp|telegram", re.IGNORECASE
-)
-_OFFER = re.compile(
-    r"descuento|gratis|gratuit|regal|invita(?:mos|ción|cion|remos)|reembols|devolveremos"
-    r"|devolución|devolucion|compensa|cupón|cupon|oferta|promoci|vale\s+de|bono|[%€$]",
-    re.IGNORECASE,
-)
-_PROMISE = re.compile(
-    r"promet|garantiz|nos comprometemos|me comprometo|te aseguramos|le aseguramos"
-    r"|os aseguramos|no volverá|no se repetirá",
-    re.IGNORECASE,
-)
-_APOLOGY = re.compile(r"sentimos|siento|lamenta|disculp|perdón|perdon", re.IGNORECASE)
-_THANKS = re.compile(r"gracias|agradec", re.IGNORECASE)
-_PRIVATE = re.compile(r"privado|en persona|personalmente|directamente", re.IGNORECASE)
-
-
-def _has_emoji(text: str) -> bool:
-    return any(
-        unicodedata.category(ch) in ("So", "Sk", "Cs", "Co")
-        or 0x1F000 <= ord(ch) <= 0x1FAFF
-        or 0xFE00 <= ord(ch) <= 0xFE0F
-        for ch in text
-    )
-
-
-def validate_reply(raw: object, stars: int) -> str | None:
-    """The reply ready to show, or None if it breaks any rule. Never raises.
-
-    Rules: one paragraph of 2 to 4 sentences within the length limits; no emojis; no
-    contact details, links or figures that look like a phone; no offers or
-    compensations; no promises; an apology and an invitation to talk in private for 1
-    and 2 stars; thanks for 4 and 5.
-    """
-    if not isinstance(raw, str) or len(raw) > REPLY_MAX_LENGTH * 4:
-        return None
-    reply = clean_text(raw, REPLY_MAX_LENGTH * 4)
-    if not REPLY_MIN_LENGTH <= len(reply) <= REPLY_MAX_LENGTH:
-        return None
-    if reply[-1] not in ".!?…":
-        return None
-    if not REPLY_MIN_SENTENCES <= len(_SENTENCE_END.findall(reply)) <= REPLY_MAX_SENTENCES:
-        return None
-    if _has_emoji(reply) or any(ch in reply for ch in "<>{}[]"):
-        return None
-    if _CONTACT.search(reply) or _OFFER.search(reply) or _PROMISE.search(reply):
-        return None
-    if stars <= LOW_STARS and not (_APOLOGY.search(reply) and _PRIVATE.search(reply)):
-        return None
-    if stars >= 4 and not _THANKS.search(reply):
-        return None
-    if stars == 3 and not (_THANKS.search(reply) or _APOLOGY.search(reply)):
-        return None
-    return reply

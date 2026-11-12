@@ -14,7 +14,7 @@ from app.adapters.job_queue.postgres import PostgresJobQueue
 from app.adapters.worker_store.postgres import PostgresWorkerStore
 from app.ports.google_profile import GoogleProfile
 from app.ports.worker_store import WorkerStore
-from app.worker import log, sync_profile
+from app.worker import log, reply_review, sync_profile
 from app.worker.config import ConfigError, WorkerSettings
 from app.worker.loop import Worker
 from app.worker.registry import HandlerRegistry
@@ -27,6 +27,10 @@ def build_registry(
     registry.register(
         sync_profile.KIND,
         sync_profile.SyncProfile(store, google, settings.token_private_key),
+    )
+    registry.register(
+        reply_review.KIND,
+        reply_review.ReplyReview(store, google, settings.token_private_key),
     )
     return registry
 

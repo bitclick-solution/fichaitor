@@ -35,3 +35,9 @@ class Settings(BaseSettings):
     summary_stale_hours: float = 6
     # At most one sync per profile in each window of this many seconds.
     sync_window_seconds: int = 900
+
+    # Replies to reviews. A draft is a paid call to the model: at most this many per
+    # account in each window. A draft served from the stored one does not count.
+    review_draft_rate_limit: int = 30
+    review_draft_rate_window_seconds: int = 86400
+    review_draft_timeout_seconds: float = 20.0

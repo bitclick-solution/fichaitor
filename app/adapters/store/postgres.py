@@ -4,7 +4,8 @@ The API role can only INSERT contacts, events and Google connections. On account
 profiles and sessions it can read, insert and update a few columns; it never deletes.
 Every statement on profiles is filtered by account_id: the isolation between accounts.
 Of the worker's tables it can only INSERT jobs and SELECT profile summaries
-(figures and facts).
+(figures and facts) and reviews. It keeps the drafts of replies. It creates actions,
+which it can read but never change, and it can only add to the audit log.
 """
 
 import json
@@ -14,6 +15,7 @@ from datetime import datetime
 import asyncpg
 
 from app.adapters.job_queue.postgres import PostgresJobQueue
+from app.domain.actions import EVENT_CONFIRMED, REPLY_REVIEW
 from app.domain.jobs import DEFAULT_MAX_ATTEMPTS
 from app.domain.profile_summary import ProfileFacts, facts_from_json
 from app.ports.google_oauth import ProfileLocation
@@ -21,16 +23,37 @@ from app.ports.store import (
     Account,
     GoogleConnection,
     Location,
+    ReplyInProgress,
+    ReviewDraft,
+    ReviewPage,
     SelectedProfile,
+    StoredAction,
+    StoredReview,
     StoredSummary,
     WaitlistSignup,
 )
 
+REPLY_MAX_ATTEMPTS = 3  # 30 s and 60 s of waiting: the owner is looking at the screen
+
+# The reviews an account may see: those of its own selected profile, reached through
+# its own Google identity. $1 is always the account of the session; no identifier from
+# the request takes part in choosing the profile.
+_OWN_REVIEWS = """
+    FROM account a
+    JOIN location l
+      ON l.id = a.selected_location_id AND l.account_id = a.id AND l.removed_at IS NULL
+    JOIN review r
+      ON r.google_sub = a.google_sub AND r.location = l.gbp_location AND r.removed_at IS NULL
+"""
+
 
 class PostgresStore:
-    def __init__(self, dsn: str) -> None:
+    def __init__(self, dsn: str, reply_job_kind: str = REPLY_REVIEW) -> None:
         self._dsn = dsn
         self._pool: asyncpg.Pool | None = None
+        # Kind of the job that carries out a confirmed reply. Tests use one of their
+        # own, so that no worker running on the same database takes their jobs.
+        self._reply_job_kind = reply_job_kind
 
     async def connect(self) -> None:
         self._pool = await asyncpg.create_pool(self._dsn, min_size=1, max_size=5)
@@ -236,7 +259,7 @@ class PostgresStore:
                    p.status, p.status_at, p.synced_at, p.review_count, p.average_rating,
                    p.unanswered_count, p.unanswered_low_count, p.last_review_at,
                    p.has_regular_hours, p.upcoming_special_hours, p.google_changed,
-                   p.google_changed_fields
+                   p.google_changed_fields, p.reviews_synced_at
             FROM account a
             JOIN location l
               ON l.id = a.selected_location_id AND l.account_id = a.id AND l.removed_at IS NULL
@@ -265,10 +288,164 @@ class PostgresStore:
                 google_changed=row["google_changed"],
                 google_changed_fields=tuple(row["google_changed_fields"] or ()),
                 facts=_facts(row["facts"]),
+                reviews_synced_at=row["reviews_synced_at"],
             )
         return SelectedProfile(
             row["google_sub"], row["gbp_location"], summary, row["title"], row["place_id"]
         )
+
+    # --- reviews and replies ------------------------------------------------------
+
+    async def list_reviews(
+        self, account_id: str, *, unanswered_only: bool, limit: int
+    ) -> ReviewPage:
+        rows = await self._require_pool().fetch(
+            f"""
+            SELECT r.id, r.rating, r.comment, r.created_at, r.reply_text, r.reply_at,
+                   count(*) OVER () AS total
+            {_OWN_REVIEWS}
+            WHERE a.id = $1::uuid AND (NOT $2::boolean OR r.reply_text IS NULL)
+            ORDER BY (r.reply_text IS NOT NULL), r.rating ASC NULLS LAST,
+                     r.created_at DESC NULLS LAST, r.id
+            LIMIT $3
+            """,  # noqa: S608
+            account_id,
+            unanswered_only,
+            limit,
+        )
+        # limit is at least 1 (the route checks it): no rows means nothing matches.
+        return ReviewPage(tuple(_review(r) for r in rows), rows[0]["total"] if rows else 0)
+
+    async def get_review(self, account_id: str, review_id: str) -> StoredReview | None:
+        row = await self._require_pool().fetchrow(
+            f"""
+            SELECT r.id, r.rating, r.comment, r.created_at, r.reply_text, r.reply_at,
+                   d.draft, d.source_hash
+            {_OWN_REVIEWS}
+            LEFT JOIN review_draft d ON d.review_id = r.id
+            WHERE a.id = $1::uuid AND r.id = $2
+            """,  # noqa: S608
+            account_id,
+            review_id,
+        )
+        if row is None:
+            return None
+        draft = ReviewDraft(row["draft"], row["source_hash"]) if row["draft"] is not None else None
+        return _review(row, draft)
+
+    async def save_draft(
+        self, account_id: str, review_id: str, source_hash: str, text: str, now: datetime
+    ) -> None:
+        # The ownership check is part of the statement, not a previous read.
+        await self._require_pool().execute(
+            f"""
+            INSERT INTO review_draft (review_id, source_hash, draft, created_at)
+            SELECT r.id, $3, $4, $5
+            {_OWN_REVIEWS}
+            WHERE a.id = $1::uuid AND r.id = $2
+            ON CONFLICT (review_id) DO UPDATE SET
+                source_hash = EXCLUDED.source_hash,
+                draft = EXCLUDED.draft,
+                created_at = EXCLUDED.created_at
+            """,  # noqa: S608
+            account_id,
+            review_id,
+            source_hash,
+            text,
+            now,
+        )
+
+    async def create_reply_action(
+        self, account_id: str, review_id: str, text: str, now: datetime
+    ) -> str | None:
+        async with self._require_pool().acquire() as conn, conn.transaction():
+            owned = await conn.fetchval(
+                f"SELECT 1 {_OWN_REVIEWS} WHERE a.id = $1::uuid AND r.id = $2",  # noqa: S608
+                account_id,
+                review_id,
+            )
+            if owned is None:
+                return None
+            # The account, the profile and the review of the action come from the same
+            # join as every read: the ownership check is part of the insert itself.
+            # The unique index on live actions makes a second confirmation a no-op.
+            action_id = await conn.fetchval(
+                f"""
+                INSERT INTO action
+                    (account_id, type, google_sub, location, review_id, text, confirmed_at)
+                SELECT a.id, $5, a.google_sub, l.gbp_location, r.id, $3, $4
+                {_OWN_REVIEWS}
+                WHERE a.id = $1::uuid AND r.id = $2
+                ON CONFLICT DO NOTHING
+                RETURNING id
+                """,  # noqa: S608
+                account_id,
+                review_id,
+                text,
+                now,
+                REPLY_REVIEW,
+            )
+            if action_id is None:
+                raise ReplyInProgress
+            await conn.execute(
+                """
+                INSERT INTO audit_log
+                    (event, account_id, action_id, action_type, location, review_id,
+                     gbp_review_id, text, confirmed_at)
+                SELECT $2, a.account_id, a.id, a.type, a.location, a.review_id,
+                       r.gbp_review_id, a.text, a.confirmed_at
+                FROM action a JOIN review r ON r.id = a.review_id
+                WHERE a.id = $1
+                """,
+                action_id,
+                EVENT_CONFIRMED,
+            )
+            # The job carries the id of the action and nothing else: what is sent to
+            # Google is read from the action, which nobody can change.
+            await conn.execute(
+                """
+                INSERT INTO job (kind, payload, idempotency_key, max_attempts)
+                VALUES ($1, $2::jsonb, $3, $4)
+                """,
+                self._reply_job_kind,
+                json.dumps({"action_id": action_id}),
+                f"{self._reply_job_kind}:{action_id}",
+                REPLY_MAX_ATTEMPTS,
+            )
+        return action_id
+
+    async def get_action(self, account_id: str, action_id: str) -> StoredAction | None:
+        row = await self._require_pool().fetchrow(
+            """
+            SELECT id, type, review_id, state, error_code, confirmed_at, finished_at
+            FROM action WHERE id = $2 AND account_id = $1::uuid
+            """,
+            account_id,
+            action_id,
+        )
+        if row is None:
+            return None
+        return StoredAction(
+            row["id"],
+            row["type"],
+            row["review_id"],
+            row["state"],
+            row["error_code"],
+            row["confirmed_at"],
+            row["finished_at"],
+        )
+
+
+def _review(row: asyncpg.Record, draft: ReviewDraft | None = None) -> StoredReview:
+    return StoredReview(
+        row["id"],
+        row["rating"],
+        row["comment"],
+        row["created_at"],
+        row["reply_text"],
+        row["reply_at"],
+        draft,
+    )
 
 
 def _facts(raw: str | None) -> ProfileFacts | None:

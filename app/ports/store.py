@@ -61,6 +61,8 @@ class StoredSummary:
     google_changed_fields: tuple[str, ...] = ()
     # What the diagnosis is computed from. None until a sync has stored them.
     facts: ProfileFacts | None = None
+    # When the reviews of the profile were last stored. None: not yet.
+    reviews_synced_at: datetime | None = None
 
 
 @dataclass(frozen=True)
@@ -72,6 +74,48 @@ class SelectedProfile:
     summary: StoredSummary | None
     title: str = ""
     place_id: str | None = None
+
+
+@dataclass(frozen=True)
+class ReviewDraft:
+    """The last reply a model drafted for a review, and what it was drafted from."""
+
+    text: str
+    source_hash: str
+
+
+@dataclass(frozen=True)
+class StoredReview:
+    """A review as the API reads it. Nothing about who wrote it is stored."""
+
+    id: str  # ours: "rev_..."; of that account only
+    rating: int | None
+    text: str  # original language
+    created_at: datetime | None
+    reply_text: str | None  # None: unanswered
+    reply_at: datetime | None
+    draft: ReviewDraft | None = None  # only read by get_review
+
+
+@dataclass(frozen=True)
+class ReviewPage:
+    reviews: tuple[StoredReview, ...]
+    total: int  # how many match the filter, before the limit
+
+
+@dataclass(frozen=True)
+class StoredAction:
+    id: str  # "act_..."
+    type: str
+    review_id: str
+    state: str  # pending, running, done or failed
+    error_code: str | None
+    confirmed_at: datetime
+    finished_at: datetime | None
+
+
+class ReplyInProgress(Exception):
+    """That review already has a reply on its way to Google."""
 
 
 class Store(Protocol):
@@ -130,4 +174,43 @@ class Store(Protocol):
         selected profile: an account never reads the summary written for another one,
         not even when both manage the same Google profile.
         """
+        ...
+
+    async def list_reviews(
+        self, account_id: str, *, unanswered_only: bool, limit: int
+    ) -> ReviewPage:
+        """Reviews of the selected profile of that account, and of no other.
+
+        Unanswered first; within each group, fewer stars first and then the newest.
+        Removed reviews are left out. Empty when no profile is selected.
+        """
+        ...
+
+    async def get_review(self, account_id: str, review_id: str) -> StoredReview | None:
+        """One review of the selected profile of that account, with its stored draft.
+        None if it is not there: unknown, removed, of another profile or of another
+        account. The answer is the same in every case."""
+        ...
+
+    async def save_draft(
+        self, account_id: str, review_id: str, source_hash: str, text: str, now: datetime
+    ) -> None:
+        """Keep the last draft of that review, replacing the previous one. Nothing is
+        stored unless the review is of the selected profile of that account."""
+        ...
+
+    async def create_reply_action(
+        self, account_id: str, review_id: str, text: str, now: datetime
+    ) -> str | None:
+        """Record that the owner confirmed `text` as the reply to that review: a pending
+        action, its audit row and the job that will carry it out, all or nothing.
+
+        `text` is stored exactly as given. Returns the id of the action; None if the
+        review is not of the selected profile of that account. Raises ReplyInProgress
+        if that review already has a reply on its way.
+        """
+        ...
+
+    async def get_action(self, account_id: str, action_id: str) -> StoredAction | None:
+        """An action of that account. None if it is unknown or of another account."""
         ...

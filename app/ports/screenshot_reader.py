@@ -1,8 +1,10 @@
 from collections.abc import Mapping
 from typing import Protocol
 
+from app.ports.reply_writer import ReplyWriterUnavailable
 
-class ScreenshotReaderUnavailable(Exception):
+
+class ScreenshotReaderUnavailable(ReplyWriterUnavailable):
     """The model failed, timed out or answered something unusable."""
 
 

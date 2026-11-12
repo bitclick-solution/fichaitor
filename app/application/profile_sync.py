@@ -97,8 +97,12 @@ class ProfileSync:
         if profile is not None:
             await self._enqueue(profile.google_sub, profile.location, reconnected=reconnected)
 
-    async def view(self, account_id: str) -> SummaryView | None:
-        """The summary of the selected profile of that account. None if none is selected."""
+    async def view(self, account_id: str, *, need_reviews: bool = False) -> SummaryView | None:
+        """The summary of the selected profile of that account. None if none is selected.
+
+        need_reviews: the caller is going to list the reviews, so a summary whose
+        reviews were never stored (synced before they were kept) is synced again.
+        """
         profile = await self._store.selected_profile(account_id)
         if profile is None:
             return None
@@ -112,6 +116,7 @@ class ProfileSync:
         if summary.status == STATUS_OK:
             # A summary written before the facts existed is synced again to get them.
             refresh = old or summary.synced_at is None or summary.facts is None
+            refresh = refresh or (need_reviews and summary.reviews_synced_at is None)
         else:
             # A failed attempt is retried once its window has passed, so that a
             # reconnection or a recovered Google ends up showing in the panel.

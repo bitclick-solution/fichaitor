@@ -62,6 +62,7 @@ async def owner(sql: str, *args):
 async def cleanup():
     await owner("DELETE FROM job WHERE kind LIKE 'pytest-%' OR idempotency_key LIKE 'pytest-%'")
     await owner("DELETE FROM profile_summary WHERE google_sub LIKE 'pytest-%'")
+    await owner("DELETE FROM review WHERE google_sub LIKE 'pytest-%'")  # a sync stores them
     await owner("DELETE FROM google_connection WHERE google_sub LIKE 'pytest-%'")
 
 

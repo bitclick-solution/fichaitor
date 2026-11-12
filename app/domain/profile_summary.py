@@ -48,6 +48,11 @@ class Review:
     created_at: datetime | None
     replied: bool
     text: str = ""  # original language, see original_text
+    # Google's reviewId. Empty when Google sends none: the review still counts in the
+    # summary, but it cannot be stored or answered. Nothing about the author is kept.
+    review_id: str = ""
+    reply_text: str | None = None  # the owner's reply; None when there is none
+    reply_at: datetime | None = None
 
 
 @dataclass(frozen=True)

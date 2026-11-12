@@ -1,8 +1,14 @@
-"""Google Business Profile, read side, for the worker.
+"""Google Business Profile for the worker.
 
 Token refresh, reviews and media (My Business v4), the profile itself, its attributes
 and Google's own changes (Business Information v1). Endpoints verified in
 docs/fase0/matriz-api.md.
+
+One write: the reply to a review (`reviews.updateReply`, My Business v4),
+`PUT {account}/{location}/reviews/{reviewId}/reply` with `{"comment": text}`. It
+creates the reply or replaces the one there is. Taken from Google's reference; it has
+not been run against a real profile yet (docs/fase0/matriz-api.md, "Pendiente").
+https://developers.google.com/my-business/reference/rest/v4/accounts.locations.reviews/updateReply
 
 Error messages carry only a status code: never a token, a request body or a
 response body (Google may echo what it was sent).
@@ -14,6 +20,7 @@ from datetime import date, datetime, timedelta
 
 import httpx
 
+from app.domain.actions import GBP_REVIEW_ID
 from app.domain.profile_summary import (
     MediaSummary,
     ProfileDetails,
@@ -28,6 +35,8 @@ from app.ports.google_profile import GoogleProfileError, GoogleRejected, Reconne
 
 TOKEN_URL = "https://oauth2.googleapis.com/token"
 REVIEWS_URL = "https://mybusiness.googleapis.com/v4/{account}/{location}/reviews"
+REVIEW_URL = REVIEWS_URL + "/{review_id}"
+REPLY_URL = REVIEW_URL + "/reply"
 LOCATION_URL = "https://mybusinessbusinessinformation.googleapis.com/v1/{location}"
 GOOGLE_UPDATED_URL = LOCATION_URL + ":getGoogleUpdated"
 ATTRIBUTES_URL = LOCATION_URL + "/attributes"
@@ -205,12 +214,47 @@ class RealGoogleProfile:
         )
         return parse_diff_mask(body.get("diffMask"))
 
-    async def _get(self, url: str, access_token: str, params: dict) -> dict:
+    async def current_reply(
+        self, access_token: str, account: str, location: str, review_id: str
+    ) -> str | None:
+        body = await self._get(_review_url(REVIEW_URL, account, location, review_id), access_token)
+        reply = body.get("reviewReply")
+        if not isinstance(reply, dict):
+            return None
+        comment = reply.get("comment")
+        return comment if isinstance(comment, str) else ""
+
+    async def reply_to_review(
+        self, access_token: str, account: str, location: str, review_id: str, text: str
+    ) -> datetime | None:
+        url = _review_url(REPLY_URL, account, location, review_id)
+        # One request, no retry here: see the port. The error messages are fixed
+        # strings with a status code; Google's answer may quote the reply.
+        try:
+            resp = await self._client.put(
+                url, json={"comment": text}, headers={"Authorization": f"Bearer {access_token}"}
+            )
+        except httpx.HTTPError:
+            raise GoogleProfileError("Google no respondió a la escritura") from None
+        status = resp.status_code
+        if status == 200:
+            try:
+                body = resp.json()
+            except ValueError:
+                body = None
+            return _datetime(body.get("updateTime")) if isinstance(body, dict) else None
+        if status == 401:
+            raise ReconnectRequired("Google no acepta el acceso (401)")
+        if status < 500 and status != 429:
+            raise GoogleRejected(f"Google rechazó la respuesta (estado {status})", status)
+        raise GoogleProfileError(f"Google no aceptó la escritura (estado {status})", status)
+
+    async def _get(self, url: str, access_token: str, params: dict | None = None) -> dict:
         last = "sin respuesta"
         for attempt in range(RETRIES):
             try:
                 resp = await self._client.get(
-                    url, params=params, headers={"Authorization": f"Bearer {access_token}"}
+                    url, params=params or {}, headers={"Authorization": f"Bearer {access_token}"}
                 )
             except httpx.HTTPError:
                 last = "error de red"
@@ -221,7 +265,7 @@ class RealGoogleProfile:
                 if status == 401:
                     raise ReconnectRequired("Google no acepta el acceso (401)")
                 if status < 500 and status != 429:
-                    raise GoogleRejected(f"Google rechazó la lectura (estado {status})")
+                    raise GoogleRejected(f"Google rechazó la lectura (estado {status})", status)
                 last = f"estado {status}"
             if attempt < RETRIES - 1:
                 await asyncio.sleep(self._retry_delay)
@@ -258,12 +302,34 @@ def _loc(location: str) -> str:
     return _checked(_LOCATION, location)
 
 
+def _review_url(template: str, account: str, location: str, review_id: str) -> str:
+    return template.format(
+        account=_checked(_ACCOUNT, account),
+        location=_loc(location),
+        review_id=_checked(GBP_REVIEW_ID, review_id),
+    )
+
+
 def _review(item: dict) -> Review:
+    """What is kept of a review. The `reviewer` field (name and photo of whoever wrote
+    it) is never read: data minimisation."""
+    reply = item.get("reviewReply")
+    replied = bool(reply)
+    reply_text = None
+    reply_at = None
+    if replied:
+        reply = _dict(reply)
+        reply_text = reply["comment"] if isinstance(reply.get("comment"), str) else ""
+        reply_at = _datetime(reply.get("updateTime"))
+    review_id = item.get("reviewId")
     return Review(
         rating=star_rating(item.get("starRating")),
         created_at=_datetime(item.get("createTime")),
-        replied=bool(item.get("reviewReply")),
+        replied=replied,
         text=original_text(item.get("comment")),
+        review_id=review_id if isinstance(review_id, str) else "",
+        reply_text=reply_text,
+        reply_at=reply_at,
     )
 
 

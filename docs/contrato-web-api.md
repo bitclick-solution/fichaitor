@@ -19,7 +19,7 @@ Las dos sesiones trabajan en la **misma carpeta y la misma rama** (`main`). Cada
 - En producción, un contenedor `web` con nginx sirve los estáticos y redirige `/api/` a la API. Mismo origen: sin CORS.
 - La interfaz entrega `web/Dockerfile` (compila las dos partes; nginx sin privilegios, escuchando en el 8080) y `web/nginx.conf` con `location /api/ { proxy_pass http://api:8000; }`. El respaldo a `index.html` se aplica **solo** a `/app`; las páginas legales y el inicio se sirven como archivos. El backend añade el servicio `web` a `docker-compose.yml`.
 - En desarrollo, el servidor de Vite redirige `/api` a `http://localhost:8000`.
-- Sin Google real: con `FICHAITOR_FAKE_GOOGLE=true` y `FICHAITOR_FAKE_PLACES=true` todo el recorrido funciona con datos de ejemplo. El diagnóstico del panel no depende de `FICHAITOR_FAKE_PLACES`: sale de la ficha de demostración que lee el worker.
+- Sin Google real: con `FICHAITOR_FAKE_GOOGLE=true` y `FICHAITOR_FAKE_PLACES=true` todo el recorrido funciona con datos de ejemplo. Las reseñas y sus respuestas también; el borrador necesita además `FICHAITOR_FAKE_SCREENSHOT=true`. El diagnóstico del panel no depende de `FICHAITOR_FAKE_PLACES`: sale de la ficha de demostración que lee el worker.
 
 ## Convenciones
 
@@ -378,15 +378,250 @@ Cada cuenta ve solo el resumen de su ficha elegida. Dos cuentas que administran 
 
 204 sin cuerpo. Cierra la sesión en el servidor y borra la cookie. Lleva la cabecera `X-Requested-With: fichaitor`; sin ella, 403. Responde 204 también si no había sesión.
 
+## Reseñas y respuestas (2026-11-12)
+
+Primera función que **escribe en Google**: el dueño ve las reseñas de su ficha, pide una respuesta redactada si quiere y **publica la que confirma**. Una respuesta es pública y Google avisa a quien escribió la reseña: no se puede deshacer, solo editar o borrar después.
+
+Las cuatro rutas trabajan sobre la **ficha elegida de la cuenta de la sesión** y sobre ninguna otra. Los identificadores (`rev_…`, `act_…`) son propios de cada cuenta: no sirven en otra.
+
+| Ruta | Qué hace | Llama a |
+|---|---|---|
+| `GET /api/v1/me/reviews` | Lista las reseñas guardadas | Nada |
+| `POST /api/v1/me/reviews/{id}/draft` | Devuelve una respuesta redactada por el modelo | El modelo |
+| `POST /api/v1/me/reviews/{id}/reply` | **Publica**: registra la confirmación del dueño | Nada: el worker la envía a Google |
+| `GET /api/v1/me/actions/{id}` | Estado del envío | Nada |
+
+Las dos rutas `POST` llevan la cabecera `X-Requested-With: fichaitor`. Sin ella, 403, haya sesión o no.
+
+### `GET /api/v1/me/reviews`
+
+Parámetros de consulta, los dos opcionales:
+
+| Parámetro | Valores | Por defecto |
+|---|---|---|
+| `filter` | `unanswered` (solo las que no tienen respuesta) o `all` | `unanswered` |
+| `limit` | De 1 a 200 | 50 |
+
+Respuesta 200:
+
+```json
+{
+  "status": "ok",
+  "synced_at": "2026-11-12T09:58:39Z",
+  "stale": false,
+  "total": 13,
+  "reviews": [
+    {
+      "id": "rev_3f2a9c1d7b6e5a40",
+      "stars": 1,
+      "text": "Esperamos cuarenta minutos y la comida llegó fría.",
+      "created_at": "2026-10-03T18:21:07Z",
+      "replied": false,
+      "reply": null
+    },
+    {
+      "id": "rev_9b1c2d3e4f5a6b7c",
+      "stars": 5,
+      "text": "",
+      "created_at": "2026-09-14T11:02:44Z",
+      "replied": true,
+      "reply": { "text": "Gracias por tu visita.", "updated_at": "2026-09-15T08:30:00Z" }
+    }
+  ]
+}
+```
+
+| Campo | Tipo | Qué es |
+|---|---|---|
+| `status` | texto | `ok`, `pendiente`, `needs_reconnect` o `error`. Los mismos valores y el mismo significado que en [Estados del resumen](#estados-del-resumen) |
+| `synced_at` | fecha y hora UTC, o `null` | Cuándo se guardaron las reseñas por última vez |
+| `stale` | booleano | `true` si tienen más de 6 horas. La API ya ha pedido una actualización |
+| `total` | entero | Cuántas reseñas cumplen el filtro, antes de aplicar `limit` |
+| `reviews` | lista | Como mucho `limit` reseñas, ya ordenadas |
+| `reviews[].id` | texto | `rev_` seguido de letras y números. Es el que va en las rutas de borrador y de publicar |
+| `reviews[].stars` | entero de 1 a 5, o `null` | `null` si Google no da las estrellas |
+| `reviews[].text` | texto | Texto de la reseña en su idioma original, sin la traducción automática. Vacío si la reseña solo tiene estrellas |
+| `reviews[].created_at` | fecha y hora UTC, o `null` | Cuándo se escribió la reseña |
+| `reviews[].replied` | booleano | Si tiene respuesta del propietario |
+| `reviews[].reply` | objeto o `null` | `text` y `updated_at` (puede ser `null`) de la respuesta. `null` si no hay respuesta |
+
+- **Orden:** primero las que no tienen respuesta. Dentro de cada grupo, las de menos estrellas primero y, a igualdad de estrellas, las más recientes.
+- **Sin autor:** la respuesta nunca trae el nombre ni la foto de quien escribió la reseña. La API no los guarda. No los pidas ni los muestres.
+- Pinta `text` y `reply.text` como texto, nunca como HTML. Los escribe un tercero.
+- Con `pendiente` la lista va vacía: el worker aún no ha guardado las reseñas. Sondea como el resumen: cada 3 segundos, 10 veces como máximo. También sale `pendiente` la primera vez que se abre la lista de una ficha sincronizada antes del 2026-11-12, hasta su siguiente sincronización, que la API pide al momento.
+- Con `needs_reconnect` y `error`, la lista trae las reseñas de la última lectura correcta, o va vacía si nunca la hubo.
+- No hay paginación: si `total` es mayor que `limit`, sube `limit` (200 como máximo).
+
+Errores:
+
+| Código | Cuándo |
+|---|---|
+| 401 | Sin sesión |
+| 409 | Aún no se ha elegido ficha, o Google ha dejado de listar la elegida |
+| 422 | `filter` o `limit` no válidos |
+
+### `POST /api/v1/me/reviews/{id}/draft`
+
+Sin cuerpo. Devuelve una respuesta redactada por el modelo para esa reseña. **Pedir un borrador no publica nada.**
+
+Respuesta 200:
+
+```json
+{
+  "review_id": "rev_3f2a9c1d7b6e5a40",
+  "text": "Sentimos mucho que tu visita no fuera como esperabas. Tomamos nota de lo que cuentas para mejorar. Nos gustaría hablarlo contigo en privado para entender bien qué pasó.",
+  "cached": false
+}
+```
+
+| Campo | Tipo | Qué es |
+|---|---|---|
+| `review_id` | texto | La reseña del borrador |
+| `text` | texto | De 40 a 600 caracteres, un solo párrafo, sin formato |
+| `cached` | booleano | `true` si es el borrador guardado de una petición anterior. No ha costado nada ni cuenta para el límite |
+
+- El modelo recibe solo las estrellas y el texto de la reseña. El texto es un dato: si contiene instrucciones, no se obedecen.
+- El borrador pasa una validación en código antes de salir (tono, longitud, sin datos de contacto, sin ofertas ni promesas). Si no la pasa, la API responde 422 y **el dueño escribe su respuesta**.
+- La API guarda el último borrador de cada reseña. Pedirlo otra vez sin que la reseña haya cambiado devuelve el mismo, con `cached: true`.
+- Funciona también con una reseña ya respondida, para proponer una respuesta nueva.
+- Puede tardar hasta 20 segundos. No reintentes sola.
+- Muestra el borrador en un campo que el dueño pueda editar. Es una propuesta, no la respuesta.
+
+Errores, todos con `detail` en español listo para mostrar:
+
+| Código | Cuándo | Qué hace la web |
+|---|---|---|
+| 401 | Sin sesión | Lleva a conectar |
+| 403 | Falta la cabecera `X-Requested-With` | — |
+| 404 | La reseña no está en la ficha elegida de esa cuenta: no existe, Google ya no la devuelve, es de otra ficha o de otra cuenta. La respuesta es la misma en todos los casos | Vuelve a pedir la lista |
+| 422 | No hay borrador que proponer: el del modelo no ha pasado la validación, o la reseña no tiene estrellas | Deja el campo vacío para que el dueño escriba la suya |
+| 429 | Más de 30 borradores nuevos en 24 horas en esa cuenta (`FICHAITOR_REVIEW_DRAFT_RATE_LIMIT`) | Deja escribir la respuesta a mano |
+| 503 | El modelo no responde, o la redacción no está configurada en ese entorno | Deja escribir la respuesta a mano y ofrece reintentar el borrador |
+
+### `POST /api/v1/me/reviews/{id}/reply`
+
+**Publica.** Esta petición es la confirmación del dueño: el texto que lleva es el que se envía a Google, tal cual.
+
+```json
+{ "text": "Sentimos mucho la espera. Nos gustaría hablarlo contigo en privado." }
+```
+
+Respuesta **202**:
+
+```json
+{
+  "id": "act_51b0c7e2a9d84f36",
+  "type": "reply_review",
+  "review_id": "rev_3f2a9c1d7b6e5a40",
+  "status": "pendiente",
+  "message": "Tu respuesta está en cola para enviarse a Google.",
+  "error": null,
+  "confirmed_at": "2026-11-12T10:04:11Z",
+  "finished_at": null
+}
+```
+
+El cuerpo tiene la misma forma que `GET /api/v1/me/actions/{id}`. `id` es el identificador de la acción: úsalo para seguir el envío.
+
+- **202 no significa "publicada".** La API ha registrado la confirmación y ha encolado el envío. Quien escribe en Google es el worker.
+- **El texto no se toca.** La API no recorta espacios, no corrige ni normaliza: lo que llega a Google es exactamente lo que se envió en `text`, saltos de línea incluidos. Si quieres quitar espacios sobrantes, hazlo antes de enseñárselo al dueño, no después de que confirme.
+- **Límite de longitud: 4.096 bytes en UTF-8**, el de Google para `ReviewReply.comment` ([referencia de la API](https://developers.google.com/my-business/reference/rest/v4/accounts.locations.reviews#ReviewReply)). Son bytes, no caracteres: una letra con tilde o una eñe ocupan 2 y un emoji, 4. Un contador de caracteres con tope en 4.000 se queda del lado seguro; para ser exacto, cuenta `new TextEncoder().encode(texto).length`.
+- No se admite un texto vacío o solo con espacios, ni caracteres de control (se admiten el salto de línea y el tabulador).
+- **Responder a una reseña ya respondida edita la respuesta.** Google usa la misma operación para crear y para sustituir: la respuesta nueva reemplaza a la anterior. La web debe decirlo ("Vas a sustituir tu respuesta actual") cuando `replied` es `true`.
+- **Una respuesta en vuelo por reseña.** Mientras una acción de esa reseña está `pendiente` o `en_curso`, otra petición responde 409. Desactiva el botón al pulsarlo.
+- Google solo admite respuestas en fichas verificadas. Si la ficha no lo está, la acción acaba `fallida`.
+
+Errores, todos con `detail` en español listo para mostrar, salvo el 422 de un cuerpo mal formado:
+
+| Código | Cuándo |
+|---|---|
+| 401 | Sin sesión |
+| 403 | Falta la cabecera `X-Requested-With` |
+| 404 | La reseña no está en la ficha elegida de esa cuenta. La misma respuesta para una reseña de otra cuenta y para una que no existe |
+| 409 | Ya hay una respuesta enviándose para esa reseña |
+| 422 | Texto vacío, de más de 4.096 bytes o con caracteres no admitidos. Si falta `text`, no es un texto o pasa de 16.384 caracteres, `detail` es una lista: muestra un mensaje genérico |
+| 503 | No se ha podido registrar la confirmación. **No se ha creado ninguna acción**: el dueño puede volver a pulsar |
+
+### `GET /api/v1/me/actions/{id}`
+
+Estado de una acción de esa cuenta. Respuesta 200:
+
+```json
+{
+  "id": "act_51b0c7e2a9d84f36",
+  "type": "reply_review",
+  "review_id": "rev_3f2a9c1d7b6e5a40",
+  "status": "hecha",
+  "message": "Enviada a Google. Puede tardar unos minutos en verse en tu ficha.",
+  "error": null,
+  "confirmed_at": "2026-11-12T10:04:11Z",
+  "finished_at": "2026-11-12T10:04:14Z"
+}
+```
+
+| `status` | Qué significa | `message` |
+|---|---|---|
+| `pendiente` | Confirmada; el worker aún no la ha tomado | "Tu respuesta está en cola para enviarse a Google." |
+| `en_curso` | El worker la está enviando, o Google ha fallado y se va a reintentar | "Estamos enviando tu respuesta a Google." |
+| `hecha` | Google ha aceptado la respuesta | "Enviada a Google. Puede tardar unos minutos en verse en tu ficha." |
+| `fallida` | No se ha enviado y no se va a reintentar | Según `error` |
+
+`error` solo tiene valor con `fallida`:
+
+| `error` | Cuándo | `message` |
+|---|---|---|
+| `reconnect` | Google ha retirado el permiso (401 o `invalid_grant`) | "Tu acceso a Google ha caducado; vuelve a conectar." |
+| `rejected` | Google ha rechazado la respuesta (4xx): por ejemplo, la ficha no está verificada | "Google no ha aceptado la respuesta. Revisa el texto y vuelve a enviarla." |
+| `review_gone` | La reseña ya no existe en Google (404) | "Esa reseña ya no está en Google. No hay nada que responder." |
+| `unavailable` | Google ha fallado en todos los intentos (5xx, 429 o sin respuesta) | "No hemos podido enviar tu respuesta a Google. Prueba otra vez en unos minutos." |
+| `internal` | Fallo de nuestro lado: por ejemplo, la ficha ya no está en la conexión | "No hemos podido enviar tu respuesta. Prueba otra vez en unos minutos." |
+
+- Muestra `message` tal cual. Distingue los casos por `status` y `error`, no por el texto.
+- **Di "enviada", nunca "publicada".** Google revisa las respuestas antes de mostrarlas y puede tardar. Con `hecha`, el texto correcto es el de `message`.
+- Con `reconnect`, ofrece además el botón de conectar con Google.
+- `confirmed_at`: cuándo confirmó el dueño. `finished_at`: cuándo acabó, o `null` si sigue en curso.
+
+Errores:
+
+| Código | Cuándo |
+|---|---|
+| 401 | Sin sesión |
+| 404 | La acción no existe o es de otra cuenta. La misma respuesta en los dos casos |
+
+#### Sondeo del estado de la acción
+
+- Tras el 202, pide `GET /api/v1/me/actions/{id}` **cada 2 segundos, 15 veces como máximo** (30 segundos). Lo normal es que pase a `hecha` en menos de 5 segundos.
+- Deja de preguntar en cuanto el estado sea `hecha` o `fallida`.
+- Si a los 30 segundos sigue `pendiente` o `en_curso`, deja de sondear y muestra "Seguimos enviando tu respuesta a Google. Puedes seguir; te lo confirmamos aquí." Vuelve a preguntar una vez por minuto, 5 veces como máximo, o cuando el dueño vuelva a la pantalla. El worker reintenta solo durante minuto y medio como mucho; después la acción queda `fallida`.
+- Tras `hecha`, vuelve a pedir `GET /api/v1/me/reviews` y `GET /api/v1/me/summary`: la reseña ya sale respondida y `unanswered_count` baja. No hace falta esperar a otra sincronización.
+- Si el worker está parado, la acción se queda en `pendiente`. No es un error de la web.
+
+### Lo que la web NO debe hacer
+
+- **No publiques sin que el dueño vea y confirme el texto exacto.** `POST …/reply` solo se llama desde un botón que el dueño pulsa con el texto delante, tal como se va a enviar. Nunca encadenes borrador y publicación en un solo paso, ni publiques "todas a la vez" sin enseñar cada texto.
+- **No envíes en `text` nada distinto de lo que el dueño tiene en pantalla.** Si el dueño edita el borrador, se envía lo editado.
+- **No reintentes una publicación por tu cuenta.** Ni ante un 503, ni ante un error de red, ni ante una acción `fallida`, ni porque el sondeo tarde. El worker ya reintenta lo que se puede reintentar. Una publicación nueva la decide el dueño volviendo a pulsar.
+- **No des por publicada una respuesta por haber recibido el 202.** El resultado lo dice la acción.
+- **No uses el borrador como si fuera la respuesta.** Hasta que el dueño confirma, no hay nada enviado.
+- No guardes reseñas, borradores ni respuestas en `localStorage` ni similares. Son contenido de terceros y caducan. Un borrador sin enviar puede vivir en memoria mientras la pantalla está abierta.
+- No muestres ni pidas el nombre de quien escribió la reseña.
+- No pintes como HTML ningún texto de estas rutas.
+
+### Sin Google real
+
+- Con `FICHAITOR_FAKE_GOOGLE=true`, listar, publicar y seguir la acción funcionan con la ficha de demostración (13 reseñas, 9 sin responder). Nada sale hacia Google.
+- El borrador usa el mismo modelo que la demostración por captura. Con `FICHAITOR_FAKE_SCREENSHOT=true` devuelve respuestas de ejemplo, sin clave y sin coste. Sin esa variable y sin `FICHAITOR_GEMINI_API_KEY`, el borrador responde 503 y el resto funciona igual.
+- Con base de datos, la API encola y el worker ejecuta: hacen falta los dos servicios en marcha y el worker con `FICHAITOR_FAKE_GOOGLE=true`. Sin base de datos, la API lo resuelve en memoria y la acción sale `hecha` en la misma respuesta del 202.
+
 ## Pantallas mínimas para tener algo visible
 
 1. **Inicio** (`/`): diagnóstico público, resultado, lista de espera y botón "Conectar con Google".
-2. **App** (`/app`): lee `?google=`; sin sesión, invita a conectar; con sesión y sin ficha elegida, lista de fichas; con ficha elegida, panel con el diagnóstico y el resumen de esa ficha (los dos salen de la ficha conectada) y botón de salir.
+2. **App** (`/app`): lee `?google=`; sin sesión, invita a conectar; con sesión y sin ficha elegida, lista de fichas; con ficha elegida, panel con el diagnóstico y el resumen de esa ficha (los dos salen de la ficha conectada) y botón de salir. Desde el 2026-11-12, también la lista de reseñas, con el borrador y la publicación de la respuesta.
 3. **Privacidad** (`/privacidad/`) y **condiciones** (`/condiciones-de-uso/`).
 
 ## Siguiente versión del contrato
 
-El resumen de la ficha (`GET /api/v1/me/summary`) ya existe. Lo siguiente es la lista de reseñas con respuesta propuesta y las fechas clave. Se añadirán aquí antes de implementarse.
+El resumen de la ficha y las reseñas con su respuesta ([Reseñas y respuestas](#reseñas-y-respuestas-2026-11-12)) ya existen. Lo siguiente son las fechas clave. Se añadirán aquí antes de implementarse.
 
 ## Demostración por captura de reseñas (2026-11-11)
 

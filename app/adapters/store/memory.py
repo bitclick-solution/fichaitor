@@ -3,18 +3,34 @@
 import secrets
 import uuid
 from collections.abc import Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime
 
+from app.adapters.memory_tables import ActionRow, MemoryTables, ReviewRow
+from app.domain.actions import REPLY_REVIEW
 from app.ports.google_oauth import ProfileLocation
+from app.ports.job_queue import JobEnqueuer
 from app.ports.store import (
     Account,
     GoogleConnection,
     Location,
+    ReplyInProgress,
+    ReviewDraft,
+    ReviewPage,
     SelectedProfile,
+    StoredAction,
+    StoredReview,
     StoredSummary,
     WaitlistSignup,
 )
+
+REPLY_MAX_ATTEMPTS = 3
+
+
+def review_order(row: ReviewRow) -> tuple:
+    """Unanswered first; then fewer stars; then the newest."""
+    age = -row.created_at.timestamp() if row.created_at else float("inf")
+    return (row.reply_text is not None, row.rating if row.rating is not None else 6, age, row.id)
 
 
 @dataclass
@@ -41,7 +57,13 @@ class SessionRow:
 
 
 class MemoryStore:
-    def __init__(self, fail: bool = False) -> None:
+    def __init__(self, fail: bool = False, reply_job_kind: str = REPLY_REVIEW) -> None:
+        # Reviews, actions and audit trail: what the API shares with the worker.
+        self.tables = MemoryTables()
+        self.drafts: dict[str, ReviewDraft] = {}  # by review id
+        # Where create_reply_action enqueues the job. create_app sets it.
+        self.jobs: JobEnqueuer | None = None
+        self._reply_job_kind = reply_job_kind
         self.connections: list[GoogleConnection] = []
         self.signups: dict[tuple[str, str], WaitlistSignup] = {}
         self.events: list[tuple[str, str | None, str | None, int | None]] = []
@@ -160,10 +182,108 @@ class MemoryStore:
         if row is None:
             return None
         key = (account.google_sub, row.profile.location)
+        summary = self.summaries.get(key)
+        synced_at = self.tables.reviews_synced_at.get(key)
+        if summary is not None and synced_at is not None and summary.unanswered_count is not None:
+            # Stand-in for the worker, which lowers the counts when a reply is sent:
+            # here they are simply read from the stored reviews.
+            pending, low = self.tables.unanswered(*key)
+            summary = replace(
+                summary,
+                unanswered_count=pending,
+                unanswered_low_count=low,
+                reviews_synced_at=synced_at,
+            )
         return SelectedProfile(
             account.google_sub,
             row.profile.location,
-            self.summaries.get(key),
+            summary,
             row.profile.title,
             row.profile.place_id or None,
+        )
+
+    # --- reviews and replies ------------------------------------------------------
+
+    def _selected_key(self, account_id: str) -> tuple[str, str] | None:
+        """(google_sub, Google location) of the selected profile of that account."""
+        account = next((a for a in self.accounts.values() if a.id == account_id), None)
+        if account is None:
+            return None
+        for row in self.locations:
+            if (
+                row.id == account.selected_location_id
+                and row.account_id == account_id
+                and not row.removed
+            ):
+                return account.google_sub, row.profile.location
+        return None
+
+    def _review_row(self, account_id: str, review_id: str) -> ReviewRow | None:
+        key = self._selected_key(account_id)
+        row = self.tables.reviews.get(review_id)
+        if key is None or row is None or row.removed_at is not None:
+            return None
+        return row if (row.google_sub, row.location) == key else None
+
+    @staticmethod
+    def _stored_review(row: ReviewRow, draft: ReviewDraft | None = None) -> StoredReview:
+        return StoredReview(
+            row.id, row.rating, row.text, row.created_at, row.reply_text, row.reply_at, draft
+        )
+
+    async def list_reviews(
+        self, account_id: str, *, unanswered_only: bool, limit: int
+    ) -> ReviewPage:
+        self._check()
+        key = self._selected_key(account_id)
+        rows = self.tables.reviews_of(*key) if key is not None else []
+        if unanswered_only:
+            rows = [r for r in rows if r.reply_text is None]
+        rows.sort(key=review_order)
+        return ReviewPage(tuple(self._stored_review(r) for r in rows[:limit]), len(rows))
+
+    async def get_review(self, account_id: str, review_id: str) -> StoredReview | None:
+        self._check()
+        row = self._review_row(account_id, review_id)
+        return self._stored_review(row, self.drafts.get(row.id)) if row is not None else None
+
+    async def save_draft(
+        self, account_id: str, review_id: str, source_hash: str, text: str, now: datetime
+    ) -> None:
+        self._check()
+        if self._review_row(account_id, review_id) is not None:
+            self.drafts[review_id] = ReviewDraft(text, source_hash)
+
+    async def create_reply_action(
+        self, account_id: str, review_id: str, text: str, now: datetime
+    ) -> str | None:
+        self._check()
+        row = self._review_row(account_id, review_id)
+        if row is None:
+            return None
+        action = self.tables.create_action(account_id, row, text, now)
+        if action is None:
+            raise ReplyInProgress
+        if self.jobs is not None:
+            await self.jobs.enqueue(
+                self._reply_job_kind,
+                {"action_id": action.id},
+                idempotency_key=f"{self._reply_job_kind}:{action.id}",
+                max_attempts=REPLY_MAX_ATTEMPTS,
+            )
+        return action.id
+
+    async def get_action(self, account_id: str, action_id: str) -> StoredAction | None:
+        self._check()
+        action: ActionRow | None = self.tables.actions.get(action_id)
+        if action is None or action.account_id != account_id:
+            return None
+        return StoredAction(
+            action.id,
+            action.type,
+            action.review_id,
+            action.state,
+            action.error_code,
+            action.confirmed_at,
+            action.finished_at,
         )

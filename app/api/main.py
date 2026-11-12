@@ -16,22 +16,28 @@ from app.adapters.job_queue.demo import DemoSyncQueue
 from app.adapters.job_queue.memory import MemoryJobQueue
 from app.adapters.places.fake import FakePlaces
 from app.adapters.places.google import GooglePlaces
+from app.adapters.screenshot_reader.prompt import PROMPT_VERSION
 from app.adapters.store.memory import MemoryStore
 from app.adapters.store.postgres import PostgresStore
 from app.api.diagnosis_out import DiagnosisResponse, to_response
 from app.api.google_oauth import build_router as build_google_router
 from app.api.me import build_router as build_me_router
+from app.api.reviews import build_router as build_reviews_router
+from app.api.screenshot import build_reader as build_reply_writer
 from app.api.screenshot import build_router_from_settings as build_screenshot_router
 from app.api.waitlist import SOURCE_PATTERN, build_router
 from app.application.diagnosis_service import DiagnosisService, RateLimited
 from app.application.profile_sync import ProfileSync
 from app.application.rate_limit import SlidingWindowLimiter
+from app.application.review_replies import ReviewReplies
 from app.config import Settings
 from app.domain.calendar import NATIONAL, Holiday
 from app.ports.google_oauth import GoogleOAuth
 from app.ports.job_queue import JobEnqueuer
 from app.ports.places import PlacesGateway, PlacesUnavailable
+from app.ports.reply_writer import ReplyWriter
 from app.ports.store import Store
+from app.screenshot_config import ScreenshotSettings
 
 log = logging.getLogger("fichaitor.api")
 
@@ -85,8 +91,11 @@ def create_app(
     clock: Callable[[], float] = time.time,
     jobs: JobEnqueuer | None = None,
     holidays: Sequence[Holiday] | None = None,
+    reply_writer: ReplyWriter | None = None,
+    screenshot_settings: ScreenshotSettings | None = None,
 ) -> FastAPI:
     settings = settings or Settings()
+    screenshot_settings = screenshot_settings or ScreenshotSettings()
     if holidays is None:
         holidays = national_holidays()
     if google is None:
@@ -130,6 +139,8 @@ def create_app(
             jobs = DemoProfileQueue(store, clock)  # no database, no worker: demo data
         else:
             jobs = MemoryJobQueue()
+    if isinstance(store, MemoryStore) and store.jobs is None:
+        store.jobs = jobs  # where a confirmed reply is enqueued; PostgreSQL has `job`
     sync = ProfileSync(
         store,
         jobs,
@@ -177,7 +188,11 @@ def create_app(
 
     # Reviews screenshot demo. Without FICHAITOR_GEMINI_API_KEY and without
     # FICHAITOR_FAKE_SCREENSHOT the route is not mounted (404).
-    screenshot_router = build_screenshot_router(client_ip, track, clock=clock)
+    # One model client for the demo and for the drafts of replies; None if not configured.
+    model = build_reply_writer(screenshot_settings)
+    screenshot_router = build_screenshot_router(
+        client_ip, track, settings=screenshot_settings, reader=model, clock=clock
+    )
     if screenshot_router is not None:
         app.include_router(screenshot_router)
 
@@ -215,6 +230,34 @@ def create_app(
             sync=sync,
             holidays=holidays,
             cookie_secure=settings.cookie_secure,
+            clock=clock,
+        )
+    )
+
+    # Reviews of the connected profile and their replies. The writer of drafts is the
+    # one of the screenshot demo (Gemini, or the fake one with FICHAITOR_FAKE_SCREENSHOT).
+    # Without either, drafts answer 503 and the owner writes the reply; listing,
+    # publishing and following an action do not depend on it.
+    if reply_writer is None:
+        reply_writer = model
+    if reply_writer is None:
+        log.warning(
+            "borradores de respuesta desactivados: falta FICHAITOR_GEMINI_API_KEY "
+            "(o FICHAITOR_FAKE_SCREENSHOT=true para desarrollo)"
+        )
+    app.include_router(
+        build_reviews_router(
+            store=store,
+            sync=sync,
+            replies=ReviewReplies(
+                store,
+                reply_writer,
+                draft_limit=settings.review_draft_rate_limit,
+                draft_window_seconds=settings.review_draft_rate_window_seconds,
+                draft_timeout_seconds=settings.review_draft_timeout_seconds,
+                clock=clock,
+                prompt_version=PROMPT_VERSION,
+            ),
             clock=clock,
         )
     )

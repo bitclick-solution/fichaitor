@@ -4,14 +4,14 @@ Nombre comercial decidido el 2026-11-11. Dominio: `fichaitor.es` (registrar tamb
 
 Agente conversacional que gestiona la ficha de Google Business Profile de un negocio desde WhatsApp. Es experto en la ficha y en SEO local, se adelanta a las fechas clave y nunca cambia nada sin la confirmación del dueño.
 
-Estado: **en construcción**. La API, el worker, la base de datos y la web funcionan en local con Docker Compose. Todavía no hay agente conversacional ni WhatsApp. Fecha: 2026-11-11.
+Estado: **en construcción**. La API, el worker, la base de datos y la web funcionan en local con Docker Compose. Todavía no hay agente conversacional ni WhatsApp. Fecha: 2026-11-12.
 
 ## Estado
 
 | Pieza | Estado |
 |---|---|
-| API (`app/api`, FastAPI) | Funciona: diagnóstico público, lista de espera, conexión con Google, cuentas y sesiones, y resumen y diagnóstico de la ficha conectada |
-| Worker (`app/worker`) | Funciona: cola de jobs en PostgreSQL y job `sync_profile`, que lee la ficha en Google y guarda sus cifras y los hechos del diagnóstico |
+| API (`app/api`, FastAPI) | Funciona: diagnóstico público, lista de espera, conexión con Google, cuentas y sesiones, resumen y diagnóstico de la ficha conectada, y reseñas con borrador y publicación de la respuesta |
+| Worker (`app/worker`) | Funciona: cola de jobs en PostgreSQL, job `sync_profile`, que lee la ficha en Google y guarda sus cifras, los hechos del diagnóstico y las reseñas, y job `reply_review`, que envía a Google la respuesta que el dueño confirma |
 | Base de datos (PostgreSQL 16) | Funciona: `db/schema.sql` y `db/schema_worker.sql`, idempotentes, con un rol de mínimo privilegio para la API y otro para el worker |
 | Web (`web/`) | Funciona: sitio público con el diagnóstico y panel en `/app` (React + Vite), servidos por nginx en `http://127.0.0.1:8080` |
 | Calendario de fechas clave | Datos y reglas listos ([docs/calendario.md](docs/calendario.md)). El diagnóstico del panel usa los festivos nacionales; las propuestas de fechas clave aún no las usa ningún servicio |
@@ -22,13 +22,13 @@ Lo que funciona hoy de principio a fin: un negocio consulta el diagnóstico púb
 Lo que falta del MVP ([docs/05-roadmap.md](docs/05-roadmap.md), fase 3):
 
 - La vinculación de WhatsApp y el agente conversacional (motor de propuestas, confirmación y ejecutor).
-- Las reseñas con respuesta propuesta y aprobación.
+- De las reseñas: el aviso de reseña nueva (Pub/Sub), la respuesta por WhatsApp y el modo automático. Ver, redactar y publicar desde el panel ya funciona en el backend (sexto bloque); falta la pantalla en la web y la prueba contra Google real.
 - Las fechas clave y "hoy cierro" dentro del producto.
 - La facturación.
 - En el panel: borrar la cuenta. En la base: la limpieza periódica de sesiones caducadas.
 - El diagnóstico por pantallazo, que está en construcción.
 
-Nada escribe todavía en Google: la API y el worker solo leen.
+Desde el 2026-11-12 hay **una escritura en Google**: la respuesta a una reseña, que solo envía el worker y solo cuando el dueño la ha confirmado desde su sesión. Todo lo demás sigue siendo lectura.
 
 ## Qué hay construido
 
@@ -68,6 +68,10 @@ Cuarto bloque: **cuentas y sesiones**. La cuenta es la identidad de Google: no h
 | `POST /api/v1/me/location` | Elige una ficha. 404 si no es de esa cuenta |
 | `GET /api/v1/me/diagnosis` | Diagnóstico de la ficha elegida, calculado con lo que el worker lee de la ficha conectada. No usa Google Places |
 | `GET /api/v1/me/summary` | Resumen de la ficha elegida, leído de lo que guarda el worker |
+| `GET /api/v1/me/reviews` | Reseñas de la ficha elegida, las que están sin responder primero |
+| `POST /api/v1/me/reviews/{id}/draft` | Respuesta redactada por el modelo para esa reseña. No publica nada |
+| `POST /api/v1/me/reviews/{id}/reply` | Publica la respuesta que el dueño confirma: crea la acción y encola su envío |
+| `GET /api/v1/me/actions/{id}` | Estado del envío, con un mensaje listo para mostrar |
 | `POST /api/v1/auth/logout` | Cierra la sesión y borra la cookie |
 
 - Sin sesión, o con la sesión caducada o cerrada, responden 401.
@@ -114,7 +118,22 @@ Para ver el recorrido completo sin Google (conectar, elegir ficha y ver el resum
 
 4. Abre `http://127.0.0.1:8080/app`, conecta y elige la ficha de ejemplo. El worker usa su ficha de demostración y el resumen y el diagnóstico aparecen en unos segundos.
 
-> **Nota:** Sin base de datos (`FICHAITOR_DATABASE_URL` vacío y `FICHAITOR_FAKE_PLACES=true`) no hay cola ni worker. En ese modo, con `FICHAITOR_FAKE_GOOGLE=true`, la API escribe ella misma el resumen y los hechos de demostración en memoria.
+> **Nota:** Sin base de datos (`FICHAITOR_DATABASE_URL` vacío y `FICHAITOR_FAKE_PLACES=true`) no hay cola ni worker. En ese modo, con `FICHAITOR_FAKE_GOOGLE=true`, la API escribe ella misma el resumen, los hechos y las reseñas de demostración en memoria, y da por enviada al momento la respuesta a una reseña.
+
+Sexto bloque: las **reseñas y sus respuestas**, la primera acción real sobre Google. El contrato con la web está en [docs/contrato-web-api.md](docs/contrato-web-api.md#reseñas-y-respuestas-2026-11-12) y el ejecutor, en [docs/worker.md](docs/worker.md#el-job-reply_review).
+
+- **El worker guarda las reseñas** en cada sincronización: identificador de Google, estrellas, texto original, fecha y respuesta del propietario. No guarda el nombre ni la foto de quien la escribió. Las que Google deja de devolver se marcan como retiradas.
+- **El borrador lo redacta el modelo** de la demostración por captura (Gemini), que recibe solo las estrellas y el texto. El texto de la reseña es un dato: si contiene instrucciones, no se obedecen. El borrador pasa la misma validación en código que la demostración (`app/domain/review_reply.py`); si no la pasa, la API responde 422 y el dueño escribe la suya. Se guarda el último borrador de cada reseña y hay un límite por cuenta (`FICHAITOR_REVIEW_DRAFT_RATE_LIMIT`, 30 cada 24 horas).
+- **Publicar es confirmar.** `POST /api/v1/me/reviews/{id}/reply` crea una acción en estado pendiente con el texto exacto, escribe la auditoría y encola el job `reply_review`, todo en una transacción. La API no llama a Google.
+- **El worker ejecuta la acción** con `PUT …/reviews/{reviewId}/reply`. El texto que llega a Google es el que el dueño confirmó: nadie tiene permiso para cambiarlo en la base. Reintentar o duplicar el job no publica dos veces.
+- **El límite de Google es de 4.096 bytes** por respuesta ([referencia](https://developers.google.com/my-business/reference/rest/v4/accounts.locations.reviews#ReviewReply)). La API lo comprueba antes de crear la acción.
+- **Responder a una reseña ya respondida edita la respuesta**: Google usa la misma operación.
+- **Auditoría solo de inserción** (`audit_log`): quién confirmó, qué texto, sobre qué reseña, cuándo, y qué respondió Google. Ni la API ni el worker pueden leerla, cambiarla ni borrarla.
+- **El modelo nunca dispara una publicación.** Pedir un borrador no crea ninguna acción, diga lo que diga la reseña o el modelo.
+
+Para ver el recorrido de reseñas sin Google, añade `FICHAITOR_FAKE_SCREENSHOT=true` a los pasos anteriores: el borrador devuelve respuestas de ejemplo sin clave ni coste. Sin esa variable y sin `FICHAITOR_GEMINI_API_KEY`, el borrador responde 503 y el resto funciona.
+
+> **Precaución:** La escritura no se ha probado contra Google real. Una respuesta a una reseña es pública y avisa a quien la escribió. Antes de usarla con una ficha real, haz la prueba pendiente de `docs/fase0/matriz-api.md`: reenviar el mismo texto sobre una reseña ya respondida.
 
 Falta en estos bloques: borrar la cuenta desde el panel, la limpieza periódica de sesiones caducadas y las pruebas automáticas contra Google real.
 

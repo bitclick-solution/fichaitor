@@ -1,5 +1,9 @@
-"""Job sync_profile: read a Business Profile from Google and store its summary
-and the facts the diagnosis is computed from.
+"""Job sync_profile: read a Business Profile from Google and store its summary,
+the facts the diagnosis is computed from and its reviews.
+
+Of each review it stores Google's id, the stars, the original text, the date and the
+owner's reply if there is one. Never the name or the photo of whoever wrote it. A
+review is data: nothing in its text is ever acted upon here.
 
 Payload: {"google_sub": "...", "location": "locations/123"}.
 
@@ -19,6 +23,7 @@ from app.domain.profile_summary import (
     collect_facts,
     summarize,
 )
+from app.domain.reviews import REPLY_GRACE, with_sent_replies
 from app.ports.google_profile import GoogleProfile, GoogleRejected, ReconnectRequired
 from app.ports.worker_store import WorkerStore
 from app.worker import log
@@ -103,9 +108,15 @@ class SyncProfile:
             raise JobError(safe_error(f"{type(exc).__name__}: {exc}", secrets)) from None
 
         now = self._clock()
+        # A reply Fichaitor has just sent may not be in Google's list yet: it is not
+        # allowed to turn the review back into "unanswered" for the next day.
+        reviews = with_sent_replies(
+            reviews, await self._store.recent_replies(google_sub, location, now - REPLY_GRACE)
+        )
         facts = collect_facts(details, media, attributes, now.date())
         summary = summarize(reviews, details.hours, changed, now.date(), facts)
         await self._store.save_summary(google_sub, location, summary, now)
+        await self._store.save_reviews(google_sub, location, reviews.reviews, now)
 
     async def on_exhausted(self, job: Job) -> None:
         """Out of attempts: say so in the summary, keeping the last good figures."""

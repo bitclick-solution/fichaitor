@@ -59,6 +59,7 @@ async def _clean():
     await _owner(f"DELETE FROM location WHERE account_id IN {mine}")  # noqa: S608
     await _owner("DELETE FROM account WHERE google_sub LIKE 'pytest-%'")
     await _owner("DELETE FROM profile_summary WHERE google_sub LIKE 'pytest-%'")
+    await _owner("DELETE FROM review WHERE google_sub LIKE 'pytest-%'")  # a sync stores them
     await _owner("DELETE FROM google_connection WHERE google_sub LIKE 'pytest-%'")
     await _owner("DELETE FROM job WHERE payload->>'google_sub' LIKE 'pytest-%'")
 
