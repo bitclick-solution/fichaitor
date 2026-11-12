@@ -76,7 +76,8 @@ jobs:
 
       - name: El commit está en la rama principal
         run: |
-          git fetch --quiet origin main
+          # fetch-depth: 0 ya trae origin/main. Sin credenciales persistidas (repositorio
+          # privado), un "git fetch" aquí fallaría.
           if ! git merge-base --is-ancestor "${GITHUB_SHA}" origin/main; then
             echo "::error::El commit ${GITHUB_SHA} no está en main: solo se despliega desde la rama principal."
             exit 1
