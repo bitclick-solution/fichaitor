@@ -44,10 +44,10 @@ Plantillas con la marca para los correos automáticos que envía el backend. Reg
 
 Fechas como las da `spanish_date`: «14 de noviembre de 2026 a las 12:16 (hora peninsular)».
 
-El pie de todos los correos de texto plano es el mismo:
+El pie de todos los correos de texto plano es el mismo. La primera línea es `-- `, con un espacio al final: es el separador de firma estándar y permite a los clientes de correo plegar el pie.
 
 ```text
---
+-- 
 ¿Dudas? Escríbenos a soporte@fichaitor.es.
 Fichaitor es un producto de Bitclick Solutions S.L.U. · C/ Cuenca nº 17, 18230 Atarfe (Granada), España.
 ```
@@ -57,12 +57,14 @@ Fichaitor es un producto de Bitclick Solutions S.L.U. · C/ Cuenca nº 17, 18230
 | Campo | Valor |
 |---|---|
 | Asunto | Tu código de confirmación de Fichaitor |
-| Preencabezado | Lo necesitas para ${que}. Caduca en ${minutos} minutos. |
+| Preencabezado | Lo necesitas para ${que}. Caduca en ${plazo}. |
 | Titular | Tu código |
-| Cuerpo | `parrafo`: «Has pedido ${que}. Escribe este código en Fichaitor para confirmarlo:» · `codigo` · `parrafo`: «Caduca en ${minutos} minutos y solo sirve una vez.» · `aviso`: «Si no lo has pedido tú, no se hará ningún cambio, pero alguien tiene abierta tu sesión: escríbenos a soporte@fichaitor.es.» |
+| Cuerpo | `parrafo`: «Has pedido ${que}. Escribe este código en Fichaitor para confirmarlo:» · `codigo` · `parrafo`: «Caduca en ${plazo} y solo sirve una vez.» · `aviso`: «Si no lo has pedido tú, no se hará ningún cambio, pero alguien tiene abierta tu sesión: escríbenos a soporte@fichaitor.es.» |
 | Motivo (pie) | Te llega este correo porque alguien ha pedido ${que} desde tu cuenta de Fichaitor. |
 
 `${que}`: «desconectar tu ficha» o «borrar tu cuenta de Fichaitor».
+
+`${plazo}`: la duración con su unidad, en singular o plural según el número: «10 minutos», «1 minuto». Así nunca sale «1 minutos».
 
 Texto plano:
 
@@ -73,7 +75,7 @@ Has pedido ${que}. Escribe este código en Fichaitor para confirmarlo:
 
     ${codigo}
 
-Caduca en ${minutos} minutos y solo sirve una vez.
+Caduca en ${plazo} y solo sirve una vez.
 
 Si no lo has pedido tú, no se hará ningún cambio, pero alguien tiene abierta tu sesión: escríbenos a soporte@fichaitor.es.
 
@@ -115,24 +117,38 @@ Te llega este correo porque se ha confirmado una baja con un código enviado a e
 
 ### 3. Baja cancelada
 
-Se envía al restaurar, desde el panel o desde el enlace.
+Se envía al restaurar, desde el panel o desde el enlace. Hay dos variantes: al confirmar la baja de la cuenta se cerraron todas las sesiones, y siguen cerradas.
 
-| Campo | Valor |
-|---|---|
-| Asunto | Has restaurado Fichaitor |
-| Preencabezado | Todo sigue como estaba. |
-| Titular | Restaurada |
-| Cuerpo | `parrafo`: «La baja está cancelada. Todo sigue como estaba y no se ha borrado nada.» · `parrafo`: «Fichaitor vuelve a leer tu ficha y a avisarte cuando haya algo que decidir.» |
-| Motivo (pie) | Te llega este correo porque se ha cancelado una baja de tu cuenta de Fichaitor. |
+| Campo | Ficha | Cuenta |
+|---|---|---|
+| Asunto | Has restaurado Fichaitor | Has restaurado tu cuenta de Fichaitor |
+| Preencabezado | No se ha borrado nada. | Entra de nuevo para seguir donde lo dejaste. |
+| Titular | Restaurada | Restaurada |
+| Cuerpo | `parrafo`: «Hemos cancelado la desconexión. No se ha borrado nada.» · `parrafo`: «Fichaitor vuelve a leer tus fichas de Google y a avisarte cuando haya algo que decidir.» | `parrafo`: «Hemos cancelado la baja de tu cuenta. No se ha borrado nada.» · `parrafo`: «Al confirmar la baja cerramos tu sesión en todos los dispositivos. Entra de nuevo en Fichaitor para seguir donde lo dejaste.» · `boton`: «Entrar en Fichaitor», `${enlace}` `https://fichaitor.es/app/` (de la configuración, como el de restaurar) |
+| Motivo (pie) | Te llega este correo porque se ha cancelado una baja de tu cuenta de Fichaitor. | Igual |
 
-Texto plano:
+Texto plano (ficha):
 
 ```text
 RESTAURADA
 
-La baja está cancelada. Todo sigue como estaba y no se ha borrado nada.
+Hemos cancelado la desconexión. No se ha borrado nada.
 
-Fichaitor vuelve a leer tu ficha y a avisarte cuando haya algo que decidir.
+Fichaitor vuelve a leer tus fichas de Google y a avisarte cuando haya algo que decidir.
+
+Te llega este correo porque se ha cancelado una baja de tu cuenta de Fichaitor.
+```
+
+Texto plano (cuenta):
+
+```text
+RESTAURADA
+
+Hemos cancelado la baja de tu cuenta. No se ha borrado nada.
+
+Al confirmar la baja cerramos tu sesión en todos los dispositivos. Entra de nuevo en Fichaitor para seguir donde lo dejaste.
+
+Entrar en Fichaitor: ${enlace}
 
 Te llega este correo porque se ha cancelado una baja de tu cuenta de Fichaitor.
 ```

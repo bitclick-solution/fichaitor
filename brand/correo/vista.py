@@ -88,13 +88,27 @@ CORREOS = {
         ],
         "Te llega este correo porque se ha confirmado una baja con un código enviado a esta dirección.",
     ),
-    "3-restaurada": correo(
+    "3-restaurada-ficha": correo(
         "Has restaurado Fichaitor",
-        "Todo sigue como estaba.",
+        "No se ha borrado nada.",
         "Restaurada",
         [
-            b("parrafo", texto="La baja está cancelada. Todo sigue como estaba y no se ha borrado nada."),
-            b("parrafo", texto="Fichaitor vuelve a leer tu ficha y a avisarte cuando haya algo que decidir."),
+            b("parrafo", texto="Hemos cancelado la desconexión. No se ha borrado nada."),
+            b("parrafo", texto="Fichaitor vuelve a leer tus fichas de Google y a avisarte cuando haya algo que decidir."),
+        ],
+        "Te llega este correo porque se ha cancelado una baja de tu cuenta de Fichaitor.",
+    ),
+    "3-restaurada-cuenta": correo(
+        "Has restaurado tu cuenta de Fichaitor",
+        "Entra de nuevo para seguir donde lo dejaste.",
+        "Restaurada",
+        [
+            b("parrafo", texto="Hemos cancelado la baja de tu cuenta. No se ha borrado nada."),
+            b(
+                "parrafo",
+                texto="Al confirmar la baja cerramos tu sesión en todos los dispositivos. Entra de nuevo en Fichaitor para seguir donde lo dejaste.",
+            ),
+            b("boton", etiqueta="Entrar en Fichaitor", enlace="https://fichaitor.es/app/"),
         ],
         "Te llega este correo porque se ha cancelado una baja de tu cuenta de Fichaitor.",
     ),
