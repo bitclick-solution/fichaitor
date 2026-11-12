@@ -92,9 +92,19 @@ class LinkCode:
     expires_at: datetime
     used_at: datetime | None = None
     token_hash: str | None = None  # the long token of the link, same code
+    # Multinegocio, step 7 (docs/multinegocio.md, 3.7): the profiles ("loc_...") the
+    # chat linked with this code will see. None = every active profile of the account,
+    # also those activated later. Fixed when the code is asked for and copied to the
+    # address when it is linked, so that a filtered chat never gets anything else.
+    location_filter: tuple[str, ...] | None = None
 
 
-def new_link_code(account_id: str, now: datetime, pepper: str = "") -> tuple[str, LinkCode]:
+def new_link_code(
+    account_id: str,
+    now: datetime,
+    pepper: str = "",
+    location_filter: tuple[str, ...] | None = None,
+) -> tuple[str, LinkCode]:
     """The code to show once to the owner, and the record to store (without the code)."""
     code = generate_code()
     return code, LinkCode(
@@ -102,6 +112,7 @@ def new_link_code(account_id: str, now: datetime, pepper: str = "") -> tuple[str
         account_id=account_id,
         created_at=now,
         expires_at=now + CODE_TTL,
+        location_filter=location_filter,
     )
 
 
@@ -115,8 +126,13 @@ class IssuedLink:
     record: LinkCode
 
 
-def issue_link(account_id: str, now: datetime, pepper: str = "") -> IssuedLink:
-    code, record = new_link_code(account_id, now, pepper)
+def issue_link(
+    account_id: str,
+    now: datetime,
+    pepper: str = "",
+    location_filter: tuple[str, ...] | None = None,
+) -> IssuedLink:
+    code, record = new_link_code(account_id, now, pepper, location_filter)
     token = generate_token()
     return IssuedLink(code, token, replace(record, token_hash=code_hash(token, pepper)))
 

@@ -141,6 +141,14 @@ def _active(location: str) -> str:
 """
 
 
+# The newest sync of profile `l` of account `a` still waiting (due) or running in the
+# queue. The API has no SELECT on job (B9): the view profile_sync_pending
+# (db/schema_worker.sql) gives it only that, without any payload.
+_SYNC_REQUESTED = """
+    (SELECT max(j.requested_at) FROM profile_sync_pending j
+     WHERE j.google_sub = a.google_sub AND j.location = l.gbp_location)
+"""
+
 # The profile a request names ($2), or the preference of the panel when it names none.
 _CHOSEN = "coalesce($2::text, a.selected_location_id)"
 
@@ -630,7 +638,9 @@ class PostgresStore:
         rows = await pool.fetch(
             f"""
             SELECT l.id, l.title, l.place_id, l.verified, l.plan, l.active_since,
-                   p.status, p.unanswered_count,
+                   p.status, p.status_at, p.unanswered_count,
+                   CASE WHEN l.active_since IS NOT NULL AND {_NO_OPEN_LEAVE}
+                        THEN {_SYNC_REQUESTED} END AS sync_requested_at,
                    (SELECT count(*) FROM proposal pr
                     WHERE pr.account_id = a.id AND pr.type = 'key_date'
                       AND coalesce(pr.location_id, pr.payload->>'location_id') = l.id
@@ -666,6 +676,8 @@ class PostgresStore:
                     summary_status=r["status"] if active else None,
                     pending_reviews=(r["unanswered_count"] or 0) if active else None,
                     pending_key_dates=r["key_dates"] if active else None,
+                    summary_status_at=r["status_at"] if active else None,
+                    sync_requested_at=r["sync_requested_at"] if active else None,
                 )
             )
         return LocationsOverview(tuple(locations), tuple(granted))
@@ -711,7 +723,8 @@ class PostgresStore:
                    p.status, p.status_at, p.synced_at, p.review_count, p.average_rating,
                    p.unanswered_count, p.unanswered_low_count, p.last_review_at,
                    p.has_regular_hours, p.upcoming_special_hours, p.google_changed,
-                   p.google_changed_fields, p.reviews_synced_at
+                   p.google_changed_fields, p.reviews_synced_at,
+                   {_SYNC_REQUESTED} AS sync_requested_at
             {_active(_CHOSEN)}
             LEFT JOIN profile_summary p
               ON p.google_sub = a.google_sub AND p.location = l.gbp_location
@@ -741,6 +754,7 @@ class PostgresStore:
                 google_changed_fields=tuple(row["google_changed_fields"] or ()),
                 facts=_facts(row["facts"]),
                 reviews_synced_at=row["reviews_synced_at"],
+                sync_requested_at=row["sync_requested_at"],
             )
         return SelectedProfile(
             row["google_sub"],
@@ -1441,24 +1455,33 @@ class PostgresStore:
         rows = await self._require_pool().fetch(
             """
             SELECT id, account_id::text AS account_id, channel, address, verified_at,
-                   last_inbound_at
+                   last_inbound_at, location_filter
             FROM channel_identity
             WHERE account_id = $1::uuid AND unlinked_at IS NULL
             ORDER BY verified_at, id
             """,
             account_id,
         )
-        return [
-            ChannelIdentity(
-                r["id"],
-                r["account_id"],
-                r["channel"],
-                r["address"],
-                r["verified_at"],
-                r["last_inbound_at"],
+        return [_channel(r) for r in rows]
+
+    async def set_channel_filter(
+        self, account_id: str, identity_id: str, location_filter: tuple[str, ...] | None
+    ) -> ChannelIdentity | None:
+        try:
+            row = await self._require_pool().fetchrow(
+                """
+                UPDATE channel_identity SET location_filter = $3::text[]
+                WHERE id = $2 AND account_id = $1::uuid AND unlinked_at IS NULL
+                RETURNING id, account_id::text AS account_id, channel, address, verified_at,
+                          last_inbound_at, location_filter
+                """,
+                account_id,
+                identity_id,
+                list(location_filter) if location_filter is not None else None,
             )
-            for r in rows
-        ]
+        except asyncpg.CheckViolationError:
+            return None  # location_filter_guard: a profile that is not of the account
+        return _channel(row) if row is not None else None
 
     async def unlink_channel(self, account_id: str, identity_id: str, now: datetime) -> bool:
         status = await self._require_pool().execute(
@@ -1505,6 +1528,20 @@ class PostgresStore:
             json.dumps({**mail, "to": to, "scope": scope}),
             MAIL_MAX_ATTEMPTS,
         )
+
+
+def _channel(row: asyncpg.Record) -> ChannelIdentity:
+    return ChannelIdentity(
+        row["id"],
+        row["account_id"],
+        row["channel"],
+        row["address"],
+        row["verified_at"],
+        row["last_inbound_at"],
+        location_filter=(
+            tuple(row["location_filter"]) if row["location_filter"] is not None else None
+        ),
+    )
 
 
 def _topic_counts(raw: str | None) -> tuple[TopicCount, ...]:

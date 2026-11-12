@@ -122,7 +122,9 @@ Seis dígitos de un chat vinculado son un código, salvo que alguna propuesta qu
 
 ### Filtro por chat
 
-- `channel_identity.location_filter`: `NULL` ve todas las fichas activas. El paso 7 deja elegirlo desde el panel.
+- `channel_identity.location_filter`: `NULL` ve todas las fichas activas, también las que se activen después.
+- **Desde el panel (paso 7).** Se elige al pedir el código (`POST /api/v1/channels/link-code` con `{"locations": [...]}`), se guarda en `link_code.location_filter` y la conversación lo copia a la dirección en el mismo `INSERT` que la vincula (`link_identity(..., location_filter)`): el chat del encargado no recibe nada de las otras fichas, ni la bienvenida. Después se cambia con `PUT /api/v1/me/channels/{id}/locations`. Solo se aceptan fichas activas de la cuenta, y el disparador `location_filter_guard` impide además, en la base, una ficha de otra cuenta, en el código y en la dirección. Contrato en `docs/contrato-web-api.md`, «Canales de mensajería».
+- **Ficha del filtro que se desactiva.** El filtro no cambia. `sees` sigue siendo la pertenencia al filtro, y nada de una ficha inactiva se entrega ni se puede mover (`may_act` responde `stale.inactive`), así que un chat filtrado solo a ella se queda callado y vuelve a recibirla si se reactiva. Quitarla sola no vale: un filtro vacío pasaría a `NULL` (todas las fichas) y el encargado recibiría los otros negocios. El panel la enseña con « (desactivada)». Si la retención borra la fila de `location`, el `id` se queda en el filtro sin efecto, y el disparador solo comprueba el filtro cuando cambia.
 - Las propuestas, los recordatorios, los resultados y la retirada de botones solo van a las direcciones que ven la ficha (`identities_for`). Si nadie la ve, la propuesta espera en `programada`, como sin chat vinculado, y el panel la tiene.
 - Un chat filtrado puede actuar sobre sus fichas (decisión 6 del propietario). Un botón de otra ficha responde `stale.inactive`.
 - La bienvenida nombra lo que verá el chat: con una ficha, `welcome.linked` como siempre; con varias, `welcome.linked_many` con "tus N negocios" o la lista del filtro. `text.which` y el encabezado solo nombran fichas que ese chat ve.
@@ -355,8 +357,8 @@ Tres roles. La API es la sesión web; la conversación (`fichaitor_conversation`
 
 | Tabla | Contenido | API | Conversación (el worker solo borra) |
 |---|---|---|---|
-| `channel_identity` | Direcciones vinculadas. Desvincular pone `unlinked_at`. Índice único: una dirección activa por canal | Lee; cambia solo `unlinked_at` | Lee, crea y anota actividad |
-| `link_code` | Huellas de los 6 dígitos y del testigo, cuenta, caducidad y uso | Crea y retira los anteriores. No lee las huellas | Busca por huella y consume |
+| `channel_identity` | Direcciones vinculadas, con su filtro de fichas. Desvincular pone `unlinked_at`. Índice único: una dirección activa por canal | Lee; cambia solo `unlinked_at` y `location_filter` | Lee, crea (con el filtro del código) y anota actividad y foco |
+| `link_code` | Huellas de los 6 dígitos y del testigo, cuenta, caducidad, uso y filtro de fichas | Crea (con el filtro) y retira los anteriores. No lee las huellas | Busca por huella y consume |
 | `link_failure_window` | Códigos incorrectos de todos los chats, por hora | Nada | Lee y suma en una sentencia |
 | `channel_sender` | Direcciones sin vincular, por huella: intentos, bloqueo y última respuesta genérica | Nada | Lee y escribe |
 | `proposal` | Propuestas con su estado, paso, testigo y confirmación registrada | Lee | Crea y mueve. No puede cambiar la cuenta, el tipo, el origen ni `payload` |

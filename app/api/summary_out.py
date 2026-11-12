@@ -5,7 +5,7 @@ from datetime import UTC, date, datetime
 from pydantic import BaseModel
 
 from app.application.profile_sync import SummaryView
-from app.domain.profile_summary import FIELD_LABELS, field_label
+from app.domain.profile_summary import FIELD_LABELS, STATUS_PENDING, field_label, shown_status
 
 __all__ = [
     "FIELD_LABELS",
@@ -15,8 +15,6 @@ __all__ = [
     "seconds",
     "to_summary_response",
 ]
-
-STATUS_PENDING = "pendiente"
 
 
 class SummaryResponse(BaseModel):
@@ -44,7 +42,10 @@ def seconds(moment: datetime | None) -> datetime | None:
 
 def to_summary_response(view: SummaryView) -> SummaryResponse:
     s = view.summary
-    if s is None:
+    # No summary yet, or a failed one being read again (a sync asked for after its last
+    # attempt, as on coming back from connecting with Google): pendiente, and the web
+    # asks again.
+    if s is None or shown_status(s.status, s.status_at, s.sync_requested_at) == STATUS_PENDING:
         return SummaryResponse(
             status=STATUS_PENDING,
             synced_at=None,

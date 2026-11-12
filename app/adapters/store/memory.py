@@ -175,6 +175,10 @@ class MemoryStore:
         self.sessions: dict[str, SessionRow] = {}  # by token hash, never the token
         # What the worker would write, by (google_sub, Google location name).
         self.summaries: dict[tuple[str, str], StoredSummary] = {}
+        # Syncs waiting or running in the queue, by the same key, with when they were
+        # asked for (the view profile_sync_pending). There is no queue here: tests set
+        # them by hand, and put_summary (the worker finishing) takes the key out.
+        self.syncs_requested: dict[tuple[str, str], datetime] = {}
         self.codes: list[CodeRow] = []  # fingerprints only, never a code
         self.offboardings: list[OffboardingRow] = []
         self.quota = MemoryQuota()
@@ -322,19 +326,33 @@ class MemoryStore:
     def _activate(self, row: LocationRow, plan: Plan | None) -> Plan:
         if row.plan is not None and plan in (None, row.plan):
             return row.plan
-        candidates = [plan] if plan is not None else [Plan.GRATIS, *PAID_PLANS]
-        refusal: type[Exception] = LocationLimit
-        for candidate in candidates:
+        # As PostgresStore._activate: without a plan, only the plans with room in the
+        # account are tried (_default_plans), each refusal of the last one is what is
+        # raised, and only FreeTaken and LocationLimit move on to the next plan.
+        if plan is not None:
+            candidates = [plan]
+        else:
+            account = self._account(row.account_id)
+            active = self._active_by_plan(row.account_id, row.id)
+            now = datetime.now(UTC)
+            candidates = [
+                p
+                for p in (Plan.GRATIS, *PAID_PLANS)
+                if activation_allowed(active, account.entitlements, p, now)
+            ]
+        if not candidates:
+            raise LocationLimit
+        for index, candidate in enumerate(candidates):
             refused = self._fits(row, candidate)
             if refused is None:
                 row.plan = candidate
                 row.active_since = row.active_since or datetime.now(UTC)
                 row.deactivated_at = None
                 return candidate
-            if refused is OffboardingPending:
+            last = index + 1 == len(candidates)
+            if last or refused not in (FreeTaken, LocationLimit):
                 raise refused
-            refusal = refused
-        raise refusal
+        raise LocationLimit  # not reached: the last candidate returns or raises
 
     async def activate(self, account_id: str, location_id: str, plan: Plan | None = None) -> Plan:
         self._check()
@@ -404,7 +422,8 @@ class MemoryStore:
                     )
                 )
                 continue
-            summary = self.summaries.get((account.google_sub, row.profile.location))
+            key = (account.google_sub, row.profile.location)
+            summary = self.summaries.get(key)
             key_dates = sum(
                 1
                 for p in self.key_date_proposals.values()
@@ -424,6 +443,8 @@ class MemoryStore:
                     summary_status=summary.status if summary is not None else None,
                     pending_reviews=(summary.unanswered_count or 0) if summary else 0,
                     pending_key_dates=key_dates,
+                    summary_status_at=summary.status_at if summary is not None else None,
+                    sync_requested_at=self.syncs_requested.get(key),
                 )
             )
         return LocationsOverview(tuple(found), tuple(account.entitlements))
@@ -442,6 +463,7 @@ class MemoryStore:
     def put_summary(self, google_sub: str, location: str, summary: StoredSummary) -> None:
         """Stand-in for the worker: the API itself never writes a summary."""
         self.summaries[(google_sub, location)] = summary
+        self.syncs_requested.pop((google_sub, location), None)
 
     async def selected_profile(self, account_id: str) -> SelectedProfile | None:
         return await self.profile(account_id)
@@ -456,6 +478,8 @@ class MemoryStore:
             return self._lost_profile(account, location_id)
         key = (account.google_sub, row.profile.location)
         summary = self.summaries.get(key)
+        if summary is not None:
+            summary = replace(summary, sync_requested_at=self.syncs_requested.get(key))
         synced_at = self.tables.reviews_synced_at.get(key)
         if summary is not None and synced_at is not None and summary.unanswered_count is not None:
             # Stand-in for the worker, which lowers the counts when a reply is sent:
@@ -901,6 +925,20 @@ class MemoryStore:
         self._check()
         found = [c for c in self.channels if c.account_id == account_id and c.active]
         return sorted(found, key=lambda c: (c.verified_at, c.id))
+
+    async def set_channel_filter(
+        self, account_id: str, identity_id: str, location_filter: tuple[str, ...] | None
+    ) -> ChannelIdentity | None:
+        self._check()
+        if location_filter is not None and any(
+            self._own(account_id, loc) is None for loc in location_filter
+        ):
+            return None  # as location_filter_guard
+        for index, channel in enumerate(self.channels):
+            if channel.id == identity_id and channel.account_id == account_id and channel.active:
+                self.channels[index] = replace(channel, location_filter=location_filter)
+                return self.channels[index]
+        return None
 
     async def unlink_channel(self, account_id: str, identity_id: str, now: datetime) -> bool:
         self._check()

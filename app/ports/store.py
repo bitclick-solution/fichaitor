@@ -72,6 +72,9 @@ class StoredSummary:
     facts: ProfileFacts | None = None
     # When the reviews of the profile were last stored. None: not yet.
     reviews_synced_at: datetime | None = None
+    # The newest sync of the profile still waiting (due) or running in the queue, if any
+    # (view profile_sync_pending). Read through shown_status (app/domain/profile_summary.py).
+    sync_requested_at: datetime | None = None
 
 
 @dataclass(frozen=True)
@@ -104,7 +107,9 @@ class LocationOverview:
     """A profile of the account for the selector of the panel (docs/multinegocio.md, 5.2).
 
     `summary_status` is the status of its summary (ok, needs_reconnect or error), None
-    when it is inactive or nothing has been synced yet. `pending_reviews` and
+    when it is inactive or nothing has been synced yet; `summary_status_at` is its last
+    attempt and `sync_requested_at` the newest sync of it waiting or running in the
+    queue (shown_status, app/domain/profile_summary.py). `pending_reviews` and
     `pending_key_dates` are None when it is inactive."""
 
     id: str
@@ -116,6 +121,8 @@ class LocationOverview:
     summary_status: str | None = None
     pending_reviews: int | None = None
     pending_key_dates: int | None = None
+    summary_status_at: datetime | None = None
+    sync_requested_at: datetime | None = None
 
     @property
     def active(self) -> bool:

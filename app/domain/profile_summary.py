@@ -9,6 +9,35 @@ from typing import Any
 STATUS_OK = "ok"
 STATUS_NEEDS_RECONNECT = "needs_reconnect"
 STATUS_ERROR = "error"
+# Not stored: what the panel shows while there is no summary yet, or while a sync asked
+# for after the last attempt has not finished (shown_status).
+STATUS_PENDING = "pendiente"
+
+
+def shown_status(
+    status: str | None, status_at: datetime | None, sync_requested_at: datetime | None
+) -> str:
+    """The status the panel shows for a summary (docs/contrato-web-api.md, «Estados del
+    resumen»).
+
+    - No summary yet: pendiente.
+    - A failed one (needs_reconnect or error) with a sync of that profile waiting or
+      running that was asked for after its last attempt: pendiente, the figures are
+      being read again. It is what the owner sees on coming back from connecting with
+      Google, instead of the needs_reconnect of before, until the worker finishes.
+    - Otherwise, its own status. An ok summary is never hidden by a sync: its figures
+      are shown while they are refreshed.
+    """
+    if status is None:
+        return STATUS_PENDING
+    if (
+        status != STATUS_OK
+        and sync_requested_at is not None
+        and (status_at is None or sync_requested_at > status_at)
+    ):
+        return STATUS_PENDING
+    return status
+
 
 LOW_RATING_MAX = 2
 

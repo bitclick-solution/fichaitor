@@ -18,12 +18,23 @@ class LinkCodeTaken(Exception):
 
 class ChannelLinks(Protocol):
     async def save_link_code(self, code: LinkCode) -> None:
-        """Store a new code, and retire every unused one of the account, in one step.
-        Raises LinkCodeTaken."""
+        """Store a new code, with its filter, and retire every unused one of the account,
+        in one step. Raises LinkCodeTaken."""
         ...
 
     async def list_channels(self, account_id: str) -> Sequence[ChannelIdentity]:
-        """The active addresses of that account, the oldest link first."""
+        """The active addresses of that account, the oldest link first, each with its
+        filter of profiles."""
+        ...
+
+    async def set_channel_filter(
+        self, account_id: str, identity_id: str, location_filter: tuple[str, ...] | None
+    ) -> ChannelIdentity | None:
+        """Change which profiles an active address of that account sees (None: all of
+        them). The caller has checked that each one is an active profile of the account;
+        the database checks again that it is of the account (location_filter_guard).
+        None, and nothing changes, if the address is unknown, unlinked or of another
+        account, or a profile is not of the account."""
         ...
 
     async def unlink_channel(self, account_id: str, identity_id: str, now: datetime) -> bool:

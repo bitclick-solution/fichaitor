@@ -37,12 +37,12 @@ from app.api.session import (
     session_cookie_name,
     utc,
 )
-from app.api.summary_out import STATUS_PENDING, SummaryResponse, seconds, to_summary_response
+from app.api.summary_out import SummaryResponse, seconds, to_summary_response
 from app.application.profile_sync import ProfileSync
 from app.domain import plans
 from app.domain.calendar import Holiday
 from app.domain.conversation import DEFAULT_TIMEZONE, timezone_for
-from app.domain.profile_summary import STATUS_OK
+from app.domain.profile_summary import STATUS_OK, shown_status
 from app.domain.sentiment import STATUS_ERROR, SentimentPolicy
 from app.domain.session import hash_token
 from app.ports.store import (
@@ -171,7 +171,13 @@ def _location_out(location: LocationOverview, leaving: bool) -> LocationOut:
         active=location.active,
         plan=location.plan.value if location.plan is not None else None,
         active_since=seconds(location.active_since),
-        status=(location.summary_status or STATUS_PENDING) if shown else None,
+        status=(
+            shown_status(
+                location.summary_status, location.summary_status_at, location.sync_requested_at
+            )
+            if shown
+            else None
+        ),
         pending=(
             PendingOut(
                 reviews=location.pending_reviews or 0,

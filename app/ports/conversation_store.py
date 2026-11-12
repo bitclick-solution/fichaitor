@@ -73,10 +73,18 @@ class ConversationStore(Protocol):
         ...
 
     async def link_identity(
-        self, account_id: str, channel: str, address: str, now: datetime
+        self,
+        account_id: str,
+        channel: str,
+        address: str,
+        now: datetime,
+        location_filter: tuple[str, ...] | None = None,
     ) -> LinkResult:
         """Link the address to the account. If it was another account's, that link
-        ends in the same step: an address belongs to one account at a time."""
+        ends in the same step: an address belongs to one account at a time.
+
+        location_filter: the one of the code it was linked with (None: every profile).
+        The new address has it from the first moment (docs/multinegocio.md, 3.7)."""
         ...
 
     async def unlink_identity(self, identity_id: str, now: datetime) -> None:

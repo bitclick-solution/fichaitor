@@ -292,7 +292,12 @@ class ConversationService:
             await self._send_raw(event.channel, event.address, key, self._links())
             return
         try:
-            result = await self._store.link_identity(account_id, event.channel, event.address, now)
+            # The filter of the code goes with the link, in the same step: a chat for the
+            # manager of one business never gets anything of the others.
+            assert record is not None
+            result = await self._store.link_identity(
+                account_id, event.channel, event.address, now, record.location_filter
+            )
         except rules.InvalidAddress:
             log.warning("vinculación rechazada: dirección no válida en %s", event.channel)
             return

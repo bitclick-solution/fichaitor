@@ -84,7 +84,12 @@ class MemoryConversationStore:
         return sorted(found, key=lambda i: (i.verified_at, i.id))
 
     async def link_identity(
-        self, account_id: str, channel: str, address: str, now: datetime
+        self,
+        account_id: str,
+        channel: str,
+        address: str,
+        now: datetime,
+        location_filter: tuple[str, ...] | None = None,
     ) -> LinkResult:
         address = normalize_address(channel, address)
         current = await self.get_identity(channel, address)
@@ -104,6 +109,7 @@ class MemoryConversationStore:
             address=address,
             verified_at=now,
             last_inbound_at=now,
+            location_filter=location_filter,
         )
         self.identities[identity.id] = identity
         return LinkResult(identity, outcome, previous)

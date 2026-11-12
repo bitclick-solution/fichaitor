@@ -111,6 +111,27 @@ def test_the_free_plan_of_a_google_profile_is_taken_once_across_accounts():
     run(go())
 
 
+def test_without_a_plan_nor_entitlements_a_free_profile_taken_elsewhere_is_free_taken():
+    """As PostgresStore (test_multinegocio_store_postgres.py): without a plan, only the
+    plans with room are tried, so the refusal of the free plan is what is raised."""
+
+    async def go():
+        store = MemoryStore()
+        ana, (bar,) = await account_with(store, "ana", [profile(1)])
+        eva, (same, other) = await account_with(store, "eva", [profile(1), profile(2)])
+        assert await store.activate(ana, bar, Plan.GRATIS) is Plan.GRATIS
+        store._account(eva).entitlements.clear()
+        with pytest.raises(FreeTaken):
+            await store.activate(eva, same)
+        # And with the free plan of the account taken too: no plan has room.
+        assert await store.activate(eva, other) is Plan.GRATIS
+        with pytest.raises(LocationLimit):
+            await store.activate(eva, same)
+        assert next(r for r in store.locations if r.id == same).plan is None
+
+    run(go())
+
+
 def test_activation_refuses_another_account_a_removed_profile_and_a_leave():
     async def go():
         store = MemoryStore()

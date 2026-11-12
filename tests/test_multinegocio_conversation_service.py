@@ -114,12 +114,17 @@ class Stage:
     def _event(self, kind, address, **fields) -> InboundEvent:
         return InboundEvent("telegram", address, f"{PREFIX}{next(self._events)}", kind, **fields)
 
-    async def new_code(self) -> str:
-        return await self.service.create_link_code(self.account)
+    async def new_code(self, locations: list[str] | None = None) -> str:
+        if locations is None:
+            return await self.service.create_link_code(self.account)
+        # A code asked for with a filter, as the API stores it (step 7).
+        issued = link_codes.issue_link(self.account, self.now, "", tuple(locations))
+        await self.store.save_link_code(issued.record)
+        return issued.code
 
-    async def link(self) -> str:
+    async def link(self, locations: list[str] | None = None) -> str:
         address = self.new_address()
-        code = await self.new_code()
+        code = await self.new_code(locations)
         await self.service.handle_inbound(
             self._event(InboundKind.START, address, text=code, sender_name="Marta")
         )
@@ -213,9 +218,10 @@ async def owner(sql: str, *args):
 
 
 class PostgresStage(Stage):
-    async def new_code(self) -> str:
+    async def new_code(self, locations: list[str] | None = None) -> str:
         # The API writes the codes (the conversation only reads and spends them).
-        issued = link_codes.issue_link(self.account, self.now, "")
+        location_filter = tuple(locations) if locations is not None else None
+        issued = link_codes.issue_link(self.account, self.now, "", location_filter)
         conn = await asyncpg.connect(OWNER_URL)
         try:
             await insert_link_code(conn, issued.record)
@@ -298,6 +304,35 @@ def _clean_database():
     if HAS_DB:
         run(pg_cleanup([]))
     yield
+
+
+# =============================================================================
+# Step 7: the filter chosen with the code.
+# =============================================================================
+
+
+@pytest.mark.parametrize("kind", STORES)
+def test_a_code_with_a_filter_links_a_chat_that_never_gets_the_other_business(kind):
+    async def go():
+        async with stage(kind) as s:
+            manager = await s.link([s.b])
+            identity = await s.store.get_identity("telegram", manager)
+            assert identity.location_filter == (s.b,)
+            # From the first message: the welcome names only its business.
+            welcome = s.last(manager)
+            assert welcome.key == "welcome.linked"
+            assert TITLE_B in welcome.text and TITLE_A not in welcome.text
+            owner_chat = await s.link()
+            assert (await s.store.get_identity("telegram", owner_chat)).location_filter is None
+
+            pa = await s.review(s.a, 5, "El arroz, espectacular.")
+            pb = await s.review(s.b, 4, "Muy buena atención.")
+            assert s.about(owner_chat, pa) and s.about(owner_chat, pb)
+            assert s.about(manager, pb).text.startswith(f"{TITLE_B}\n")
+            assert all(m.message.proposal_id != pa for m in s.sent(manager))
+            assert all(TITLE_A not in m.text for m in s.sent(manager))
+
+    run(go())
 
 
 # =============================================================================

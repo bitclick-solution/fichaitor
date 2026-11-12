@@ -165,14 +165,16 @@ async def insert_link_code(conn: asyncpg.Connection, code: LinkCode) -> None:
         )
         await conn.execute(
             """
-            INSERT INTO link_code (code_hash, token_hash, account_id, created_at, expires_at)
-            VALUES ($1, $2, $3::uuid, $4, $5)
+            INSERT INTO link_code
+                (code_hash, token_hash, account_id, created_at, expires_at, location_filter)
+            VALUES ($1, $2, $3::uuid, $4, $5, $6::text[])
             """,
             code.code_hash,
             code.token_hash,
             code.account_id,
             code.created_at,
             code.expires_at,
+            list(code.location_filter) if code.location_filter is not None else None,
         )
 
 
@@ -249,17 +251,29 @@ class PostgresConversationStore:
         return [_identity(r) for r in rows]
 
     async def link_identity(
-        self, account_id: str, channel: str, address: str, now: datetime
+        self,
+        account_id: str,
+        channel: str,
+        address: str,
+        now: datetime,
+        location_filter: tuple[str, ...] | None = None,
     ) -> LinkResult:
         address = normalize_address(channel, address)
         try:
-            return await self._link(account_id, channel, address, now)
+            return await self._link(account_id, channel, address, now, location_filter)
         except asyncpg.UniqueViolationError:
             # The same address linked by another code at the same moment: once more,
             # now that the other link is visible.
-            return await self._link(account_id, channel, address, now)
+            return await self._link(account_id, channel, address, now, location_filter)
 
-    async def _link(self, account_id: str, channel: str, address: str, now: datetime) -> LinkResult:
+    async def _link(
+        self,
+        account_id: str,
+        channel: str,
+        address: str,
+        now: datetime,
+        location_filter: tuple[str, ...] | None,
+    ) -> LinkResult:
         async with self._conn() as conn, conn.transaction():
             current = await conn.fetchrow(
                 f"""
@@ -287,14 +301,16 @@ class PostgresConversationStore:
             row = await conn.fetchrow(
                 f"""
                 INSERT INTO channel_identity
-                    (account_id, channel, address, verified_at, last_inbound_at)
-                VALUES ($1::uuid, $2, $3, $4, $4)
+                    (account_id, channel, address, verified_at, last_inbound_at,
+                     location_filter)
+                VALUES ($1::uuid, $2, $3, $4, $4, $5::text[])
                 RETURNING {_IDENTITY}
                 """,  # noqa: S608
                 account_id,
                 channel,
                 address,
                 now,
+                list(location_filter) if location_filter is not None else None,
             )
         return LinkResult(_identity(row), outcome, previous)
 
@@ -371,7 +387,7 @@ class PostgresConversationStore:
             row = await conn.fetchrow(
                 """
                 SELECT code_hash, token_hash, account_id::text AS account_id, created_at,
-                       expires_at, used_at
+                       expires_at, used_at, location_filter
                 FROM link_code WHERE code_hash = $1 OR token_hash = $1
                 LIMIT 1
                 """,
@@ -386,6 +402,9 @@ class PostgresConversationStore:
             expires_at=row["expires_at"],
             used_at=row["used_at"],
             token_hash=row["token_hash"],
+            location_filter=(
+                tuple(row["location_filter"]) if row["location_filter"] is not None else None
+            ),
         )
 
     async def consume_link_code(self, code_hash: str, now: datetime) -> str | None:

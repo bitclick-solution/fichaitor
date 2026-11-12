@@ -80,6 +80,25 @@ REVOKE ALL ON google_connection FROM fichaitor_worker;
 GRANT INSERT (kind, payload, run_at, idempotency_key, max_attempts) ON job TO fichaitor_api;
 GRANT SELECT ON profile_summary TO fichaitor_api;
 
+-- Sincronizaciones de ficha pedidas y sin terminar (2026-11-12): lo único que la API lee
+-- de la cola, para enseñar «pendiente» en lugar del needs_reconnect o el error de antes
+-- mientras el worker vuelve a leer la ficha (al volver de conectar con Google). Solo los
+-- sync_profile en curso o pendientes y ya vencidos (un reintento con espera o una franja
+-- futura del planificador no cuentan), con el usuario de Google y la ficha de Google de
+-- su carga y la hora en que se encolaron. Ni la carga entera, ni los demás tipos, ni los
+-- terminados. La vista es del propietario de job, así que lee la cola sin pasar por sus
+-- políticas de fila; security_barrier impide que una función de quien consulta vea las
+-- filas que la vista descarta. La API sigue sin SELECT en job.
+CREATE OR REPLACE VIEW profile_sync_pending WITH (security_barrier) AS
+    SELECT j.payload->>'google_sub' AS google_sub,
+           j.payload->>'location'   AS location,
+           j.created_at             AS requested_at
+    FROM job j
+    WHERE j.kind = 'sync_profile'
+      AND (j.state = 'running' OR (j.state = 'pending' AND j.run_at <= now()));
+REVOKE ALL ON profile_sync_pending FROM PUBLIC, fichaitor_api, fichaitor_worker;
+GRANT SELECT ON profile_sync_pending TO fichaitor_api;
+
 -- Worker: gestiona la cola y los resúmenes. Solo borra en la baja y en la tarea de
 -- retención (privilegios al final de este archivo).
 -- De google_connection lee solo lo que necesita para actuar; el email, no.

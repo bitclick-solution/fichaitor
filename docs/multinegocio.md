@@ -277,7 +277,7 @@ Los indicadores salen de una sola consulta con `profile_summary.unanswered_count
 | `POST /me/reviews/{id}/draft` y `…/reply`, `GET /me/actions/{id}` | `_OWN_REVIEWS` pasa a «reseñas de cualquier ficha activa de la cuenta». El tope de borradores pasa a ser por ficha: `review_draft:<id de la ficha>` |
 | `GET /me/key-dates` y `POST …/{id}/answer|dismiss` | `?location=` en la lista. La propuesta debe ser de una ficha activa |
 | `POST /channels/link-code` | Cuerpo opcional `{"locations": [...]}` (paso 7) |
-| `PATCH /me/channels/{id}` (nueva) | `{"locations": null \| [...]}` (paso 7) |
+| `PUT /me/channels/{id}/locations` (nueva) | `{"locations": null \| [...]}` (paso 7) |
 | `GET /me/channels` | Cada canal trae `locations: null \| [...]` (paso 7) |
 | Reconexión (`google_oauth.py:147`) y restauración (`offboarding.py:157`) | `request_for_account` sincroniza todas las fichas activas |
 
@@ -615,7 +615,7 @@ Cada paso se despliega con los `db/schema*.sql` aplicados otra vez y deja el sis
 - **Archivos:** `app/api/channels.py`, `app/adapters/store/postgres.py` y `memory.py` (solo los métodos de canales), `app/domain/link_codes.py`, el método de vinculación de `app/adapters/conversation_store/postgres.py` (copia el filtro), `docs/contrato-web-api.md` (sección de canales) y `docs/canales.md`.
 - **Pruebas clave:**
   - un código con filtro vincula un chat que nunca recibe otra ficha, desde el primer mensaje;
-  - `PATCH` con una ficha ajena da 404;
+  - `PUT /me/channels/{id}/locations` con una ficha ajena da 404;
   - quitar el filtro devuelve todas las fichas.
 
 ### Paso 8. Web

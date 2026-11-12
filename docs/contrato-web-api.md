@@ -355,7 +355,7 @@ Un subcampo, como `phoneNumbers.primaryPhone`, lleva la etiqueta de su campo. Un
 
 | `status` | Qué significa | Qué hace la web |
 |---|---|---|
-| `pendiente` | Todavía no hay resumen: la sincronización se ha pedido y el worker no ha terminado. Todos los demás campos van a `null` y `stale` a `false` | Muestra las tarjetas cargando y vuelve a preguntar |
+| `pendiente` | Todavía no hay resumen, o el último intento falló (`needs_reconnect` o `error`) y hay una sincronización de esa ficha pedida después, en cola o en curso: el worker la está leyendo otra vez. Todos los demás campos van a `null` y `stale` a `false` | Muestra las tarjetas cargando y vuelve a preguntar |
 | `ok` | Cifras de la última sincronización | Muestra las tarjetas |
 | `needs_reconnect` | Google ha retirado el permiso, o no hay ninguna conexión guardada para esa cuenta, o la cuenta ha perdido el acceso a esa ficha (ver abajo). Las cifras son las de la última lectura correcta, o `null` si nunca la hubo o se ha perdido el acceso | Pide volver a conectar con Google. Si hay cifras, muéstralas con su fecha |
 | `error` | La última sincronización falló: Google no respondió o rechazó la lectura, o la ficha ya no está en la conexión más reciente. Las cifras son las de la última lectura correcta, o `null` si nunca la hubo | Si hay cifras, muéstralas con su fecha. Si no, "No hemos podido leer tu ficha. Prueba más tarde" |
@@ -377,6 +377,15 @@ Al volver a conectar, si Google vuelve a listar la ficha, se vuelve a ver lo gua
 
 `pendiente` no es un estado en el que una ficha se quede: toda sincronización que falla deja `needs_reconnect` o `error`. Si el worker está parado, `pendiente` dura hasta que vuelve a arrancar.
 
+#### «Actualizando» al volver a conectar (cambio del 2026-11-12)
+
+Al volver de conectar con Google (`google=ok`), la API pide al momento la sincronización de cada ficha activa. Mientras esa sincronización espera en la cola o está en curso, el resumen de una ficha que estaba en `needs_reconnect` o `error` responde **`pendiente`**, con todo a `null`, en lugar del estado de antes. La web ya sondea mientras el estado es `pendiente`, así que pasa sola a `ok` (o al estado nuevo) cuando el worker termina.
+
+- Solo cuenta una sincronización pedida **después** del último intento, que ya toca ejecutar (en cola y vencida, o en curso). Un reintento con espera o una franja futura del planificador no la cuentan.
+- Un resumen en `ok` no cambia: se siguen enseñando sus cifras mientras se refrescan, con `stale` si toca.
+- Lo mismo vale para el `status` de cada ficha en `GET /api/v1/me` (consulta [`GET /api/v1/me` con varias fichas](#get-apiv1me-con-varias-fichas)).
+- El diagnóstico, las reseñas y el sentimiento no cambian.
+
 #### Cuándo se sincroniza
 
 - Al elegir ficha con `POST /api/v1/me/location`.
@@ -390,7 +399,7 @@ Al volver a conectar, si Google vuelve a listar la ficha, se vuelve a ver lo gua
 - Si tras 10 intentos sigue en `pendiente`, deja de preguntar y muestra "Estamos leyendo tu ficha. Vuelve en unos minutos", con un botón para reintentar.
 - Con `stale: true`, muestra las cifras que hay. Para refrescarlas sin que el usuario recargue, vuelve a pedir el resumen una sola vez pasados 10 segundos.
 - Con `ok`, `needs_reconnect` y `error` no sondees.
-- Excepción: al volver de conectar con `google=ok`, el resumen puede seguir unos segundos en `needs_reconnect` o `error`, hasta que el worker termina la sincronización que se acaba de pedir. Vuelve a pedirlo una sola vez pasados 10 segundos.
+- Al volver de conectar con `google=ok`, el resumen responde `pendiente` mientras el worker lee la ficha otra vez (consulta [«Actualizando» al volver a conectar](#actualizando-al-volver-a-conectar-cambio-del-2026-11-12)): sondea como con cualquier `pendiente`. Si aun así llega `needs_reconnect` o `error` (la cola no había recibido la petición todavía), vuelve a pedirlo una sola vez pasados 10 segundos.
 - Puedes tener la respuesta en memoria mientras la pantalla está abierta. No la guardes en `localStorage` ni similares: caduca.
 
 Errores:
@@ -942,15 +951,26 @@ El dueño vincula su Telegram desde el panel y, desde ese momento, recibe por Te
 
 | Ruta | Qué hace | Cabecera `X-Requested-With` |
 |---|---|---|
-| `POST /api/v1/channels/link-code` | Pide un código de vinculación | Sí |
-| `GET /api/v1/me/channels` | Lista los canales vinculados | No |
+| `POST /api/v1/channels/link-code` | Pide un código de vinculación, con las fichas que verá el chat | Sí |
+| `GET /api/v1/me/channels` | Lista los canales vinculados, con las fichas que ve cada uno | No |
+| `PUT /api/v1/me/channels/{id}/locations` | Cambia las fichas que ve un canal (multinegocio, 2026-11-12) | Sí |
 | `DELETE /api/v1/me/channels/{id}` | Desvincula un canal | Sí |
 
 La cuarta ruta, `POST /api/v1/webhooks/telegram`, es de Telegram, no de la web: la web no la llama nunca.
 
 ### `POST /api/v1/channels/link-code`
 
-Sin cuerpo. Respuesta 200:
+El cuerpo es opcional. Sin cuerpo, con `{}` o con `{"locations": null}`, el chat verá **todas** las fichas activas de la cuenta, también las que se activen después. Con una lista, solo esas (el caso del encargado de un negocio):
+
+```json
+{ "locations": ["loc_9b1c"] }
+```
+
+- Cada `id` tiene que ser una ficha **activa** de la cuenta. Entre 1 y 50; un `id` repetido cuenta una vez.
+- El filtro se guarda con el código y pasa al chat en el momento de vincularlo: ese chat no recibe nada de las otras fichas, ni siquiera la bienvenida (que solo nombra sus fichas).
+- Un filtro que no vale no gasta ninguno de los 5 códigos de la hora.
+
+Respuesta 200:
 
 ```json
 {
@@ -976,7 +996,9 @@ Errores, todos con `detail` en español listo para mostrar:
 |---|---|
 | 401 | Sin sesión |
 | 403 | Falta la cabecera `X-Requested-With` |
+| 404 | Una ficha de `locations` no es de la cuenta, no existe o no tiene la forma `loc_…`: "Esa ficha no está en tu cuenta." |
 | 409 | La cuenta tiene una baja programada, como el resto de rutas de la ficha |
+| 422 | Una ficha de `locations` está inactiva ("Esa ficha no está activa."), o el cuerpo no vale: lista vacía, más de 50, un campo de más (entonces `detail` es una lista) |
 | 429 | Más de 5 códigos en una hora en esa cuenta (`FICHAITOR_LINK_CODE_RATE_LIMIT`) |
 | 503 | No se ha podido generar el código. Ofrece reintentar |
 
@@ -995,18 +1017,59 @@ Respuesta 200:
       "id": "chid_5f1c9a0e7b2d4c63",
       "channel": "telegram",
       "address": "Telegram de ••••7342",
-      "linked_at": "2026-11-12T10:05:02Z"
+      "linked_at": "2026-11-12T10:05:02Z",
+      "locations": null,
+      "locations_label": "Todos tus negocios"
+    },
+    {
+      "id": "chid_8a0e3b7c1d2f4e59",
+      "channel": "telegram",
+      "address": "Telegram de ••••8877",
+      "linked_at": "2026-11-12T11:20:40Z",
+      "locations": ["loc_9b1c"],
+      "locations_label": "La Parra Getafe"
     }
   ]
 }
 ```
 
 - Solo los canales **activos** de la cuenta de la sesión, el más antiguo primero. Una cuenta puede tener varios (dueño y encargado).
+- `locations` es `null` si el chat ve todas las fichas activas, también las futuras. Si no, la lista de fichas de su filtro que la cuenta todavía tiene, en el orden de `GET /api/v1/me` (por `title`).
+- `locations_label` va **listo para mostrar** después de «Recibe:»: «Todos tus negocios», un nombre o varios («Bar La Parra y La Parra Getafe»). Una ficha del filtro que está desactivada lleva « (desactivada)». Si Google ya no lista ninguna ficha del filtro, «Ninguno de tus negocios».
 - `address` ya va **enmascarada y lista para mostrar**: la web no recibe nunca el identificador completo del chat.
 - `channel` vale hoy siempre `telegram`; mañana también `whatsapp` o `email`.
 - Responde también durante una baja programada de la ficha, para poder desvincular. Tras confirmar la baja de la **cuenta**, la lista queda vacía: los canales se desvinculan en el mismo momento.
 
 Errores: 401 sin sesión.
+
+### `PUT /api/v1/me/channels/{id}/locations`
+
+Cambia qué fichas ve un canal ya vinculado. Lleva `X-Requested-With: fichaitor`. El campo es obligatorio: `null` para todas las fichas o la lista.
+
+```json
+{ "locations": ["loc_3f2a", "loc_9b1c"] }
+```
+
+- Las mismas reglas que al pedir el código: fichas activas de la cuenta, entre 1 y 50, sin repetir.
+- Respuesta 200: el canal actualizado, con la forma de cada canal de `GET /api/v1/me/channels`.
+- Desde ese momento, el chat solo recibe propuestas, recordatorios y resultados de esas fichas, y un botón de otra ficha responde que ya no está activo. Las propuestas de una ficha nueva en el filtro que esperaban a alguien que la viera le llegan en la siguiente vuelta del proceso de la conversación (un minuto como mucho).
+- Para editarlo, parte de `locations` del canal. Una ficha desactivada del filtro hay que quitarla al guardar: con ella, la respuesta es 422.
+
+Errores, todos con `detail` en español:
+
+| Código | Cuándo |
+|---|---|
+| 401 | Sin sesión |
+| 403 | Falta la cabecera `X-Requested-With` |
+| 404 | El canal no existe, ya está desvinculado o es de otra cuenta: "Ese canal no está vinculado a tu cuenta.". O una ficha no es de la cuenta: "Esa ficha no está en tu cuenta." |
+| 409 | La cuenta tiene una baja programada |
+| 422 | Una ficha está inactiva ("Esa ficha no está activa."), o el cuerpo no vale: sin `locations`, lista vacía, más de 50 o un campo de más (`detail` es una lista) |
+
+#### Una ficha del filtro que se desactiva
+
+Desactivar una ficha **no cambia** el filtro de ningún chat. Mientras está inactiva, Fichaitor no propone nada de ella, así que un chat filtrado solo a esa ficha se queda callado; si se vuelve a activar, ese chat la vuelve a recibir sin tocar nada. `GET /api/v1/me/channels` la enseña con « (desactivada)», para que el dueño entienda por qué ese chat no recibe nada.
+
+No se quita sola del filtro porque un filtro vacío no existe: pasaría a `null`, y el chat del encargado empezaría a recibir **todos** los negocios.
 
 ### `DELETE /api/v1/me/channels/{id}`
 
@@ -1023,6 +1086,8 @@ Pide confirmación antes ("Dejarás de recibir avisos en este chat").
 - Construir el enlace de Telegram a mano o meter `code` en él.
 - Guardar el código o el enlace (en `localStorage`, en la URL o en un registro).
 - Enseñar o pedir el identificador del chat de Telegram.
+- Componer el texto de las fichas de un chat: usa `locations_label`.
+- Mandar fichas inactivas en `locations`: solo se pueden elegir las activas.
 
 ### Sin Telegram real
 
@@ -1199,7 +1264,7 @@ Campos nuevos de cada ficha de `locations`:
 | `active` | booleano | Si Fichaitor la vigila y avisa de ella |
 | `plan` | texto o `null` | `gratis`, `pro` o `pro_whatsapp`. `null` si está inactiva. Con `pricing.charging: false`, muestra «Pro (beta)» sin precio |
 | `active_since` | fecha y hora UTC, o `null` | Desde cuándo está activa. Un cambio de plan no la cambia |
-| `status` | texto o `null` | Los mismos valores que el `status` del resumen: `ok`, `pendiente` (activa y aún sin sincronizar), `error` o `needs_reconnect`. `null` si está inactiva. Con `error` o `needs_reconnect`, el selector enseña un aviso |
+| `status` | texto o `null` | Los mismos valores que el `status` del resumen: `ok`, `pendiente` (activa y aún sin sincronizar, o leyéndose otra vez tras un fallo, como al volver de conectar con Google), `error` o `needs_reconnect`. `null` si está inactiva. Con `error` o `needs_reconnect`, el selector enseña un aviso |
 | `pending` | objeto o `null` | `{"reviews": n, "key_dates": n}`: reseñas sin responder (según la última sincronización) y fechas clave por contestar desde hoy. `null` si está inactiva |
 
 Campos nuevos del cuerpo:

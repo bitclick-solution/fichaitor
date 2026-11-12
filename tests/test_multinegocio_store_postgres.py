@@ -234,6 +234,24 @@ def test_the_free_plan_of_a_google_profile_is_taken_once_and_the_default_moves_o
     scene(scenario)
 
 
+def test_without_a_plan_nor_entitlements_a_free_profile_taken_elsewhere_is_free_taken():
+    # The same as MemoryStore (test_multinegocio_panel.py).
+    async def scenario(s):
+        shared = profile("shared")
+        ana, _, (bar,) = await s.account("ana", [shared])
+        eva, _, (same, other) = await s.account("eva", [shared, profile("own")])
+        assert await s.api.activate(ana, bar, Plan.GRATIS) is Plan.GRATIS
+        await owner("DELETE FROM plan_entitlement WHERE account_id = $1::uuid", eva)
+        with pytest.raises(FreeTaken):
+            await s.api.activate(eva, same)
+        assert await s.api.activate(eva, other) is Plan.GRATIS
+        with pytest.raises(LocationLimit):
+            await s.api.activate(eva, same)
+        assert (await state(same))["plan"] is None
+
+    scene(scenario)
+
+
 def test_two_activations_at_once_take_the_last_slot_only_once():
     async def scenario(s):
         account, _, (one, two) = await s.account("ana", [profile("c1"), profile("c2")])

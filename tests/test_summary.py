@@ -16,7 +16,7 @@ from app.api.main import create_app
 from app.api.summary_out import field_label
 from app.application.profile_sync import SYNC_PROFILE_KIND, reconnect_key, sync_key
 from app.config import Settings
-from app.domain.profile_summary import ProfileFacts
+from app.domain.profile_summary import ProfileFacts, shown_status
 from app.ports.google_oauth import Identity, ProfileLocation
 from app.ports.store import StoredSummary
 from app.worker import sync_profile
@@ -243,6 +243,44 @@ def test_reconnecting_enqueues_a_sync_of_the_selected_profile_without_waiting_fo
     # Asking for the summary inside the window still adds nothing.
     assert client.get(SUMMARY).json()["status"] == "needs_reconnect"
     assert len(world.sync_jobs()) == 2
+
+
+def test_coming_back_from_reconnecting_shows_pendiente_until_the_sync_ends():
+    # The view profile_sync_pending of PostgreSQL is, in memory, store.syncs_requested
+    # (test_channel_filter_postgres.py has the real queue).
+    world = World()
+    client = world.owner_with_profile()
+    world.clock.now += 2 * MINUTE
+    lost_at = datetime.fromtimestamp(world.clock.now, UTC)
+    world.store.put_summary(SUB, BAR.location, stored(status="needs_reconnect", status_at=lost_at))
+    assert client.get(SUMMARY).json()["status"] == "needs_reconnect"
+    assert [loc["status"] for loc in client.get(ME).json()["locations"]] == ["needs_reconnect"]
+
+    # A sync asked for before the last attempt does not count.
+    world.store.syncs_requested[(SUB, BAR.location)] = lost_at - timedelta(seconds=1)
+    assert client.get(SUMMARY).json()["status"] == "needs_reconnect"
+
+    world.clock.now += MINUTE
+    client = world.connect_as()  # the owner connects with Google again
+    asked = datetime.fromtimestamp(world.clock.now, UTC)
+    world.store.syncs_requested[(SUB, BAR.location)] = asked
+    assert client.get(SUMMARY).json() == PENDING
+    assert [loc["status"] for loc in client.get(ME).json()["locations"]] == ["pendiente"]
+
+    # The worker ends: its own status again (here, it could read the profile).
+    world.store.put_summary(SUB, BAR.location, stored(status="ok", synced_ago=timedelta(0)))
+    assert client.get(SUMMARY).json()["status"] == "ok"
+    assert [loc["status"] for loc in client.get(ME).json()["locations"]] == ["ok"]
+
+
+def test_an_ok_summary_is_never_hidden_by_a_sync_in_course():
+    world = World()
+    client = world.owner_with_profile()
+    world.store.put_summary(SUB, BAR.location, stored())
+    world.store.syncs_requested[(SUB, BAR.location)] = NOW + timedelta(minutes=1)
+    body = client.get(SUMMARY).json()
+    assert body["status"] == "ok" and body["review_count"] == 13
+    assert [loc["status"] for loc in client.get(ME).json()["locations"]] == ["ok"]
 
 
 def test_reconnecting_again_and_again_enqueues_one_sync_per_minute():
@@ -537,3 +575,14 @@ def test_a_fresh_summary_without_facts_asks_for_a_sync_to_get_them():
     assert len(world.sync_jobs()) == 2
     client.get(SUMMARY)
     assert len(world.sync_jobs()) == 2  # once per window
+
+
+def test_shown_status():
+    before, after = NOW - timedelta(minutes=1), NOW
+    assert shown_status(None, None, None) == "pendiente"
+    assert shown_status("ok", before, after) == "ok"
+    for status in ("needs_reconnect", "error"):
+        assert shown_status(status, before, None) == status
+        assert shown_status(status, after, before) == status  # asked for before it
+        assert shown_status(status, after, after) == status  # the same moment: not after
+        assert shown_status(status, before, after) == "pendiente"
