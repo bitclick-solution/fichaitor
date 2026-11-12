@@ -29,6 +29,8 @@ COPY web/site web/site
 # Con --build-arg LEGAL_ESTRICTO=1 la compilación falla si los textos legales tienen marcas abiertas.
 ARG LEGAL_ESTRICTO=0
 RUN if [ "$LEGAL_ESTRICTO" = "1" ]; then python web/build.py --estricto; else python web/build.py; fi
+# Las páginas del modo «solo web» salen de la raíz pública: solo las sirve nginx-solo-web.conf.
+RUN mv web/site/_solo /src/solo
 
 # 3. Servidor
 FROM nginxinc/nginx-unprivileged:1.27-alpine
@@ -39,4 +41,9 @@ COPY web/nginx.conf /etc/nginx/templates/default.conf.template
 COPY web/nginx-seguridad.conf /etc/nginx/snippets/seguridad.conf
 COPY --from=site /src/web/site /usr/share/nginx/html
 COPY --from=app /src/web/app/dist /usr/share/nginx/html/app
+# Modo «solo web» (FICHAITOR_SOLO_WEB=true): portada sin API, /app «Muy pronto» y /api/ con 503.
+# Sin la variable, el script no hace nada y todo sigue igual.
+COPY --from=site /src/solo /usr/share/nginx/solo
+COPY web/nginx-solo-web.conf /etc/nginx/fichaitor/solo-web.conf
+COPY --chmod=755 web/solo-web.sh /docker-entrypoint.d/40-fichaitor-solo-web.sh
 EXPOSE 8080

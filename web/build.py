@@ -8,6 +8,11 @@ El aviso de borrador (la cita inicial que empieza por «BORRADOR») no se public
 
 Con `--estricto`, termina con error si los textos legales conservan marcas [PENDIENTE] o
 [REVISAR]. Es el modo pensado para la compilación de producción.
+
+Modo «solo web» (FICHAITOR_SOLO_WEB=true en el contenedor, sin API detrás): además genera
+web/site/_solo/ con otra portada y la página de /app. En web/src/index.html, cada bloque que
+necesita la API va entre <!--api--> y <!--solo-->, seguido de lo que lo sustituye en este
+modo y de <!--/api-->. La imagen saca _solo/ de la raíz pública (ver web/Dockerfile).
 """
 
 import re
@@ -19,6 +24,8 @@ import markdown
 
 ROOT = Path(__file__).resolve().parent.parent
 SITE = ROOT / "web" / "site"
+SOLO = SITE / "_solo"
+BLOQUE_API = re.compile(r"<!--api-->\n?(.*?)<!--solo-->\n?(.*?)<!--/api-->\n?", re.S)
 
 PAGES = {
     "privacidad": (
@@ -59,6 +66,15 @@ NO_ENCONTRADA = '''<section class="no-hay">
   <div class="acc">
     <a class="btn" href="/">Volver al inicio <span class="fl" aria-hidden="true">→</span></a>
     <a class="btn sec" href="/app/">Entrar en el panel</a>
+  </div>
+</section>'''
+
+# /app en el modo «solo web»: la aplicación necesita la API, así que se sirve esto en su lugar.
+MUY_PRONTO = '''<section class="no-hay">
+  <h1 class="cartel">Muy pronto<span class="pt">.</span></h1>
+  <p class="lead">El panel de Fichaitor todavía no está abierto. Estamos terminando las pruebas.</p>
+  <div class="acc">
+    <a class="btn" href="/">Volver al inicio <span class="fl" aria-hidden="true">→</span></a>
   </div>
 </section>'''
 
@@ -116,14 +132,30 @@ def palabra() -> str:
     return svg.replace('role="img" aria-label="Fichaitor"', 'aria-hidden="true"')
 
 
+def variante(html: str, solo: bool) -> str:
+    """Deja en cada bloque <!--api-->…<!--solo-->…<!--/api--> la parte normal o la de «solo web»."""
+    return BLOQUE_API.sub(lambda m: m.group(2 if solo else 1), html)
+
+
 def main() -> None:
     marca = palabra()
     portada = (ROOT / "web" / "src" / "index.html").read_text(encoding="utf-8")
     portada = portada.replace("{{palabra}}", marca).replace(
         "{{palabra_grande}}", marca.replace("<svg ", '<svg width="100%" ')
     )
-    (SITE / "index.html").write_text(portada, encoding="utf-8", newline="\n")
+    for html in (variante(portada, False), variante(portada, True)):
+        if "<!--api-->" in html or "<!--solo-->" in html or "<!--/api-->" in html:
+            sys.exit("ERROR: web/src/index.html tiene un bloque <!--api--> mal cerrado.")
+    (SITE / "index.html").write_text(variante(portada, False), encoding="utf-8", newline="\n")
     print("ok  web/site/index.html")
+    SOLO.mkdir(exist_ok=True)
+    (SOLO / "index.html").write_text(variante(portada, True), encoding="utf-8", newline="\n")
+    (SOLO / "app.html").write_text(
+        TEMPLATE.format(title="Muy pronto", cabeza='<meta name="robots" content="noindex">', contenido=MUY_PRONTO, palabra=marca),
+        encoding="utf-8",
+        newline="\n",
+    )
+    print("ok  web/site/_solo/ (modo solo web)")
     pending = []
     for slug, (source, title, descripcion) in PAGES.items():
         text = (ROOT / "docs" / "legal" / source).read_text(encoding="utf-8")

@@ -1,6 +1,6 @@
 # Política de Privacidad
 
-> **BORRADOR — no publicar sin revisión.** Este texto debe revisarlo un profesional de protección de datos antes de publicarse en `https://fichaitor.es/privacidad/`. Los datos marcados como `[PENDIENTE]` faltan por confirmar. Borra este aviso al publicar.
+> **BORRADOR — publicado antes de la revisión profesional** (decisión del propietario, 2026-11-12). Debe revisarlo un profesional de protección de datos antes del lanzamiento: los puntos abiertos están en `notas-revision.md`. La compilación quita este aviso.
 
 BITCLICK SOLUTIONS S.L.U. · C.I.F. B88994777 · Última revisión: 12 de noviembre de 2026
 
@@ -29,7 +29,7 @@ Fichaitor está en pruebas. Hoy están activos la prueba con una captura, la lis
 | Prestar el servicio sobre tu ficha de Google | Los datos obtenidos de las API de Google que se detallan en el apartado 3 | Ejecución del contrato — art. 6.1.b | Mientras tu ficha esté conectada. Tras desconectarla: 48 horas para restaurarla y, desde que la baja es efectiva, 30 días como máximo para el borrado; el registro de respuestas, 12 meses. Ver apartado 3 |
 | Conversar contigo y proponerte acciones (hoy, por Telegram) | El chat que vinculas (su identificador; en tu panel solo ves los últimos dígitos), los mensajes que intercambias con Fichaitor, incluidos el texto de las reseñas que te enviamos y los borradores de respuesta, y las propuestas que apruebas o descartas | Ejecución del contrato — art. 6.1.b | Los mensajes y las propuestas terminadas, 90 días; el chat, mientras esté vinculado y 90 días después de desvincularlo. Con la baja efectiva se borran los mensajes y las propuestas y, si la baja es de la cuenta, también los chats vinculados |
 | Cobro y facturación | Datos identificativos y de facturación. Los datos de la tarjeta los trata Stripe; Fichaitor no los ve ni los guarda | Ejecución del contrato — art. 6.1.b, y obligación legal — art. 6.1.c | Los plazos fiscales y mercantiles (hasta 6 años) |
-| Seguridad y registros del servidor | Dirección IP, fecha y hora, navegador, y las sesiones iniciadas | Interés legítimo en la seguridad del servicio — art. 6.1.f | Registros, 6 meses `[REVISAR: el borrado de los registros a los 6 meses aún no está automatizado]`. Sesiones caducadas o cerradas, 30 días |
+| Seguridad y registros del servidor | Dirección IP, fecha y hora, navegador, y las sesiones iniciadas | Interés legítimo en la seguridad del servicio — art. 6.1.f | Registros técnicos: se sobrescriben automáticamente al alcanzar un tamaño máximo y solo se usan para la seguridad del servicio. Sesiones caducadas o cerradas, 30 días |
 | Analítica y medición de campañas | Los indicados en la Política de Cookies (Google Analytics y píxel de TikTok) | Consentimiento — art. 6.1.a | Los indicados en la Política de Cookies |
 
 No tratamos categorías especiales de datos del artículo 9 del RGPD ni datos de menores. Fichaitor está dirigido a empresas y profesionales.
@@ -87,8 +87,8 @@ El uso que Fichaitor hace de la información recibida de las API de Google, y su
 ### Cómo revocar el acceso y borrar los datos
 
 - **Desde Fichaitor:** en Ajustes, al final de tu panel, pulsa «Desconectar Google» o «Borrar mi cuenta». Para confirmarlo te enviamos un código de un solo uso al correo de tu cuenta, válido 10 minutos: una sesión abierta en otro ordenador no basta.
-- **Desde Google:** en [myaccount.google.com/connections](https://myaccount.google.com/connections), elige Fichaitor y quita el acceso. Fichaitor deja de poder leer tu ficha en ese momento. `[REVISAR: hoy, retirar el acceso desde Google no pone en marcha el borrado. Hasta que lo haga, hay que decir que para borrar los datos se use «Desconectar Google» o el correo de soporte.]`
-- **Por correo:** escribe a soporte@fichaitor.es. `[REVISAR: aún no hay herramienta para atender estas bajas; definir el procedimiento interno antes de publicar.]`
+- **Desde Google:** en [myaccount.google.com/connections](https://myaccount.google.com/connections), elige Fichaitor y quita el acceso. Fichaitor deja de poder leer tu ficha en ese momento, pero eso no borra lo que ya tenemos. Para borrar tus datos, usa «Desconectar Google» o «Borrar mi cuenta» en Ajustes, o escríbenos a soporte@fichaitor.es.
+- **Por correo:** escribe a soporte@fichaitor.es desde el correo de tu cuenta. Si nos escribes desde otra dirección, te pediremos que lo confirmes desde la de tu cuenta. Tramitamos la baja en un plazo máximo de un mes y se aplican los mismos plazos de borrado que a la baja desde Fichaitor.
 
 Al confirmar la baja desde Fichaitor:
 
@@ -100,7 +100,7 @@ Pasadas las 48 horas, la baja es efectiva:
 
 - Retiramos el acceso de Fichaitor a tu cuenta de Google.
 - En un máximo de 30 días desde que la baja es efectiva borramos todo lo obtenido de Google o derivado de ello: los tokens, los datos de la ficha, las reseñas, su clasificación, los resúmenes, el historial de notas y los borradores de respuesta.
-- El registro de las respuestas y de los horarios que confirmaste y se enviaron a Google se conserva 12 meses desde la baja y después se borra. Sirve para acreditar qué se publicó en tu nombre si hay una reclamación; la base es el interés legítimo en la defensa frente a reclamaciones — art. 6.1.f. `[REVISAR: base jurídica del registro de respuestas, a confirmar por quien revise los textos.]`
+- El registro de las respuestas y de los horarios que confirmaste y se enviaron a Google se conserva 12 meses desde la baja y después se borra. Sirve para acreditar qué se publicó en tu nombre si hay una reclamación; la base es el interés legítimo en la defensa frente a reclamaciones — art. 6.1.f.
 
 ## 4. Datos de terceros en tu ficha
 
@@ -143,7 +143,7 @@ Los siguientes proveedores todavía no tratan ningún dato: lo harán cuando se 
 | Google Ireland Ltd. | Google Analytics, solo si aceptas la categoría analítica | Identificador de cookie, páginas vistas y datos de navegación | Unión Europea y Estados Unidos |
 | TikTok Technology Ltd. | Píxel de TikTok, solo si aceptas la categoría de publicidad | Identificador de cookie y eventos de navegación | Unión Europea y terceros países |
 
-Si eliges Telegram como canal, los mensajes entre Fichaitor y tú, incluido el texto de las reseñas y los borradores de respuesta, pasan por Telegram (Telegram FZ-LLC y Telegram Messenger Inc.). Telegram los trata como responsable independiente, según su propia política de privacidad, y fuera del Espacio Económico Europeo. Puedes desconectar el chat cuando quieras desde «Avisos», en tu panel. `[REVISAR: transferencia internacional al usar Telegram (entidades fuera del EEE que no actúan como encargado de Fichaitor), entidades exactas y si basta con informar de ello; necesita revisión profesional.]`
+Si eliges Telegram como canal, los mensajes entre Fichaitor y tú, incluido el texto de las reseñas y los borradores de respuesta, pasan por Telegram (Telegram FZ-LLC y Telegram Messenger Inc.), que los trata como responsable independiente según su [política de privacidad](https://telegram.org/privacy). Telegram trata esos datos fuera del Espacio Económico Europeo: el envío fuera del EEE se produce porque tú eliges y activas ese canal, que no hace falta para usar Fichaitor. Puedes desconectar el chat cuando quieras desde «Avisos», en tu panel.
 
 ## 7. Transferencias internacionales
 
@@ -172,7 +172,7 @@ De ti: de los formularios de este sitio, de tus mensajes al asistente y de la re
 
 ## 10. Seguridad
 
-Aplicamos las medidas técnicas y organizativas del artículo 32 del RGPD según el estado de la técnica y el riesgo del tratamiento: cifrado en tránsito, cifrado de los tokens de Google en reposo, control de acceso con credenciales individuales, separación de los datos de cada cliente, registro de accesos, copias de seguridad y revisión periódica de las medidas. `[REVISAR: indicar cuánto se conservan las copias de seguridad y que los datos borrados desaparecen de ellas al caducar.]`
+Aplicamos las medidas técnicas y organizativas del artículo 32 del RGPD según el estado de la técnica y el riesgo del tratamiento: cifrado en tránsito, cifrado de los tokens de Google en reposo, control de acceso con credenciales individuales, separación de los datos de cada cliente, registro de accesos, copias de seguridad y revisión periódica de las medidas. Hacemos una copia diaria de la base de datos, que se conserva 14 días y después se borra. Un dato que borres puede seguir en esas copias hasta 14 días; las copias solo se usan para recuperar el servicio tras un fallo.
 
 ## 11. Cambios en esta política
 

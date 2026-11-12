@@ -444,6 +444,10 @@ article.legal a { font-weight: 600; }
 .soltar.sec.encima { background: var(--tinta); color: var(--papel); }
 .soltar.sec .soltar-t { font-size: 1.05rem; }
 .captura .diag-nota { margin-top: 12px; }
+/* Modo «solo web» (sin API): en lugar de conectar y de la captura */
+.entrada.pronto { gap: 12px; padding: 24px 26px; border: 2px solid var(--tinta); box-shadow: 6px 6px 0 var(--tinta); }
+.pronto-t { font-weight: 900; font-stretch: 125%; text-transform: uppercase; letter-spacing: -0.04em; line-height: 0.9; font-size: clamp(2rem, 4vw, 3rem); }
+.entrada.pronto a { font-weight: 700; color: var(--tinta); }
 
 /* ───── Prueba con una captura de las reseñas ───── */
 .pr-cab { margin-top: clamp(20px, 4vh, 48px); padding-bottom: clamp(20px, 4vh, 40px); border-bottom: 2px solid var(--papel); display: grid; gap: 12px; }

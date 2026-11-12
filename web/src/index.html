@@ -144,7 +144,11 @@
     <a href="#como">Cómo funciona</a>
     <a href="#planes">Planes</a>
   </nav>
+<!--api-->
   <a class="btn" href="#lista">Avísame <span class="fl" aria-hidden="true">→</span></a>
+<!--solo-->
+  <a class="btn" href="#lista">Muy pronto <span class="fl" aria-hidden="true">→</span></a>
+<!--/api-->
 </header>
 
 <main>
@@ -166,6 +170,7 @@
           <p class="lead">Conecta tu ficha de Google Business Profile y mira en unos segundos cuántas reseñas tienes sin responder, qué festivos no tienen horario y qué ha cambiado Google sin avisarte.</p>
           <p class="sec2">Fichaitor es un asistente para dueños de bares, restaurantes y otros negocios locales. No cambia nada en tu ficha sin tu confirmación.</p>
         </div>
+<!--api-->
         <div class="entrada" id="entrada" data-sube>
           <a class="btn grande" href="/api/v1/google/oauth/start">Conectar con Google <span class="fl" aria-hidden="true">→</span></a>
           <form class="captura" id="captura" novalidate>
@@ -186,6 +191,12 @@
           </div>
           <p class="diag-nota" id="diag-salida" role="status" aria-live="polite">Gratis y sin registro. Usa solo los datos públicos de tu ficha.</p>
         </form>
+<!--solo-->
+        <div class="entrada pronto" id="entrada" data-sube>
+          <p class="pronto-t">Muy pronto<span class="pt">.</span></p>
+          <p class="sec2">Estamos terminando las pruebas. Para cualquier duda, escríbenos a <a href="mailto:soporte@fichaitor.es">soporte@fichaitor.es</a>.</p>
+        </div>
+<!--/api-->
       </div>
     </div>
     <div class="cinta" aria-hidden="true">
@@ -394,6 +405,7 @@
 <!-- 8. Lista de espera -->
 <section class="s oscuro lista" id="lista" data-tema="oscuro">
   <div class="in">
+<!--api-->
     <div class="caja dos">
       <div>
         <h2 class="cartel"><span class="ln"><span>Entra</span></span><span class="ln"><span>el primero<span class="pt">.</span></span></span></h2>
@@ -416,6 +428,14 @@
         </form>
       </div>
     </div>
+<!--solo-->
+    <div class="caja dos">
+      <div>
+        <h2 class="cartel"><span class="ln"><span>Abrimos</span></span><span class="ln"><span>muy pronto<span class="pt">.</span></span></span></h2>
+        <p class="lead" data-sube>Fichaitor está en pruebas y todavía no admite altas. En unos días podrás apuntarte aquí para que te avisemos el día que abra.</p>
+      </div>
+    </div>
+<!--/api-->
   </div>
 </section>
 
@@ -438,6 +458,7 @@
   </div>
 </footer>
 
+<!--api-->
 <!-- Resultado del diagnóstico público -->
 <div class="resultado oscuro" id="resultado" role="dialog" aria-modal="true" aria-labelledby="res-nombre" hidden data-lenis-prevent>
   <div class="caja">
@@ -514,6 +535,8 @@
     </div>
   </div>
 </div>
+<!--solo-->
+<!--/api-->
 
 <script src="/vendor/lenis.min.js"></script>
 <script src="/vendor/motion.js"></script>
