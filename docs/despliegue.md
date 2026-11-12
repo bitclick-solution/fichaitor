@@ -512,8 +512,8 @@ Lo que sigue abierto hoy, 2026-11-12. No abras el sitio al público con los punt
 
 | Punto | Estado | Bloquea |
 |---|---|---|
-| Acceso a la API de Business Profile en el proyecto nuevo | **Sin aprobar: la cuota es 0.** Con cuota 0, ninguna ficha se puede leer | Sí |
-| Proyecto de Bitclick (`544696777336`) | Tiene acceso, pero su pantalla de consentimiento está en "Testing": **los tokens caducan a los 7 días** y cada cliente tendría que reconectar cada semana | Sí, si se usa ese proyecto |
+| Proyecto de Google Cloud | **Decidido 2026-11-12: el de Bitclick (`544696777336`).** Google rechazó el proyecto nuevo por duplicado: solo aprueba un proyecto por empresa. El de Bitclick ya tiene acceso a la API | No |
+| Pantalla de consentimiento del proyecto de Bitclick | En "Testing": **los tokens caducan a los 7 días**. Hay que pasarla a "In production" con la marca de Fichaitor (ver `docs/fase0/google-acceso.md`, «Proyecto definitivo») | Sí |
 | Pantalla de consentimiento "In production" | Pendiente. Requiere la página principal, la política de privacidad y las condiciones publicadas, y el dominio verificado en Search Console | Sí |
 | Verificación de la app | Pendiente. Sin verificar: aviso de "app no verificada" y tope de 100 usuarios | No, para una beta |
 | URI de redirección de producción en el cliente OAuth | Pendiente (paso 9) | Sí |

@@ -10,6 +10,18 @@ Son **tres trámites distintos**, con plazos distintos. Los dos primeros se pued
 
 Requisitos confirmados en la documentación de Google el 2026-11-11. Los de la verificación (trámite C) vienen de conocimiento previo y hay que contrastarlos con el asistente de la consola cuando llegue el momento.
 
+## Proyecto definitivo (2026-11-12)
+
+Google rechazó la solicitud del proyecto nuevo (`266363689710`) por **duplicado**: solo aprueba un proyecto por empresa, y Bitclick ya tiene `544696777336` (web `https://bitclick.solutions/`). **Fichaitor usa ese proyecto.** El proyecto nuevo ya no hace falta para la API de Business Profile.
+
+Lo que implica, y lo que hay que hacer en el proyecto `544696777336`:
+
+1. **Un cliente OAuth propio de Fichaitor**, distinto del de n8n (GBP Autopilot). URI de redirección: `https://fichaitor.es/api/v1/google/oauth/callback` y, para desarrollo, `http://localhost:8000/api/v1/google/oauth/callback`. Sus dos valores van en `api.env` y `worker.env`. En local ya se usa un cliente de este proyecto.
+2. **Una sola pantalla de consentimiento por proyecto.** La comparten Fichaitor y los flujos de n8n de Bitclick. Recomendación: nombre de la app **Fichaitor**, logo de Fichaitor, página principal y política en `fichaitor.es`, y dominios autorizados `fichaitor.es` y `bitclick.solutions`. Quien conecte desde n8n verá «Fichaitor» en la pantalla de Google; son conexiones internas de Bitclick y no afecta a su funcionamiento.
+3. **Pasarla a "In production"** cuando la web y la política estén publicadas. A la vez deja de caducar a los 7 días la credencial de n8n, que hoy obliga a reconectar cada semana.
+4. **Verificación de marca** con el nombre y el logo de Fichaitor, y el dominio `fichaitor.es` verificado en Search Console por una cuenta que sea Propietario o Editor del proyecto `544696777336`.
+5. Places y Gemini pueden seguir en el proyecto que tengan hoy: son claves aparte y no dependen de este trámite.
+
 ## Estado a 2026-11-11
 
 - Dominio registrado: `fichaitor.es`. Correo de soporte: `soporte@fichaitor.es`.
