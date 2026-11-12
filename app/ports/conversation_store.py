@@ -149,6 +149,16 @@ class ConversationStore(Protocol):
         profile of the account has the same title. "tu negocio" if it is not found."""
         ...
 
+    async def active_locations(self, account_id: str) -> Sequence[str]:
+        """The active profiles ("loc_...") of the account, the oldest activation first.
+        Empty for an account deleted or without any."""
+        ...
+
+    async def location_active(self, account_id: str, location_id: str) -> bool:
+        """Whether that profile is an active profile of that account. When it stopped
+        being one, its unfinished proposals are cancelled (`location_inactive`)."""
+        ...
+
     # --- conversations ----------------------------------------------------------
     async def get_conversation(self, account_id: str) -> Conversation:
         """The thread of the account; created the first time."""

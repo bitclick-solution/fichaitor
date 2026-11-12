@@ -2,6 +2,7 @@
 
 import logging
 from datetime import UTC, datetime, timedelta
+from unittest.mock import ANY
 from urllib.parse import parse_qs, urlparse
 
 from fastapi.testclient import TestClient
@@ -50,6 +51,8 @@ PENDING = {
     "google_changed_fields": None,
     "google_changed_labels": None,
     "stale": False,
+    # Which profile it is of (docs/multinegocio.md, 5.1).
+    "location_id": ANY,
 }
 
 
@@ -353,6 +356,7 @@ def test_summary_has_the_exact_shape_of_the_contract():
         "google_changed_fields": ["specialHours"],
         "google_changed_labels": ["Horarios especiales"],
         "stale": False,
+        "location_id": ANY,
     }
 
 

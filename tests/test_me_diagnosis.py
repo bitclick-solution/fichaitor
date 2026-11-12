@@ -198,6 +198,7 @@ def test_diagnosis_comes_from_the_stored_facts_with_the_public_shape_plus_status
         "status",
         "synced_at",
         "stale",
+        "location_id",
     }
     assert body["name"] == "Bar La Parra"
     assert body["address"] == "Calle Elvira 1, 18010 Granada"
@@ -283,6 +284,7 @@ def test_without_data_yet_the_answer_is_pending_and_a_sync_is_requested():
     assert r.json() == {
         "status": "pendiente",
         "detail": "Estamos leyendo tu ficha. Vuelve a intentarlo en unos segundos.",
+        "location_id": client.get(ME).json()["selected_location_id"],
     }
     assert len(world.sync_jobs()) == 1  # the one of selecting; asking again adds none
     assert client.get(SUMMARY).json()["status"] == "pendiente"

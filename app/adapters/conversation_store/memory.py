@@ -212,6 +212,19 @@ class MemoryConversationStore:
             location_id=location_id,
         )
 
+    async def active_locations(self, account_id: str) -> Sequence[str]:
+        return [
+            location_id
+            for location_id, location in self.locations.items()
+            if location.account_id == account_id and location.active
+        ]
+
+    async def location_active(self, account_id: str, location_id: str) -> bool:
+        location = self.locations.get(location_id)
+        if location is None:
+            return True  # not modelled (tests without profiles): as the old code
+        return location.account_id == account_id and location.active
+
     # --- conversations ----------------------------------------------------------
     async def get_conversation(self, account_id: str) -> Conversation:
         if account_id not in self.conversations:

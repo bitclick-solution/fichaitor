@@ -14,12 +14,19 @@ Limits (Bot API 10.4, https://core.telegram.org/bots/api, read on 2026-11-12):
 text of 1-4096 characters; `callback_data` of 1-64 bytes; notice of
 `answerCallbackQuery` of 0-200 characters; `getUpdates` does not work while a
 webhook is set. `docs/canales.md` quotes them.
+
+With several businesses, several proposals may go to the same chat at once, and
+Telegram takes about one message per second per chat: `send` keeps one second between
+two messages to the same chat, and waits once for a short `retry_after` of a 429
+(docs/multinegocio.md, 7).
 """
 
 import asyncio
 import hmac
 import logging
 import re
+import time
+from collections import defaultdict
 from collections.abc import Awaitable, Callable
 from typing import Any
 
@@ -48,6 +55,11 @@ MAX_TEXT = TELEGRAM_LIMITS.max_body
 MAX_NOTICE = 200
 MAX_START_PAYLOAD = 64  # deep link parameter: up to 64 of A-Z, a-z, 0-9, _ and -
 ALLOWED_UPDATES = ["message", "callback_query"]
+# One message per second and chat (docs/canales.md, "Límites verificados").
+SEND_INTERVAL_SECONDS = 1.0
+# A 429 that asks to wait this long or less is waited for once; a longer one is left to
+# the next round of the conversation (the proposal is sent again later).
+MAX_RETRY_AFTER_SECONDS = 5.0
 
 _BOT_PATH = re.compile(r"/bot\d+:[A-Za-z0-9_\-]+")
 _START = re.compile(r"/start(?:@\w+)?(?:\s+(\S+))?\s*")
@@ -102,6 +114,15 @@ def _private_chat(chat: object) -> str | None:
     return None
 
 
+def _quoted_message(message: dict) -> str:
+    """The id of the message this one answers by quoting it, if any: it chooses the
+    proposal among several open ones (docs/multinegocio.md, 6.3)."""
+    quoted = message.get("reply_to_message")
+    if isinstance(quoted, dict) and isinstance(quoted.get("message_id"), int):
+        return str(quoted["message_id"])
+    return ""
+
+
 def parse_update(update: object) -> InboundEvent | None:
     """An update of Telegram as an internal event, or None for anything the agent
     does not attend: groups and channels, bots, messages without text, other update
@@ -140,7 +161,15 @@ def parse_update(update: object) -> InboundEvent | None:
                 command.group(1).lower(),
                 sender_name=name,
             )
-        return InboundEvent(CHANNEL, address, event_id, InboundKind.TEXT, text, sender_name=name)
+        return InboundEvent(
+            CHANNEL,
+            address,
+            event_id,
+            InboundKind.TEXT,
+            text,
+            sender_name=name,
+            reply_to=_quoted_message(message),
+        )
     if isinstance(callback, dict):
         sender = callback.get("from")
         data, callback_id = callback.get("data"), callback.get("id")
@@ -182,12 +211,22 @@ class TelegramChannel:
         *,
         api_base: str = API_BASE,
         timeout: float = 10.0,
+        send_interval: float = SEND_INTERVAL_SECONDS,
+        clock: Callable[[], float] = time.monotonic,
+        sleep: Callable[[float], Awaitable[None]] = asyncio.sleep,
     ) -> None:
         if not token:
             raise ValueError("falta el token del bot")
         self._path = f"{api_base}/bot{token}/"
         self._client = client
         self._timeout = timeout
+        self._send_interval = send_interval
+        self._monotonic = clock
+        self._sleep = sleep
+        # Per chat: when its last message went out, and a lock so that two messages to
+        # the same chat leave one after the other.
+        self._last_sent: dict[str, float] = {}
+        self._chat_locks: defaultdict[str, asyncio.Lock] = defaultdict(asyncio.Lock)
 
     def __repr__(self) -> str:  # never the token
         return "TelegramChannel()"
@@ -239,10 +278,31 @@ class TelegramChannel:
                     for button in message.buttons
                 ]
             }
-        result = await self._call("sendMessage", payload)
+        result = await self._spaced_send(address, payload)
         if not isinstance(result, dict) or not isinstance(result.get("message_id"), int):
             raise MessagingUnavailable("telegram sendMessage: respuesta sin message_id")
         return SentMessage(str(result["message_id"]))
+
+    async def _spaced_send(self, address: str, payload: dict[str, Any]) -> Any:
+        """sendMessage, at least `send_interval` after the previous one to that chat. A
+        429 with a short `retry_after` is waited for and tried once more."""
+        async with self._chat_locks[address]:
+            last = self._last_sent.get(address)
+            if last is not None:
+                wait = last + self._send_interval - self._monotonic()
+                if wait > 0:
+                    await self._sleep(wait)
+            try:
+                try:
+                    return await self._call("sendMessage", payload)
+                except MessagingUnavailable as exc:
+                    retry = exc.retry_after
+                    if retry is None or not 0 < retry <= MAX_RETRY_AFTER_SECONDS:
+                        raise
+                    await self._sleep(retry)
+                    return await self._call("sendMessage", payload)
+            finally:
+                self._last_sent[address] = self._monotonic()
 
     async def acknowledge(self, callback_id: str, notice: str = "") -> None:
         payload: dict[str, Any] = {"callback_query_id": callback_id}
@@ -374,11 +434,15 @@ async def _run_local() -> None:
                         5,
                         "El arroz, espectacular.",
                         "Muchas gracias por tu reseña. Nos alegra que disfrutaras el arroz.",
+                        "loc_prueba",
                     ),
                 )
                 day = (datetime.now(UTC) + timedelta(days=4)).date()
                 await service.submit_key_date(
-                    account, KeyDateInput(f"holiday:{day}", "holiday", day, "festivo de prueba")
+                    account,
+                    KeyDateInput(
+                        f"holiday:{day}", "holiday", day, "festivo de prueba", "loc_prueba"
+                    ),
                 )
             for request in actions.requests[state["reported"] :]:
                 state["reported"] += 1

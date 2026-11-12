@@ -390,10 +390,10 @@ TEXTS: dict[str, str] = {
         "El {fecha_larga} es {nombre}. ¿Abres?\n"
         "Si no me dices nada, tu ficha mostrará el horario normal."
     ),
-    # NEW: the profile of the key date is no longer the selected one, or a leave is
+    # NEW: the profile of the key date is no longer active in Fichaitor, or a leave is
     # scheduled: nothing can be changed from the chat.
     "keydate.gone": (
-        "Ese día era de una ficha que ya no tienes elegida en Fichaitor. No he cambiado nada."
+        "Ese día era de una ficha que ya no está activa en Fichaitor. No he cambiado nada."
     ),
     # NEW: the executor could not apply the hours before the day ended.
     "hours.too_late": (

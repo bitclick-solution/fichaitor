@@ -33,6 +33,9 @@ class SummaryResponse(BaseModel):
     google_changed_fields: list[str] | None
     google_changed_labels: list[str] | None
     stale: bool
+    # The profile it is of (docs/multinegocio.md, 5.1): the web drops an answer that is
+    # not of the profile it has selected.
+    location_id: str
 
 
 def seconds(moment: datetime | None) -> datetime | None:
@@ -56,6 +59,7 @@ def to_summary_response(view: SummaryView) -> SummaryResponse:
             google_changed_fields=None,
             google_changed_labels=None,
             stale=False,
+            location_id=view.location_id,
         )
     fields = list(s.google_changed_fields)
     return SummaryResponse(
@@ -72,4 +76,5 @@ def to_summary_response(view: SummaryView) -> SummaryResponse:
         google_changed_fields=fields,
         google_changed_labels=[field_label(f) for f in fields],
         stale=view.stale,
+        location_id=view.location_id,
     )

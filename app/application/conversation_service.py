@@ -28,8 +28,10 @@ from app.domain import conversation as rules
 from app.domain import link_codes
 from app.domain.calendar import format_date_es
 from app.domain.channel_messages import InboundEvent, InboundKind, MessageKind, OutboundMessage
-from app.domain.conversation import ChannelIdentity, Conversation, HoursAnswer, HoursKind, Reply
+from app.domain.conversation import ChannelIdentity, HoursAnswer, HoursKind, Reply
 from app.domain.proposals import (
+    CANCELLED_BY_DEACTIVATION,
+    OUTCOME_LOCATION_INACTIVE,
     OUTCOME_OFFBOARDING,
     Proposal,
     ProposalEvent,
@@ -42,7 +44,13 @@ from app.domain.proposals import (
 )
 from app.domain.proposals import PRIORITY_KEY_DATE as KEY_DATE_PRIORITY
 from app.ports import proposal_actions as pa
-from app.ports.conversation_store import ConversationStore, LinkResult, MessageRecord
+from app.ports.conversation_store import (
+    ConversationStore,
+    Lane,
+    LinkResult,
+    LocationInactive,
+    MessageRecord,
+)
 from app.ports.messaging import MessagingChannel, MessagingError
 from app.ports.proposal_actions import ActionRejected, ActionRequest, ProposalActions
 
@@ -59,6 +67,13 @@ OUTCOME_TARGET_GONE = "target_gone"
 OUTCOME_RECONNECT = "reconnect"
 OUTCOME_TOO_LATE = "too_late"
 OUTCOME_NO_REGULAR_HOURS = "no_regular_hours"
+
+# The option of the buttons of "¿De qué negocio me hablas?" (text.which): it only sets
+# the focus of that address on that proposal, and never answers anything.
+WHICH_OPTION = "focus"
+# The longest line of a business (with its line break) a message may open with: what a
+# new proposal is checked against, so that it always fits whatever the account becomes.
+_LONGEST_HEADER = "x" * (cm.HEADER_RESERVE - 1)
 
 
 @dataclass(frozen=True)
@@ -80,6 +95,7 @@ class ReviewInput:
     stars: int
     text: str  # written by a third party: data, only ever shown
     reply: str  # the suggested reply, already validated by whoever drafted it
+    location_id: str  # the active profile ("loc_...") the review is of: its lane
 
 
 @dataclass(frozen=True)
@@ -88,8 +104,8 @@ class KeyDateInput:
     kind: str  # "holiday" | "commercial" | "season"
     day: date
     name: str
+    location_id: str  # the active profile it is about ("loc_..."): its lane and the action's
     regular_hours: str = ""  # "de 9:00 a 14:00", if known, for the result message
-    location_id: str = ""  # the profile it is about ("loc_..."): the action targets it
     # Ask "¿Abres?" with Abro normal / Cierro / Otro horario, as for a holiday, even if
     # it is not one (Nochebuena). Holidays always do.
     ask_hours: bool = False
@@ -228,11 +244,10 @@ class ConversationService:
             return False
         if identity is None:
             return True
-        # Six digits from a linked chat are a code, unless a proposal is waiting for
-        # a text (then they are that text).
-        conversation = await self._store.get_conversation(identity.account_id)
-        active = await self._active(conversation)
-        return active is None or bool(STEPS[active.step].options)
+        # Six digits from a linked chat are a code, unless a proposal this chat sees is
+        # waiting for a text (then they are that text).
+        open_ones = await self._visible_active(identity)
+        return all(STEPS[p.step].options for p in open_ones)
 
     # ------------------------------------------------------------------- linking
 
@@ -294,13 +309,33 @@ class ConversationService:
         identity = result.identity
         if result.outcome is rules.LinkOutcome.MOVED:
             await self._reply(identity, "link.moved", **self._channel_words(identity.channel))
-        info = await self._store.get_account_info(identity.account_id)
         name = cm.one_line(event.sender_name, cm.NAME_MAX)
+        nombre = f", {name}" if name else ""
+        active = list(await self._store.active_locations(identity.account_id))
+        seen = [loc for loc in active if rules.sees(identity, loc)]
+        filtered = identity.location_filter is not None
+        if not filtered and len(active) <= 1:
+            # One business (or none active yet): the welcome of always, with its name.
+            if active:
+                negocio = await self._store.location_label(identity.account_id, active[0])
+            else:
+                info = await self._store.get_account_info(identity.account_id)
+                negocio = cm.one_line(info.business_name, 80)
+            await self._reply(
+                identity, "welcome.linked", nombre=nombre, negocio=negocio or "tu negocio"
+            )
+            return
+        # Only the businesses this chat sees are named (docs/multinegocio.md, 10).
+        labels = [await self._store.location_label(identity.account_id, loc) for loc in seen]
+        if len(labels) <= 1:
+            negocio = labels[0] if labels else "tu negocio"
+            await self._reply(identity, "welcome.linked", nombre=nombre, negocio=negocio)
+            return
         await self._reply(
             identity,
-            "welcome.linked",
-            nombre=f", {name}" if name else "",
-            negocio=cm.one_line(info.business_name, 80) or "tu negocio",
+            "welcome.linked_many",
+            nombre=nombre,
+            negocios=cm.businesses_phrase(labels, filtered=filtered),
         )
 
     async def _unlinked(self, event: InboundEvent, now: datetime) -> None:
@@ -344,8 +379,15 @@ class ConversationService:
     async def _button(self, event: InboundEvent, identity: ChannelIdentity, now: datetime) -> None:
         press = cm.decode_button_id(event.button_id)
         proposal = await self._store.get_proposal(press.proposal_id) if press else None
-        # Unknown and somebody else's get the same answer: nothing is revealed.
-        if press is None or proposal is None or not rules.may_act(identity, proposal.account_id):
+        # Unknown, somebody else's, of a business this chat does not see, or of a business
+        # that is no longer active: the same answer, and nothing is revealed.
+        if (
+            press is None
+            or proposal is None
+            or not rules.may_act(identity, proposal.account_id, proposal.location_id)
+            or proposal.outcome_reason == OUTCOME_LOCATION_INACTIVE
+            or not await self._store.location_active(proposal.account_id, _lane_of(proposal))
+        ):
             await self._ack(event, cm.render("stale.inactive"))
             return
         await self._record_in(event, identity, press.option, now, proposal.id)
@@ -356,16 +398,36 @@ class ConversationService:
         if not proposal.is_open:
             await self._ack(event, cm.render("stale.resolved"))
             return
-        conversation = await self._store.get_conversation(identity.account_id)
-        if conversation.active_proposal_id != proposal.id:
+        lane = await self._store.get_lane(proposal.account_id, _lane_of(proposal))
+        if lane.active_proposal_id != proposal.id:
             await self._ack(event, cm.render("queue.wait"))
             return
-        step = STEPS[proposal.step]
-        if press.step_token != proposal.step_token or press.option not in step.options:
+        if press.step_token != proposal.step_token:
+            await self._ack(event, cm.render("stale.inactive"))
+            return
+        if press.option == WHICH_OPTION:
+            # "¿De qué negocio?": this one. The text was not kept: it is asked again.
+            await self._ack(event)
+            await self._store.set_focus(identity.id, proposal.id, now)
+            await self._ask_again(proposal, identity)
+            return
+        if press.option not in STEPS[proposal.step].options:
             await self._ack(event, cm.render("stale.inactive"))
             return
         await self._ack(event)
+        await self._store.set_focus(identity.id, proposal.id, now)
         await self._choose(proposal, press.option, event, identity, now)
+
+    async def _ask_again(self, proposal: Proposal, identity: ChannelIdentity) -> None:
+        """After "¿De qué negocio?": the step of that proposal again, asking for the text
+        once more. A step with buttons is shown again with the same (still valid) ones."""
+        again = cm.render("text.write_again")
+        if STEPS[proposal.step].options:
+            await self._show_step(
+                proposal, [identity], MessageKind.REPLY, prefix=again, keep_token=True
+            )
+        else:
+            await self._reply(identity, "text.write_again", about=proposal)
 
     async def _answer_expired(
         self, proposal: Proposal, identity: ChannelIdentity, now: datetime
@@ -376,7 +438,9 @@ class ConversationService:
         if proposal.type is ProposalType.KEY_DATE:
             day = date.fromisoformat(proposal.payload["date"])
             if now.astimezone(zone).date() > day:
-                await self._reply(identity, "expired.past", fecha_larga=format_date_es(day))
+                await self._reply(
+                    identity, "expired.past", about=proposal, fecha_larga=format_date_es(day)
+                )
                 return
             expires = rules.local_midnight(day + timedelta(days=1), zone)
         else:
@@ -391,21 +455,41 @@ class ConversationService:
             sent_at=proposal.sent_at if proposal.type is ProposalType.KEY_DATE else None,
         )
         await self._store.save_proposal(reopened)
-        conversation = await self._store.get_conversation(proposal.account_id)
-        if await self._active(conversation) is not None:
-            await self._reply(identity, "queue.wait")
+        location_id = _lane_of(proposal)
+        if await self._lane_active(proposal.account_id, location_id) is not None:
+            await self._reply(identity, "queue.wait", about=proposal)
             return
         # Shown at once: it answers what the owner just did.
-        await self._deliver_next(proposal.account_id, now, answering=True)
+        await self._deliver_next(proposal.account_id, location_id, now, answering=True)
 
     # ---------------------------------------------------------------------- text
 
     async def _text(self, event: InboundEvent, identity: ChannelIdentity, now: datetime) -> None:
         text = event.text
         conversation = await self._store.get_conversation(identity.account_id)
-        active = await self._active(conversation)
+        open_ones = {p.id: p for p in await self._visible_active(identity)}
+        candidates = [
+            rules.TextCandidate(
+                proposal_id=p.id,
+                message_ref=p.message_refs.get(identity.id, ""),
+                any_text=p.step == REVIEW_EDIT_WAIT,
+                hours=STEPS[p.step].hours,
+            )
+            for p in open_ones.values()
+        ]
+        focus = await self._store.get_focus(identity.id) if len(candidates) > 1 else None
+        target = rules.resolve_text_target(text, candidates, event.reply_to, focus, now)
+        active = open_ones.get(target.proposal_id or "")
         await self._record_in(event, identity, text, now, active.id if active else None)
         reply = rules.classify_reply(text)
+        if target.kind is rules.TargetKind.IGNORE:
+            return  # a greeting or a thanks, with several things open: no answer
+        if target.kind is rules.TargetKind.QUOTE:
+            await self._reply(identity, "text.quote")
+            return
+        if target.kind is rules.TargetKind.WHICH:
+            await self._ask_which(identity, [open_ones[pid] for pid in target.choices])
+            return
         if active is None:
             if reply is Reply.COURTESY:
                 return
@@ -485,10 +569,23 @@ class ConversationService:
             else:
                 await self._clear_buttons(proposal)
                 await self._store.save_proposal(moved)
-                await self._reply(identity, key)
+                await self._reply(identity, key, about=proposal)
         else:
             # A step with closed options: they are shown again.
             await self._show_step(proposal, [identity], MessageKind.REPLY, keep_token=True)
+
+    async def _ask_which(self, identity: ChannelIdentity, proposals: list[Proposal]) -> None:
+        """A text that could be about several open proposals: "¿De qué negocio me
+        hablas?", with a button for each business (docs/multinegocio.md, 6.3). The text
+        is not kept anywhere but in the record of messages."""
+        labels = [await self._store.location_label(p.account_id, _lane_of(p)) for p in proposals]
+        buttons = tuple(
+            cm.Button(cm.encode_button_id(p.id, p.step_token, WHICH_OPTION), title)
+            for p, title in zip(proposals, cm.choice_titles(labels), strict=True)
+        )
+        await self._send(
+            identity, "text.which", cm.render("text.which"), MessageKind.REPLY, buttons
+        )
 
     async def _offer_owner_text(
         self, proposal: Proposal, text: str, step: str, identity: ChannelIdentity, **slots: Any
@@ -496,11 +593,14 @@ class ConversationService:
         """Show the owner their own text, exactly, and ask whether to send it."""
         text = text.strip()  # what is shown is what is kept, and what is sent
         if len(text) > OWNER_TEXT_MAX:
-            await self._reply(identity, "review.edit_too_long", **self._links())
+            await self._reply(identity, "review.edit_too_long", about=proposal, **self._links())
             return
         if not _showable(text):
             await self._reply(
-                identity, "google.rejected", motivo="el texto tiene caracteres que no admite"
+                identity,
+                "google.rejected",
+                about=proposal,
+                motivo="el texto tiene caracteres que no admite",
             )
             return
         moved = self._to_confirm(proposal, step, text=text, **slots)
@@ -577,7 +677,7 @@ class ConversationService:
             moved = replace(self._collecting(proposal, HOURS_OPTIONS), slots={"in_panel": True})
             await self._store.save_proposal(replace(moved, message_refs={}))
             await self._release(proposal)
-            await self._reply(identity, "generic.panel_link", **self._links())
+            await self._reply(identity, "generic.panel_link", about=proposal, **self._links())
         elif option in ("cancel", "leave_it"):
             await self._dismiss(proposal, option, identity, "generic.cancelled", "cancelled")
         else:
@@ -596,7 +696,7 @@ class ConversationService:
         await self._clear_buttons(proposal, option)
         moved = self._collecting(proposal, step)
         await self._store.save_proposal(replace(moved, message_refs={}))
-        await self._reply(identity, key, **values)
+        await self._reply(identity, key, about=proposal, **values)
 
     async def _dismiss(
         self, proposal: Proposal, option: str, identity: ChannelIdentity, key: str, reason: str
@@ -619,7 +719,7 @@ class ConversationService:
             )
         )
         await self._release(proposal)
-        await self._reply(identity, key)
+        await self._reply(identity, key, about=proposal)
 
     # ---------------------------------------------------------------- confirming
 
@@ -650,7 +750,9 @@ class ConversationService:
     ) -> None:
         """The only place an action is requested. It is reached from an inbound event
         of a linked address of the account that owns the proposal, and nowhere else."""
-        if not rules.may_act(identity, proposal.account_id) or not event.event_id:
+        if not rules.may_act(identity, proposal.account_id, proposal.location_id):
+            return
+        if not event.event_id:
             return
         path = {
             S.SENT: (E.OWNER_REPLIED, E.DATA_COMPLETE, E.CONFIRM),
@@ -670,7 +772,7 @@ class ConversationService:
             confirmed_at=now,
             confirmed_channel=identity.channel,
             confirmed_event_id=event.event_id,
-            location_id=str(proposal.payload.get("location_id", "")),
+            location_id=proposal.location_id or str(proposal.payload.get("location_id", "")),
         )
         try:
             receipt = await self._actions.create(request)
@@ -711,10 +813,13 @@ class ConversationService:
             )
         elif code == pa.REJECT_RECONNECT:
             await self._reply(
-                identity, "reconnect.needed", enlace_reconectar=self._config.reconnect_url
+                identity,
+                "reconnect.needed",
+                about=proposal,
+                enlace_reconectar=self._config.reconnect_url,
             )
         else:
-            await self._reply(identity, "google.failed", **self._links())
+            await self._reply(identity, "google.failed", about=proposal, **self._links())
 
     # =================================================================== linking
 
@@ -741,8 +846,11 @@ class ConversationService:
     # ============================================================= system events
 
     async def submit_review(self, account_id: str, review: ReviewInput) -> str | None:
-        """A new review with a suggested reply. Returns the proposal id, or None if
-        that review already had one. Raises ValueError if it cannot be shown whole."""
+        """A new review of one active profile, with a suggested reply. Returns the
+        proposal id, or None if that review already had one or the profile is not an
+        active profile of the account. Raises ValueError if it cannot be shown whole."""
+        if not review.location_id:
+            raise ValueError("reseña sin ficha")
         if not 1 <= review.stars <= 5:
             raise ValueError("estrellas fuera de rango")
         if not _showable(review.reply) or len(review.reply) > cm.SHOWN_REPLY_MAX:
@@ -760,13 +868,18 @@ class ConversationService:
             payload={"stars": review.stars, "review_text": review.text, "reply": review.reply},
             step=REVIEW_ASK,
             step_token=_new_token(),
+            location_id=review.location_id,
         )
-        self._first_message(proposal)  # raises now if it would not fit
+        # Raises now if it would not fit, even with the longest header.
+        self._first_message(proposal, _LONGEST_HEADER)
         return await self._submit(proposal, now)
 
     async def submit_key_date(self, account_id: str, key_date: KeyDateInput) -> str | None:
-        """A holiday or a commercial date to ask about. None if it already had a
-        proposal or it is too late for it."""
+        """A holiday or a commercial date to ask about, for one active profile. None if
+        it already had a proposal, it is too late for it or the profile is not an active
+        profile of the account."""
+        if not key_date.location_id:
+            raise ValueError("fecha clave sin ficha")
         if key_date.kind not in rules.KEY_DATE_KINDS:
             raise ValueError("tipo de fecha desconocido")
         now = self._clock()
@@ -788,7 +901,7 @@ class ConversationService:
                 "date": key_date.day.isoformat(),
                 "name": cm.one_line(key_date.name, 80),
                 "regular_hours": cm.one_line(key_date.regular_hours, 80),
-                **({"location_id": key_date.location_id} if key_date.location_id else {}),
+                "location_id": key_date.location_id,
                 **({"ask": "hours"} if key_date.ask_hours else {}),
             },
             step=HOLIDAY_ASK
@@ -797,8 +910,9 @@ class ConversationService:
             step_token=_new_token(),
             remind_at=remind_at,
             expires_at=expires_at,
+            location_id=key_date.location_id,
         )
-        self._first_message(proposal)
+        self._first_message(proposal, _LONGEST_HEADER)
         return await self._submit(proposal, now)
 
     async def _submit(self, proposal: Proposal, now: datetime) -> str | None:
@@ -806,7 +920,11 @@ class ConversationService:
             # With a leave scheduled nothing new is proposed (B12).
             if await self._store.on_leave(proposal.account_id):
                 return None
-            if not await self._store.add_proposal(proposal):
+            try:
+                added = await self._store.add_proposal(proposal)
+            except LocationInactive:
+                return None  # not an active profile of the account: nothing is proposed
+            if not added:
                 return await self._revive(proposal, now)
             await self._pump(proposal.account_id, now)
         return proposal.id
@@ -852,8 +970,9 @@ class ConversationService:
             if await self._store.on_leave(proposal.account_id):
                 return
             key, values = self._result_message(proposal, outcome)
-            for identity in await self._store.list_identities(proposal.account_id):
-                await self._reply(identity, key, kind=MessageKind.RESULT, **values)
+            # Only to the chats that see that business.
+            for identity in await self._identities(proposal):
+                await self._reply(identity, key, kind=MessageKind.RESULT, about=proposal, **values)
             await self._pump(proposal.account_id, now)
 
     async def handle_action_finished(self, action_id: str, outcome: ActionOutcome) -> bool:
@@ -897,25 +1016,41 @@ class ConversationService:
 
     async def tick(self) -> None:
         """What time alone brings: reminders, expiries and whatever was waiting for
-        the quiet hours to end. To be run every few minutes."""
+        the quiet hours to end. To be run every few minutes. Lane by lane, each under the
+        lock of its account."""
         now = self._clock()
-        for account_id in await self._store.accounts_with_open_work():
+        for account_id, location_id in await self._store.lanes_with_open_work():
             async with self._store.lock(account_id):
-                await self._pump(account_id, now)
+                if not await self._store.on_leave(account_id):
+                    await self._pump_lane(account_id, location_id, now)
 
     # ======================================================== queue and delivery
+    # One thread per account (the lock, the streak of texts not understood) and one lane
+    # per profile: at most one active proposal per profile (docs/multinegocio.md, 6.1).
+    # The queue, the interruption by a review of 1 or 2 stars and the weekly cap work
+    # inside each lane; the quiet hours are the account's.
 
     async def _pump(self, account_id: str, now: datetime) -> None:
-        """Bring the thread of an account up to date. Called with its lock held.
+        """Bring every lane of an account up to date. Called with its lock held.
         With a leave scheduled it does nothing: no proposal, reminder or expiry is sent
         until the leave is restored (B12)."""
         if await self._store.on_leave(account_id):
             return
-        conversation = await self._store.get_conversation(account_id)
+        unfinished = await self._store.list_unfinished_proposals(account_id)
+        for location_id in sorted({_lane_of(p) for p in unfinished}):
+            await self._pump_lane(account_id, location_id, now)
+
+    async def _pump_lane(self, account_id: str, location_id: str, now: datetime) -> None:
+        """Bring one lane up to date. Called with the lock of the account held and
+        without a leave scheduled."""
+        if not await self._store.location_active(account_id, location_id):
+            await self._cancel_inactive(account_id, location_id)
+            return
+        lane = await self._store.get_lane(account_id, location_id)
         zone = await self._zone(account_id)
         may_write = rules.may_send_proactively(now, zone, self._config.quiet)
-        identities = list(await self._store.list_identities(account_id))
-        for proposal in await self._store.list_unfinished_proposals(account_id):
+        identities = list(await self._store.identities_for(account_id, location_id))
+        for proposal in await self._lane_unfinished(account_id, location_id):
             due = rules.due_event(proposal, now)
             if due in (E.CANCEL, E.EXPIRE):
                 reason = "expired" if due is E.EXPIRE else "not_sent_in_time"
@@ -927,32 +1062,53 @@ class ConversationService:
                         parked_at=None,
                     )
                 )
-                if conversation.active_proposal_id == proposal.id:
-                    conversation = await self._release(proposal)
+                if lane.active_proposal_id == proposal.id:
+                    lane = await self._release(proposal)
             elif due is E.REMIND and may_write and identities:
-                if conversation.active_proposal_id == proposal.id:
+                if lane.active_proposal_id == proposal.id:
                     await self._remind(proposal, identities, zone, now)
-        active = await self._active(conversation)
-        waiting = rules.queue_order(await self._store.list_unfinished_proposals(account_id), now)
+        active = await self._lane_active(account_id, location_id)
+        waiting = rules.queue_order(await self._lane_unfinished(account_id, location_id), now)
         if active and waiting and may_write and rules.should_interrupt(active, waiting[0]):
-            # A review of 1 or 2 stars takes the place of what was open.
+            # A review of 1 or 2 stars takes the place of what was open in its lane.
             await self._store.save_proposal(replace(active, parked_at=now))
             await self._release(active)
-        await self._deliver_next(account_id, now)
+        await self._deliver_next(account_id, location_id, now)
 
-    async def _deliver_next(self, account_id: str, now: datetime, answering: bool = False) -> None:
+    async def _cancel_inactive(self, account_id: str, location_id: str) -> None:
+        """Lazy cleanup (docs/multinegocio.md, 6.5): the profile stopped being active
+        (removed by the worker, or by a reconnection, which cannot touch proposals).
+        What was not confirmed is cancelled with `location_inactive`, without telling
+        anybody, and its lane is freed. What is executing keeps its course."""
+        for proposal in await self._lane_unfinished(account_id, location_id):
+            if proposal.state in CANCELLED_BY_DEACTIVATION:
+                await self._store.save_proposal(
+                    replace(
+                        proposal,
+                        state=S.CANCELLED,
+                        outcome_reason=OUTCOME_LOCATION_INACTIVE,
+                        parked_at=None,
+                        message_refs={},
+                    )
+                )
+        lane = await self._store.get_lane(account_id, location_id)
+        if lane.active_proposal_id is not None:
+            await self._store.save_lane(replace(lane, active_proposal_id=None))
+
+    async def _deliver_next(
+        self, account_id: str, location_id: str, now: datetime, answering: bool = False
+    ) -> None:
         if await self._store.on_leave(account_id):
             return
-        conversation = await self._store.get_conversation(account_id)
-        if await self._active(conversation) is not None:
+        if await self._lane_active(account_id, location_id) is not None:
             return
-        identities = list(await self._store.list_identities(account_id))
+        identities = list(await self._store.identities_for(account_id, location_id))
         if not identities:
-            return  # nobody linked: nothing is sent, the panel has it
+            return  # nobody sees this business: nothing is sent, the panel has it
         zone = await self._zone(account_id)
         if not answering and not rules.may_send_proactively(now, zone, self._config.quiet):
             return
-        proposals = await self._store.list_unfinished_proposals(account_id)
+        proposals = await self._lane_unfinished(account_id, location_id)
         for proposal in rules.queue_order(proposals, now):
             if rules.is_parked(proposal):
                 resumed = replace(self._at_first_step(proposal), parked_at=None)
@@ -963,8 +1119,9 @@ class ConversationService:
             else:
                 first_time = proposal.sent_at is None
                 if first_time and counts_towards_weekly_cap(proposal.type):
+                    # The weekly cap is per business: each one gets its service.
                     recent = await self._store.count_capped_sent_since(
-                        account_id, now - rules.CAP_WINDOW
+                        account_id, now - rules.CAP_WINDOW, location_id=location_id
                     )
                     if not rules.under_weekly_cap(recent, self._config.weekly_cap):
                         continue  # postponed: it stays in the queue
@@ -978,8 +1135,7 @@ class ConversationService:
                     moved = replace(moved, remind_at=remind_at, expires_at=expires_at)
                 sent = await self._show_step(moved, identities, MessageKind.PROPOSAL)
             if sent:
-                fresh = await self._store.get_conversation(account_id)
-                await self._store.save_conversation(replace(fresh, active_proposal_id=proposal.id))
+                await self._store.save_lane(Lane(account_id, location_id, proposal.id))
                 return
 
     async def _remind(self, proposal: Proposal, identities: list, zone: Any, now: datetime) -> None:
@@ -1013,8 +1169,10 @@ class ConversationService:
             return f"el festivo del {day}"
         return f"{proposal.payload['name']} ({day})"
 
-    def _first_message(self, proposal: Proposal) -> tuple[str, str]:
-        """(key, text) of the message that opens a proposal."""
+    def _first_message(self, proposal: Proposal, header: str = "") -> tuple[str, str]:
+        """(key, text) of the message that opens a proposal, without its header. With a
+        `header` (the line of the business that will go above it), the excerpt of a review
+        leaves room for it."""
         data = proposal.payload
         if proposal.type is ProposalType.KEY_DATE:
             day = format_date_es(date.fromisoformat(data["date"]))
@@ -1033,20 +1191,20 @@ class ConversationService:
             return key, cm.render(key, estrellas=stars, respuesta=data["reply"])
         key = "review.new.negative" if data["stars"] <= 3 else "review.new.positive"
         fixed = len(cm.render(key, estrellas=stars, extracto="", respuesta=data["reply"]))
-        room = min(cm.REVIEW_EXCERPT_MAX, cm.CORE_LIMITS.max_body - cm.PREFIX_RESERVE - fixed)
+        room = cm.review_excerpt_room(fixed, header)
         if room < min(cm.REVIEW_EXCERPT_MIN, len(whole)):
             raise ValueError("la respuesta propuesta no deja sitio para la reseña")
         excerpt = cm.quoted(data["review_text"], room)
         return key, cm.render(key, estrellas=stars, extracto=excerpt, respuesta=data["reply"])
 
-    def _step_message(self, proposal: Proposal) -> tuple[str, str]:
-        """(key, text) of the message of the step the proposal is in."""
+    def _step_message(self, proposal: Proposal, header: str = "") -> tuple[str, str]:
+        """(key, text) of the message of the step the proposal is in, without its header."""
         step, slots = proposal.step, proposal.slots
         if step in (REVIEW_ASK, HOLIDAY_ASK, KEYDATE_ASK):
-            return self._first_message(proposal)
+            return self._first_message(proposal, header)
         if step == REVIEW_OPTIONS:
             # With the suggested reply in the same message as its "Publicar".
-            body = self._first_message(proposal)[1]
+            body = self._first_message(proposal, header)[1]
             return "review.clarify_options", f"{cm.render('review.clarify_options')}\n{body}"
         if step in (REVIEW_EDIT_CONFIRM, REVIEW_CLARIFY_TEXT):
             return step, cm.render(step, texto=slots["text"])
@@ -1079,14 +1237,18 @@ class ConversationService:
         cleared: bool = False,
     ) -> bool:
         """Send the message of the proposal's step, with its buttons, and store the
-        proposal. False (and nothing stored) if no address received it."""
+        proposal. False (and nothing stored) if no address received it. With several
+        active businesses, the message opens with the one it is about."""
         if not keep_token and not cleared:
             await self._clear_buttons(proposal)
         if not keep_token:
             proposal = replace(proposal, step_token=_new_token())
-        step_key, text = self._step_message(proposal)
+        header = await self._header(proposal)
+        step_key, text = self._step_message(proposal, header)
         if prefix:
             text = f"{prefix}\n{text}"
+        if header:
+            text = cm.with_header(header, text)
         buttons = tuple(
             cm.Button(
                 cm.encode_button_id(proposal.id, proposal.step_token, option),
@@ -1113,7 +1275,7 @@ class ConversationService:
             return
         if chosen is not None:
             shown = f"{shown}\n\n{cm.render('fmt.choice', titulo=cm.button_title(chosen))}"
-        identities = {i.id: i for i in await self._store.list_identities(proposal.account_id)}
+        identities = {i.id: i for i in await self._identities(proposal)}
         for identity_id, ref in proposal.message_refs.items():
             identity = identities.get(identity_id)
             if identity is not None:
@@ -1124,9 +1286,17 @@ class ConversationService:
         identity: ChannelIdentity,
         key: str,
         kind: MessageKind = MessageKind.REPLY,
+        *,
+        about: Proposal | None = None,
         **values: str,
     ) -> None:
-        await self._send(identity, key, cm.render(key, **values), kind)
+        """A message of the catalog. `about`: the proposal it answers within, whose
+        business opens it when the account has several active ones."""
+        text = cm.render(key, **values)
+        header = await self._header(about) if about is not None else ""
+        if header:
+            text = cm.with_header(header, text)
+        await self._send(identity, key, text, kind)
 
     async def _send(
         self,
@@ -1216,18 +1386,59 @@ class ConversationService:
         info = await self._store.get_account_info(account_id)
         return rules.timezone_for(info.timezone)
 
-    async def _active(self, conversation: Conversation) -> Proposal | None:
-        if conversation.active_proposal_id is None:
+    async def _lane_active(self, account_id: str, location_id: str) -> Proposal | None:
+        """The open proposal of that lane, if any."""
+        lane = await self._store.get_lane(account_id, location_id)
+        if lane.active_proposal_id is None:
             return None
-        proposal = await self._store.get_proposal(conversation.active_proposal_id)
+        proposal = await self._store.get_proposal(lane.active_proposal_id)
         return proposal if proposal is not None and proposal.is_open else None
 
-    async def _release(self, proposal: Proposal) -> Conversation:
-        conversation = await self._store.get_conversation(proposal.account_id)
-        if conversation.active_proposal_id == proposal.id:
-            conversation = replace(conversation, active_proposal_id=None)
-            await self._store.save_conversation(conversation)
-        return conversation
+    async def _lane_unfinished(self, account_id: str, location_id: str) -> list[Proposal]:
+        return [
+            p
+            for p in await self._store.list_unfinished_proposals(account_id)
+            if _lane_of(p) == location_id
+        ]
+
+    async def _visible_active(self, identity: ChannelIdentity) -> list[Proposal]:
+        """The open proposals of the lanes of the account that this address sees: what a
+        text of it may be about (the candidates of docs/multinegocio.md, 6.3)."""
+        unfinished = await self._store.list_unfinished_proposals(identity.account_id)
+        lanes = {_lane_of(p) for p in unfinished}
+        # In the order of the businesses (the oldest activation first): the order of the
+        # buttons of "¿De qué negocio?".
+        ordered = [loc for loc in await self._store.active_locations(identity.account_id)]
+        ordered += sorted(lanes - set(ordered))
+        found: list[Proposal] = []
+        for location_id in (loc for loc in ordered if loc in lanes):
+            if not rules.sees(identity, location_id or None):
+                continue
+            active = await self._lane_active(identity.account_id, location_id)
+            if active is not None:
+                found.append(active)
+        return found
+
+    async def _identities(self, proposal: Proposal) -> list[ChannelIdentity]:
+        """The linked addresses that see the business of that proposal."""
+        return list(await self._store.identities_for(proposal.account_id, _lane_of(proposal)))
+
+    async def _header(self, proposal: Proposal) -> str:
+        """The name of the business a message about that proposal opens with, or empty
+        when the account has a single active business: its messages stay as they always
+        were (docs/multinegocio.md, 6.2)."""
+        active = await self._store.active_locations(proposal.account_id)
+        if len(active) < 2:
+            return ""
+        return await self._store.location_label(proposal.account_id, _lane_of(proposal))
+
+    async def _release(self, proposal: Proposal) -> Lane:
+        """Free the lane of that proposal, if it holds it."""
+        lane = await self._store.get_lane(proposal.account_id, _lane_of(proposal))
+        if lane.active_proposal_id == proposal.id:
+            lane = replace(lane, active_proposal_id=None)
+            await self._store.save_lane(lane)
+        return lane
 
     @staticmethod
     def _at_first_step(proposal: Proposal) -> Proposal:
@@ -1265,6 +1476,14 @@ class ConversationService:
         """Everything is there: it only needs the owner's yes."""
         moved = cls._collecting(proposal, step, **slots)
         return replace(moved, state=advance(moved.state, E.DATA_COMPLETE))
+
+
+def _lane_of(proposal: Proposal) -> str:
+    """The lane of a proposal: its profile. A key date written before proposals had a
+    column for it names its profile in its payload."""
+    if proposal.location_id:
+        return proposal.location_id
+    return str(proposal.payload.get("location_id", ""))
 
 
 def _new_id() -> str:

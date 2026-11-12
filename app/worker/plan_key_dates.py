@@ -5,12 +5,13 @@ conversation process: it creates proposals and talks to nobody but the conversat
 Payload: {}. Its planner enqueues it once per local day, to run at 9:05
 (`plan_key_dates:<date>`).
 
-For each profile (`KeyDateProfiles.key_date_profiles`): its region (stored by the sync,
+For each ACTIVE profile of every account (`KeyDateProfiles.key_date_profiles`, linked
+chat or not: the panel shows them too): its region (stored by the sync,
 or from the postal code of its address; none known, national holidays only), the days of
 `hours_questions` within the lead days, skipping those that already have special hours in
 Google, and one proposal per profile and day (`<location>:<date>`): asking twice creates
 nothing. When the proposals go out is the conversation's business: quiet hours (9:00 to
-21:00 by default), the weekly cap and the queue.
+21:00 by default), the weekly cap of that profile and the queue of its lane.
 
 A failure with one profile does not stop the others; the job is tried again at the end
 (asking again is harmless).

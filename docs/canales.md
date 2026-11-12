@@ -52,23 +52,25 @@ Entradas del orquestador:
 | Método | Cuándo se llama |
 |---|---|
 | `handle_inbound(event)` | Llega un mensaje, una pulsación o un `/start` de cualquier chat |
-| `submit_review(account_id, ReviewInput)` | Hay una reseña nueva con respuesta propuesta |
-| `submit_key_date(account_id, KeyDateInput)` | El planificador decide que toca preguntar por una fecha clave |
+| `submit_review(account_id, ReviewInput)` | Hay una reseña nueva con respuesta propuesta. `ReviewInput.location_id` es obligatorio: la ficha activa de la reseña |
+| `submit_key_date(account_id, KeyDateInput)` | El planificador decide que toca preguntar por una fecha clave. `KeyDateInput.location_id` es obligatorio |
 | `handle_action_result(proposal_id, ActionOutcome)` y `handle_action_finished(action_id, ...)` | El ejecutor ha terminado la acción |
 | `tick()` | Cada pocos minutos: recordatorios, caducidades y lo que esperaba al fin del horario de silencio |
 | `create_link_code(account_id)` y `unlink(account_id, identity_id)` | Desde la sesión web |
 
-### Una propuesta activa y cola
+### Un hilo por cuenta, un carril por ficha
 
-Cada cuenta tiene un hilo (`conversation`) con una sola propuesta activa. Las demás esperan en este orden:
+Cada cuenta tiene un hilo (`conversation`): es el bloqueo de la cuenta y guarda los textos seguidos que no se entendieron. Cada ficha activa tiene un carril (`conversation_lane`) con, como mucho, una propuesta activa. Toda propuesta es de una ficha (`proposal.location_id`). El porqué está en `docs/multinegocio.md`, sección 6; cómo se conversa con varias fichas en un mismo chat, en la [sección 2b](#2b-varias-fichas-en-un-chat).
+
+Dentro de cada carril, las propuestas esperan en este orden:
 
 1. Reseñas de 1 o 2 estrellas.
 2. La propuesta que una de esas reseñas interrumpió (la más reciente primero). Se retoma con `queue.resume` y los botones del mensaje original.
 3. El resto, por prioridad (reseñas antes que fechas clave) y antigüedad.
 
-Una reseña de 1 o 2 estrellas interrumpe la propuesta activa, salvo que esa también sea una reseña de 1 o 2 estrellas. Mientras una propuesta espera, sus botones antiguos responden "está en espera" y no hacen nada.
+Una reseña de 1 o 2 estrellas interrumpe la propuesta activa **de su carril**, salvo que esa también sea una reseña de 1 o 2 estrellas. Una ficha nunca pausa a otra. Mientras una propuesta espera, sus botones antiguos responden "está en espera" y no hacen nada.
 
-La propuesta deja libre el hilo cuando el dueño confirma (estado `ejecutando`), la descarta, caduca o la lleva al panel.
+La propuesta deja libre su carril cuando el dueño confirma (estado `ejecutando`), la descarta, caduca o la lleva al panel.
 
 ### Botones
 
@@ -76,10 +78,12 @@ El identificador de cada botón es opaco: `prop_<16 hex>.<testigo de 6 hex>.<opc
 
 Ese identificador **no basta para actuar**. En cada pulsación el orquestador comprueba, en este orden:
 
-1. Que la dirección que pulsa está vinculada, ahora, a la cuenta dueña de la propuesta. Si no, responde lo mismo que a un identificador inexistente.
+1. Que la dirección que pulsa está vinculada, ahora, a la cuenta dueña de la propuesta, que **ve su ficha** (filtro del chat) y que la ficha sigue activa. Si no, responde `stale.inactive`, lo mismo que a un identificador inexistente.
 2. Que la propuesta sigue abierta. Si ya está resuelta, responde `stale.resolved`.
-3. Que es la propuesta activa del hilo. Si espera en la cola, responde `queue.wait`.
+3. Que es la propuesta activa de su carril. Si espera en la cola, responde `queue.wait`.
 4. Que el testigo es el del paso vigente y que la opción existe en ese paso. El testigo cambia en cada paso: el botón `Publicar` del mensaje original deja de valer cuando el dueño ha pulsado `Editar`.
+
+Una pulsación válida fija el **foco** de esa dirección en esa propuesta (`channel_identity.focus_proposal_id`).
 
 ### Confirmación
 
@@ -90,6 +94,48 @@ Lo que se confirma es exactamente lo que se mostró:
 - `Publicar` envía la respuesta propuesta tal como se guardó y se enseñó. Nunca se recorta: si no cabe con la reseña, se recorta el extracto de la reseña.
 - Tras `Editar`, el siguiente texto del dueño es la respuesta. Se le enseña entero (`review.edit_confirm`) y solo `Sí, enviar` crea la acción.
 - `Cierro` y `Abro normal` confirman en un toque, porque el mensaje del festivo describe el cambio completo. Un horario escrito a mano pasa siempre por el resumen `change.confirm`.
+
+## 2b. Varias fichas en un chat
+
+Desde el paso 6b de `docs/multinegocio.md`. Con una sola ficha activa en la cuenta, nada de esta sección cambia lo que lee el dueño.
+
+### Encabezado
+
+- Si la cuenta tiene **dos o más fichas activas**, todo mensaje ligado a una propuesta empieza con una línea con el nombre del negocio (`fmt.business`): la propuesta, el recordatorio, la propuesta retomada, el resultado de la acción y las respuestas dentro de la propuesta (`review.edit_ask`, `generic.cancelled`, `hours.ask`…).
+- El nombre lo da `ConversationStore.location_label`: el título de la ficha y, si otra ficha activa de la cuenta se llama igual, la localidad de su dirección ("Bar La Parra · Getafe").
+- **Con una sola ficha activa no hay encabezado**: los mensajes son exactamente los de siempre.
+- El extracto de la reseña cede el sitio del encabezado (`review_excerpt_room`). La respuesta propuesta nunca se recorta. Al crear la propuesta se comprueba que cabe con el encabezado más largo posible (`HEADER_RESERVE`), así que cabe aunque después se active otra ficha.
+
+### Texto libre con varias propuestas abiertas
+
+Los candidatos son las propuestas activas de los carriles que ve esa dirección. `resolve_text_target` decide, por este orden:
+
+1. **Respuesta citando un mensaje.** El adaptador de Telegram pone `reply_to_message.message_id` en `InboundEvent.reply_to`. Si es el último mensaje con botones de una candidata, es esa.
+2. **Una sola candidata.** Es esa, como siempre.
+3. **Foco** de menos de 30 minutos: `Editar` y después el texto, u `Otro horario` y después "de 10 a 14".
+4. **Tipo de respuesta.** Un horario, si solo una candidata admite horarios.
+5. Si sigue habiendo duda, `text.which` ("¿De qué negocio me hablas?") con un botón por negocio. Con más de 3, `text.quote` (que responda citando el mensaje). Un saludo o un agradecimiento no se contestan.
+
+El botón de `text.which` (opción `focus`) no responde nada: fija el foco y vuelve a enseñar el paso de esa propuesta con `text.write_again` ("Escríbelo otra vez, por favor."). El texto ambiguo solo se guarda en `channel_message`. Un "sí" o un "no" ambiguos nunca confirman nada.
+
+Seis dígitos de un chat vinculado son un código, salvo que alguna propuesta que ese chat ve espere un texto.
+
+### Filtro por chat
+
+- `channel_identity.location_filter`: `NULL` ve todas las fichas activas. El paso 7 deja elegirlo desde el panel.
+- Las propuestas, los recordatorios, los resultados y la retirada de botones solo van a las direcciones que ven la ficha (`identities_for`). Si nadie la ve, la propuesta espera en `programada`, como sin chat vinculado, y el panel la tiene.
+- Un chat filtrado puede actuar sobre sus fichas (decisión 6 del propietario). Un botón de otra ficha responde `stale.inactive`.
+- La bienvenida nombra lo que verá el chat: con una ficha, `welcome.linked` como siempre; con varias, `welcome.linked_many` con "tus N negocios" o la lista del filtro. `text.which` y el encabezado solo nombran fichas que ese chat ve.
+
+### Ficha que deja de estar activa
+
+- No se proponen reseñas ni fechas clave de una ficha inactiva: `submit_*` devuelve `None` (`LocationInactive`).
+- **Limpieza perezosa.** En cada `tick`, si la ficha de un carril ya no está activa (la desactivó el dueño, el worker la retiró o una reconexión la dejó fuera), sus propuestas sin confirmar pasan a `cancelada` con `outcome_reason = 'location_inactive'`, **sin enviar nada**, y su carril queda libre. Lo que está en `ejecutando` sigue su curso.
+- Sus botones responden `stale.inactive`.
+
+### Límite semanal por ficha
+
+El límite semanal se cuenta por ficha (`count_capped_sent_since(..., location_id=)`): cada negocio recibe su servicio. El horario de silencio sigue siendo el de la cuenta.
 
 ## 3. Estados de una propuesta
 
@@ -110,7 +156,7 @@ Tipos: `review_reply` y `key_date` tienen flujo (la fecha clave, con ejecutor de
 | Regla | Valor | Dónde |
 |---|---|---|
 | Horario de silencio | De 21:00 a 9:00, hora local de la cuenta. Admite horas punta por sector (`QuietHours.busy`) | `is_quiet` |
-| Límite semanal | 2 mensajes proactivos en 7 días móviles, sin contar reseñas. Configurable | `under_weekly_cap` |
+| Límite semanal | 2 mensajes proactivos por ficha en 7 días móviles, sin contar reseñas. Configurable | `under_weekly_cap` |
 | Reseña | Recordatorio a las 24 horas; caduca a los 7 días | `review_deadlines` |
 | Festivo | Recordatorio 1 día antes; caduca el mismo día (a las 00:00 locales) | `key_date_deadlines` |
 | Fecha comercial | Recordatorio 7 días antes; caduca 2 días antes | `key_date_deadlines` |
@@ -126,10 +172,10 @@ El horario de silencio se aplica a todo lo que el agente envía por iniciativa p
 
 Qué días se preguntan y cuándo: `docs/calendario.md`, "Preguntar por el horario". Aquí, cómo se conversa.
 
-- **Una propuesta por ficha y día** (`source_ref = <loc_…>:<AAAA-MM-DD>`), con `payload.location_id`. La crea `plan_key_dates` con `submit_key_date(..., ask_hours=True)`.
+- **Una propuesta por ficha activa y día** (`source_ref = <loc_…>:<AAAA-MM-DD>`), con `location_id` y `payload.location_id`. La crea `plan_key_dates` con `submit_key_date(..., ask_hours=True)` para todas las fichas activas, tengan o no chat vinculado.
 - **Mensaje.** Un festivo, `holiday.ask`. Nochebuena y Nochevieja, `eve.ask` ("El jueves 24 de diciembre es Nochebuena. ¿Abres?"). Los mismos botones: `Abro normal` · `Cierro` · `Otro horario`. `Cierro` y `Abro normal` confirman en un toque (guion 1.3); un horario escrito ("de 10 a 14", "de 9 a 13 y de 17 a 20") lo lee `parse_hours`, código determinista sin modelo, y pasa siempre por `change.confirm`. Tres franjas, o una que cruza la medianoche, no se interpretan: se pide aclaración.
-- **Confirmar** crea la acción `set_special_hours` por `SpecialHoursActions`, que llama a `PostgresStore.create_special_hours_action`: la misma puerta que el panel, con la ficha de la propuesta. Si esa ficha ya no es la elegida o hay baja programada, no se crea nada y el dueño lee `keydate.gone`.
-- **El panel** responde y descarta las mismas propuestas (`docs/contrato-web-api.md`, "Fechas clave"). Lo hace con el rol de la API, que bloquea antes el hilo (`SELECT ... FOR UPDATE` sobre `conversation`, igual que la conversación): una pulsación en Telegram y una respuesta en el panel nunca se tratan a la vez. La propuesta pasa a `ejecutando` (o `descartada`), cambia su testigo y deja libre el hilo: un botón antiguo de Telegram responde `stale.resolved`. El mensaje de Telegram conserva sus botones (la API no habla con Telegram).
+- **Confirmar** crea la acción `set_special_hours` por `SpecialHoursActions`, que llama a `PostgresStore.create_special_hours_action`: la misma puerta que el panel, con la ficha de la propuesta. Si esa ficha ya no está activa o hay baja programada, no se crea nada y el dueño lee `keydate.gone`.
+- **El panel** responde y descarta las mismas propuestas (`docs/contrato-web-api.md`, "Fechas clave"). Lo hace con el rol de la API, que bloquea antes el hilo (`SELECT ... FOR UPDATE` sobre `conversation`, igual que la conversación): una pulsación en Telegram y una respuesta en el panel nunca se tratan a la vez. La propuesta pasa a `ejecutando` (o `descartada`), cambia su testigo y deja libre su carril: un botón antiguo de Telegram responde `stale.resolved`. El mensaje de Telegram conserva sus botones (la API no habla con Telegram).
 - **Resultado.** El ejecutor encola `channel_action_result`; la conversación cierra la propuesta (`aplicada` o `fallida`) y avisa por el chat, también si se confirmó en el panel: `holiday.sent_closed`, `holiday.sent_open`, `change.sent`, `hours.too_late` (el día pasó antes de poder aplicarlo), `hours.no_regular` ("Abro normal" sin horario normal en Google) o `google.failed`.
 - **Caducidad.** Sin respuesta, caduca a las 00:00 del día (no se envía nada). Ese mismo día una pulsación la reabre (flujo 9) y el panel todavía la responde. Después, `expired.past`.
 
@@ -184,7 +230,7 @@ Si alguna vez hay que crear otro bot (por ejemplo, uno de pruebas): en Telegram,
 | Recibir en producción | `setWebhook` | Con `secret_token` y `allowed_updates: ["message", "callback_query"]` |
 | Recibir en local | `getUpdates` | Sondeo largo. Antes hay que llamar a `deleteWebhook` |
 
-`parse_update` traduce una actualización a un evento interno: mensaje de texto, `/start <código>` o pulsación. Devuelve `None` para todo lo demás: grupos y canales, bots, mensajes sin texto (fotos, audios), remitente distinto del chat y otros tipos de actualización.
+`parse_update` traduce una actualización a un evento interno: mensaje de texto, `/start <código>` o pulsación. Si el texto responde citando un mensaje, `reply_to` lleva el `message_id` citado. Devuelve `None` para todo lo demás: grupos y canales, bots, mensajes sin texto (fotos, audios), remitente distinto del chat y otros tipos de actualización.
 
 ### Límites verificados
 
@@ -205,7 +251,7 @@ Fuente: [Telegram Bot API](https://core.telegram.org/bots/api), versión 10.4 (9
 Sin confirmar:
 
 - **Número máximo de botones y longitud del título.** La documentación no los fija. El adaptador aplica topes propios: 8 botones y 64 caracteres. Los mensajes de la conversación nunca pasan de 3 botones ni de 20 caracteres, por el límite de WhatsApp.
-- **El ritmo de envío no se controla todavía.** Un error 429 se trata como temporal y lleva el `retry_after` que indica Telegram.
+- **Ritmo de envío.** `TelegramChannel.send` deja al menos 1 segundo entre dos mensajes al mismo chat: con varias fichas, varias propuestas pueden salir a la vez. Un 429 con `retry_after` de hasta 5 segundos se espera y se reintenta una vez. Uno más largo se trata como temporal (`MessagingUnavailable` con su `retry_after`) y la propuesta se vuelve a intentar en el siguiente `tick`. El límite global de unos 30 mensajes por segundo no se controla.
 
 ### El token
 
@@ -303,6 +349,8 @@ uv run pytest -q tests/test_conversation_store_postgres.py
 
 `db/schema_channels.sql` es idempotente y se aplica después de `schema.sql` y `schema_worker.sql`: en `docker-compose.yml` (al crear el volumen), `scripts/preparar_bd_pruebas.sh`, la integración continua (`scripts/ci/aplicar_esquema.sh`) y `deploy/deploy.sh` (en la misma transacción que los otros dos).
 
+> **Precaución:** Desde el paso 6b de `docs/multinegocio.md`, `db/schema_channels.sql` termina con `SELECT fichaitor_fill_conversation_lanes();`: copia la propuesta abierta de cada hilo (`conversation.active_proposal_id`) al carril de su ficha y vacía el hilo. Se puede repetir sin efecto. En el despliegue del 6b, detén antes el proceso de la conversación (`python -m app.worker.conversation`), aplica los esquemas con el código nuevo ya en su sitio y arráncalo después. Si el código antiguo siguiera en marcha, escribiría en el hilo y el carril dejaría de coincidir.
+
 Tres roles. La API es la sesión web; la conversación (`fichaitor_conversation`, proceso aparte) habla con el dueño y crea la acción; el worker ejecuta y, en estas tablas, solo borra (baja y retención).
 
 | Tabla | Contenido | API | Conversación (el worker solo borra) |
@@ -312,7 +360,8 @@ Tres roles. La API es la sesión web; la conversación (`fichaitor_conversation`
 | `link_failure_window` | Códigos incorrectos de todos los chats, por hora | Nada | Lee y suma en una sentencia |
 | `channel_sender` | Direcciones sin vincular, por huella: intentos, bloqueo y última respuesta genérica | Nada | Lee y escribe |
 | `proposal` | Propuestas con su estado, paso, testigo y confirmación registrada | Lee | Crea y mueve. No puede cambiar la cuenta, el tipo, el origen ni `payload` |
-| `conversation` | Un hilo por cuenta con la propuesta activa | Nada | Lee, crea y cambia la propuesta activa |
+| `conversation` | Un hilo por cuenta: el bloqueo y los textos no entendidos. Su `active_proposal_id` queda obsoleto desde el paso 6b y se borra en el paso 9 | Bloquea la fila | Lee, crea y bloquea |
+| `conversation_lane` | Un carril por ficha con su propuesta activa | Lee y la libera | Lee, crea y cambia la propuesta activa |
 | `channel_inbound_event` | Eventos entrantes ya vistos: el mismo se atiende una vez | Nada | Lee y escribe |
 | `channel_message` | Mensajes en los dos sentidos. Solo se añaden | Nada | Solo inserta |
 
@@ -349,7 +398,7 @@ Crea `app/adapters/conversation_store/postgres.py` con la clase `PostgresConvers
 - `link_identity`: en una transacción, `UPDATE channel_identity SET unlinked_at = $now WHERE channel = $1 AND address = $2 AND unlinked_at IS NULL AND account_id <> $3 RETURNING account_id` y después el `INSERT`.
 - `record_inbound`: `INSERT ... ON CONFLICT DO NOTHING` y devolver si insertó.
 - `add_proposal`: `INSERT ... ON CONFLICT (account_id, type, source_ref) DO NOTHING`.
-- `get_account_info`: `location.title` de `account.selected_location_id`. La zona horaria no existe todavía en `account`: devuelve `Europe/Madrid` hasta que exista.
+- `get_account_info`: la zona horaria, que no existe todavía en `account`: devuelve `Europe/Madrid` hasta que exista. El nombre de cada negocio lo da `location_label`; las fichas activas, `active_locations` y `location_active`.
 - Pruebas en `tests/test_conversation_store_postgres.py`, con el mismo guion que `tests/test_conversation_service.py` contra la base de pruebas.
 
 ### Paso 3. Rutas de la API
@@ -412,7 +461,7 @@ Hoy `WorkerStore.save_reviews` no dice qué reseñas son nuevas.
 1. Cambia `save_reviews` para que devuelva los identificadores (`rev_…`) de las reseñas insertadas en esa llamada que no tienen respuesta.
 2. En `SyncProfile.__call__` (`app/worker/sync_profile.py`), después de `save_reviews`, encola un job `propose_review` por cada una, con `idempotency_key=f"propose_review:{review_id}"`. Igual que `SentimentTrigger.after_sync`, nunca lanza.
 3. No propongas el histórico: solo reseñas con `created_at` de los últimos 7 días y posteriores a la primera vinculación de la cuenta.
-4. El job `propose_review`: busca las cuentas con dirección vinculada cuya ficha elegida es esa; pide el borrador a `ReplyWriter.write_reply(stars, text)`, lo pasa por `validate_reply` y llama a `service.submit_review(account_id, ReviewInput(review_id, stars, text, reply))`.
+4. El job `propose_review`: recorre los pares (cuenta, ficha) de `ReviewTarget.targets`: fichas **activas** con esa reseña, de cuentas sin baja programada, con la última sincronización en `ok` y con una dirección que ve esa ficha vinculada antes de escribirse la reseña. Pide el borrador como el panel (`ReviewReplies.draft`, con el tope por ficha) y llama a `service.submit_review(account_id, ReviewInput(review_id, stars, text, reply, location_id))`.
 5. Si no hay borrador válido, la reseña no se propone por el canal: queda en el panel. Una variante sin respuesta propuesta (solo `Editar` y `No responder`) queda pendiente.
 
 `submit_review` es idempotente por reseña: llamarlo dos veces no crea dos propuestas.
@@ -426,8 +475,10 @@ Añade en `app/worker/__main__.py` una tarea `planner` que, cada minuto, encola 
 | Job | Cadencia | Clave de idempotencia |
 |---|---|---|
 | `conversation_tick` | Cada 5 minutos | `conversation_tick:<franja de 5 min>` |
-| `sync_profile` de cada ficha elegida con dirección vinculada | Cada 30 minutos, de 8:30 a 21:00; cada 3 horas por la noche | `sync:<google_sub>:<location>:<franja>` |
+| `sync_profile` de cada ficha activa con una dirección vinculada que la ve | Cada 30 minutos, de 8:30 a 21:00; cada 3 horas por la noche. Cada ficha con su `run_at` dentro de la franja | `sync:<google_sub>:<location>:<franja>` |
 | `plan_key_dates` | Una vez al día, a las 9:05 | `plan_key_dates:<fecha>` |
+
+El `run_at` de cada sincronización es el inicio de la franja más un desplazamiento fijo de esa ficha: `sha256(google_sub, location)` módulo la duración de la franja (`spread_run_at`). Así, muchas fichas no llaman a Google en el mismo minuto, y cada ficha se sincroniza siempre en el mismo momento de su franja. La clave de idempotencia no cambia.
 
 Treinta minutos es el compromiso propuesto entre "al momento" y la cuota de la API de reseñas. Hay que contrastarlo con `docs/fase0/matriz-api.md` antes de fijarlo. Cuando existan las notificaciones de Google (Pub/Sub), la sincronización periódica pasa a ser el respaldo.
 
@@ -459,7 +510,7 @@ class ReviewReplyActions:
         return ActionReceipt(action_id, created=True)
 ```
 
-- `Store.create_reply_action` ya crea la acción, la fila de auditoría y el job `reply_review`, todo o nada. Ya comprueba que la reseña es de la ficha elegida de esa cuenta: es la segunda barrera de pertenencia.
+- `Store.create_reply_action` ya crea la acción, la fila de auditoría y el job `reply_review`, todo o nada. Ya comprueba que la reseña es de una ficha activa de esa cuenta: es la segunda barrera de pertenencia.
 - El índice `action_one_live_per_review` impide dos respuestas en vuelo para la misma reseña.
 - Para avisar del resultado, `ReplyReview` (`app/worker/reply_review.py`) encola `channel_action_result` con `{"action_id", "ok", "error"}` después de `finish_action` y dentro de `_fail`. Los códigos se traducen así: `review_gone` a `target_gone`, `reconnect` a `reconnect`, el resto a fallo genérico.
 - Conviene añadir a `audit_log` el canal y el evento que confirmaron (`request.confirmed_channel`, `request.confirmed_event_id`).
@@ -508,9 +559,10 @@ Las que no venían dictadas. Las tres primeras se apartan del guion.
 | Otro horario: una o dos franjas, sin cruzar la medianoche | El encargo fija una o dos. Un horario especial que acaba al día siguiente ocupa dos fechas en Google; se deja para Google o para `Abro normal` |
 | El panel mueve las propuestas con el rol de la API | Lo prevé el LLD (`/proposals/{id}/confirm` y `/dismiss`). Bloquea el hilo como la conversación |
 | La rama `Tengo oferta` no está | El guion la retira si los posts no entran en el MVP. No hay acción `create_post` |
-| Un hilo por cuenta, no por dirección | Con dueño y encargado vinculados, la propuesta activa es una sola. Se aparta de `conversation(channel_identity_id)` del LLD |
+| Un hilo por cuenta, no por dirección, y un carril por ficha | Con dueño y encargado vinculados, la propuesta activa de cada ficha es una sola. Se aparta de `conversation(channel_identity_id)` del LLD. Los carriles son de `docs/multinegocio.md`, 6.1 |
+| El encabezado del negocio solo aparece con dos o más fichas activas | Con una sola ficha, los mensajes no cambian |
 | Zona horaria con la regla de la UE escrita en el dominio | `zoneinfo` no trae datos en Windows sin el paquete `tzdata`, y no se podían añadir dependencias |
-| Seis dígitos de una dirección vinculada son un código, salvo que una propuesta espere un texto | En WhatsApp el código llega como texto normal |
+| Seis dígitos de una dirección vinculada son un código, salvo que una propuesta que ve espere un texto | En WhatsApp el código llega como texto normal |
 
 ## 11. Pendiente
 

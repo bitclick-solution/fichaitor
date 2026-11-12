@@ -281,6 +281,7 @@ def test_the_list_is_pending_until_the_worker_has_stored_the_reviews():
         "stale": False,
         "total": 0,
         "reviews": [],
+        "location_id": client.get("/api/v1/me").json()["selected_location_id"],
     }
 
 

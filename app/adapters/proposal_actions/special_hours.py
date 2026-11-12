@@ -7,8 +7,9 @@ panel's answer uses:
 - the hours are checked (one day; closed, regular hours, or one or two periods that open
   before they close) and kept as the canonical text, never changed after;
 - the action, its `special_hours_confirmed` audit row and the `set_special_hours` job
-  are created all or nothing, and only for the selected profile of that very account
-  (the second barrier of ownership, after the conversation's own);
+  are created all or nothing, and only for an active profile of that very account: the
+  profile of the proposal (the second barrier of ownership, after the conversation's
+  own, which also checks that the chat sees that profile);
 - at most one change per day and profile is on its way
   (`action_one_live_per_special_date`).
 
@@ -53,7 +54,7 @@ class SpecialHoursActions:
         except SpecialHoursInProgress:
             raise ActionRejected(REJECT_UNAVAILABLE) from None
         if action_id is None:
-            # Not the selected profile any more, or a leave is scheduled.
+            # That profile is no longer active, or a leave is scheduled.
             raise ActionRejected(REJECT_TARGET_GONE)
         return ActionReceipt(action_id, created=True)
 

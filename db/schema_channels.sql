@@ -668,3 +668,4 @@ REVOKE ALL ON FUNCTION fichaitor_fill_conversation_lanes() FROM PUBLIC;
 -- ---------------------------------------------------------------------------
 -- Solo desarrollo local y pruebas: está en db/dev-init.sql.
 -- En producción el usuario fichaitor_conversation_prod lo crea deploy/init-roles.sh.
+SELECT fichaitor_fill_conversation_lanes();

@@ -5,9 +5,11 @@ would be no new reviews to tell anybody about. Every minute it enqueues, with an
 idempotency key per slot, so that any number of processes enqueue each job once:
 
 - `conversation_tick`, every 5 minutes: key `conversation_tick:<slot>`;
-- `sync_profile` of every selected profile of an account with a linked address, every
-  30 minutes from 8:30 to 21:00 (local) and every 3 hours at night: key
-  `sync:<google_sub>:<location>:<slot>`.
+- `sync_profile` of every ACTIVE profile of an account with a linked address that sees
+  it, every 30 minutes from 8:30 to 21:00 (local) and every 3 hours at night: key
+  `sync:<google_sub>:<location>:<slot>`. Each one runs at its own moment of the slot
+  (`spread_run_at`), so that many profiles do not all call Google in the same minute
+  (docs/multinegocio.md, 7).
 
 - `plan_key_dates`, when given its kind, once a local day, to run at 9:05: key
   `plan_key_dates:<date>`.
@@ -16,9 +18,10 @@ A profile with a scheduled leave is not synced (the worker would skip it anyway)
 """
 
 import asyncio
+import hashlib
 import logging
 from collections.abc import Callable
-from datetime import UTC, datetime, tzinfo
+from datetime import UTC, datetime, timedelta, tzinfo
 
 from app.domain import channel_jobs
 from app.domain.conversation import DEFAULT_TIMEZONE, timezone_for
@@ -29,6 +32,17 @@ from app.worker import log
 SYNC_KIND = "sync_profile"
 SYNC_MAX_ATTEMPTS = 3
 PLAN_EVERY_SECONDS = 60.0
+
+
+def spread_run_at(google_sub: str, location: str, slot: str) -> datetime:
+    """When the sync of that profile runs within `slot` (`channel_jobs.sync_slot`): the
+    start of the slot plus a fixed offset of that profile, below the length of the slot.
+    The same profile always gets the same offset; different ones spread over the slot."""
+    every = channel_jobs.SYNC_DAY_EVERY if slot.startswith("d") else channel_jobs.SYNC_NIGHT_EVERY
+    seconds = int(every.total_seconds())
+    start = datetime.fromtimestamp(int(slot[1:]) * seconds, UTC)
+    digest = hashlib.sha256(f"{google_sub}\n{location}".encode()).digest()
+    return start + timedelta(seconds=int.from_bytes(digest[:8], "big") % seconds)
 
 
 class ChannelPlanner:
@@ -74,6 +88,7 @@ class ChannelPlanner:
                 self._sync_kind,
                 {"google_sub": google_sub, "location": location},
                 idempotency_key=key[:200],
+                run_at=spread_run_at(google_sub, location, slot),
                 max_attempts=SYNC_MAX_ATTEMPTS,
             ):
                 created["sync_profile"] += 1

@@ -61,6 +61,7 @@ class ProfileDiagnosisResponse(DiagnosisResponse):
     status: str  # ok, needs_reconnect or error: the state of the last sync
     synced_at: datetime | None  # the diagnosis is of the profile as it was then
     stale: bool
+    location_id: str  # the profile it is of (docs/multinegocio.md, 5.1)
 
 
 class DiagnosisUnavailable(BaseModel):
@@ -68,6 +69,7 @@ class DiagnosisUnavailable(BaseModel):
 
     status: str  # pendiente, needs_reconnect or error
     detail: str
+    location_id: str  # the profile it is of (docs/multinegocio.md, 5.1)
 
 
 def to_response(result: Diagnosis, attribution: str = GOOGLE_MAPS_ATTRIBUTION) -> DiagnosisResponse:
@@ -101,7 +103,9 @@ def to_profile_response(
         # A summary without facts was written before they existed: a sync is on its way.
         status = STATUS_PENDING if s is None or s.status == STATUS_OK else s.status
         return DiagnosisUnavailable(
-            status=status, detail=UNAVAILABLE_DETAIL.get(status, UNAVAILABLE_DETAIL_ERROR)
+            status=status,
+            detail=UNAVAILABLE_DETAIL.get(status, UNAVAILABLE_DETAIL_ERROR),
+            location_id=view.location_id,
         )
     result = diagnose_profile(
         ConnectedProfile(
@@ -123,4 +127,5 @@ def to_profile_response(
         status=s.status,
         synced_at=seconds(s.synced_at),
         stale=view.stale,
+        location_id=view.location_id,
     )

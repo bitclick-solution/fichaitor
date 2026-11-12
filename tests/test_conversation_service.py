@@ -8,7 +8,7 @@ from datetime import UTC, date, datetime, timedelta
 
 import pytest
 
-from app.adapters.conversation_store.memory import MemoryConversationStore
+from app.adapters.conversation_store.memory import MemoryConversationStore, MemoryLocation
 from app.adapters.messaging.fake import FakeChannel
 from app.application.conversation_service import (
     OUTCOME_TARGET_GONE,
@@ -26,12 +26,15 @@ from app.domain.conversation import AccountInfo, HoursAnswer, HoursKind
 from app.domain.proposals import OUTCOME_OFFBOARDING
 from app.domain.proposals import ProposalState as S
 from app.ports import proposal_actions as pa
+from app.ports.conversation_store import Lane
 from app.ports.messaging import MessagingUnavailable
 from app.ports.proposal_actions import InMemoryProposalActions
 
 START = datetime(2026, 11, 12, 10, 0, tzinfo=UTC)  # Thursday, 11:00 in Madrid
 OWNER, MANAGER, STRANGER = "1001", "1002", "9999"
 ACC, OTHER = "acc-bar", "acc-otro"
+# One active business per account: the messages are those of always, without a header.
+LOCATION = {ACC: "loc_bar", OTHER: "loc_otro"}
 REPLY = "Muchas gracias por tu reseña. Nos alegra que disfrutaras el arroz."
 HOLIDAY = date(2026, 12, 8)
 
@@ -42,6 +45,8 @@ class World:
         self.store = MemoryConversationStore()
         self.store.accounts[ACC] = AccountInfo(business_name="Bar Pepe")
         self.store.accounts[OTHER] = AccountInfo(business_name="Otro Bar")
+        self.store.locations[LOCATION[ACC]] = MemoryLocation(ACC, "Bar Pepe")
+        self.store.locations[LOCATION[OTHER]] = MemoryLocation(OTHER, "Otro Bar")
         self.telegram = FakeChannel("telegram")
         self.whatsapp = FakeChannel("whatsapp")
         self.actions = InMemoryProposalActions()
@@ -106,19 +111,21 @@ class World:
 
     def review(self, stars=5, text="El arroz, espectacular.", reply=REPLY, review_id=None, acc=ACC):
         review_id = review_id or f"rev_{next(self._events):016x}"
-        return self.run(self.service.submit_review(acc, ReviewInput(review_id, stars, text, reply)))
+        review = ReviewInput(review_id, stars, text, reply, LOCATION[acc])
+        return self.run(self.service.submit_review(acc, review))
 
     def holiday(self, day=HOLIDAY, name="Inmaculada Concepción", acc=ACC, regular=""):
         return self.run(
             self.service.submit_key_date(
-                acc, KeyDateInput(f"holiday:{day}", "holiday", day, name, regular)
+                acc,
+                KeyDateInput(f"holiday:{day}", "holiday", day, name, LOCATION[acc], regular),
             )
         )
 
     def commercial(self, day=date(2026, 11, 27), name="Black Friday", acc=ACC):
         return self.run(
             self.service.submit_key_date(
-                acc, KeyDateInput(f"black_friday:{day}", "commercial", day, name)
+                acc, KeyDateInput(f"black_friday:{day}", "commercial", day, name, LOCATION[acc])
             )
         )
 
@@ -129,6 +136,10 @@ class World:
         self.run(self.service.handle_action_result(proposal_id, ActionOutcome(ok, error, link)))
 
     # --- looking ---------------------------------------------------------------
+    def active(self, acc=ACC):
+        """The active proposal of the lane of the only business of the account."""
+        return self.store.lanes.get((acc, LOCATION[acc]), Lane(acc, "")).active_proposal_id
+
     def sent(self, address=OWNER):
         return self.telegram.to(address)
 
@@ -844,7 +855,7 @@ def test_take_it_to_the_panel_frees_the_conversation(w):
     w.press("Lo pongo en panel")
     assert w.last().text == "Lo tienes aquí: https://panel.test/app"
     assert w.proposal(proposal_id).state is S.COLLECTING
-    assert w.store.conversations[ACC].active_proposal_id is None
+    assert w.active() is None
     w.tick()
     assert w.last().key == "generic.panel_link"  # the chat does not bring it back
 
@@ -938,7 +949,7 @@ def test_low_star_review_jumps_ahead_and_the_interrupted_one_is_taken_up_again(w
     w.press("Otro horario")
     low = w.review(stars=1, text="Fatal.")
     assert w.last().key == "review.new.negative"
-    assert w.store.conversations[ACC].active_proposal_id == low
+    assert w.active() == low
     assert w.proposal(holiday).parked_at is not None
     # The interrupted proposal does not take answers meanwhile.
     w.press("Cierro", sent=old_holiday_message)
@@ -960,11 +971,11 @@ def test_low_star_review_jumps_ahead_and_the_interrupted_one_is_taken_up_again(w
 def test_low_star_review_does_not_interrupt_another_low_star_review(w):
     first = w.review(stars=2)
     second = w.review(stars=1)
-    assert w.store.conversations[ACC].active_proposal_id == first
+    assert w.active() == first
     assert w.proposal(second).state is S.SCHEDULED
     third = w.review(stars=5)
     w.press("No responder")
-    assert w.store.conversations[ACC].active_proposal_id == second
+    assert w.active() == second
     assert w.proposal(third).state is S.SCHEDULED
 
 
@@ -1044,7 +1055,7 @@ def test_low_star_review_does_not_interrupt_during_quiet_hours(w):
     holiday = w.holiday()
     w.at(datetime(2026, 11, 12, 22, 0, tzinfo=UTC))
     w.review(stars=1)
-    assert w.store.conversations[ACC].active_proposal_id == holiday
+    assert w.active() == holiday
     assert w.proposal(holiday).parked_at is None
 
 
@@ -1084,7 +1095,7 @@ def test_review_reminder_at_24_hours_once_and_expiry_at_7_days_in_silence(w):
     w.tick()
     assert w.proposal(proposal_id).state is S.EXPIRED
     assert len(w.sent()) == count  # expiry sends nothing
-    assert w.store.conversations[ACC].active_proposal_id is None
+    assert w.active() is None
 
 
 def test_reminder_waits_for_the_quiet_hours_to_end(w):
@@ -1152,7 +1163,7 @@ def test_a_proposal_that_cannot_be_delivered_stays_scheduled_and_is_tried_again(
     w.telegram.fail_with = MessagingUnavailable("telegram sendMessage: no disponible (502)")
     proposal_id = w.review()
     assert w.proposal(proposal_id).state is S.SCHEDULED
-    assert w.store.conversations[ACC].active_proposal_id is None
+    assert w.active() is None
     w.telegram.fail_with = None
     w.tick()
     assert w.proposal(proposal_id).state is S.SENT
@@ -1255,7 +1266,7 @@ def test_a_key_date_cancelled_by_a_leave_is_asked_again_after_restoring_it(w):
     w.store.proposals[first] = replace(
         w.proposal(first), state=S.CANCELLED, outcome_reason=OUTCOME_OFFBOARDING
     )
-    w.store.conversations[ACC] = replace(w.store.conversations[ACC], active_proposal_id=None)
+    w.store.lanes[(ACC, LOCATION[ACC])] = Lane(ACC, LOCATION[ACC])
     before = len(w.sent())
     assert w.holiday() == first  # the planner asks for it again the next day
     assert w.proposal(first).state is S.SENT

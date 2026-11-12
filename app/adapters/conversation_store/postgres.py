@@ -556,6 +556,34 @@ class PostgresConversationStore:
             location_id=location_id,
         )
 
+    async def active_locations(self, account_id: str) -> Sequence[str]:
+        async with self._conn() as conn:
+            rows = await conn.fetch(
+                """
+                SELECT l.id FROM location l
+                JOIN account a ON a.id = l.account_id AND a.deleted_at IS NULL
+                WHERE l.account_id = $1::uuid AND l.active_since IS NOT NULL
+                  AND l.removed_at IS NULL
+                ORDER BY l.active_since, l.id
+                """,
+                account_id,
+            )
+        return [r["id"] for r in rows]
+
+    async def location_active(self, account_id: str, location_id: str) -> bool:
+        async with self._conn() as conn:
+            return await conn.fetchval(
+                """
+                SELECT EXISTS (
+                    SELECT 1 FROM location l
+                    JOIN account a ON a.id = l.account_id AND a.deleted_at IS NULL
+                    WHERE l.account_id = $1::uuid AND l.id = $2
+                      AND l.active_since IS NOT NULL AND l.removed_at IS NULL)
+                """,
+                account_id,
+                location_id,
+            )
+
     # --- conversations ------------------------------------------------------------------
 
     async def get_conversation(self, account_id: str) -> Conversation:

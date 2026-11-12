@@ -6,6 +6,7 @@ in-memory tables the API shares with it. The model is the fake one.
 
 import asyncio
 from datetime import UTC, date, datetime, timedelta
+from unittest.mock import ANY
 from urllib.parse import parse_qs, urlparse
 
 from fastapi.testclient import TestClient
@@ -64,6 +65,8 @@ PENDING = {
     "generated_at": None,
     "next_update": None,
     "provisional": False,
+    # Which profile it is of (docs/multinegocio.md, 5.1).
+    "location_id": ANY,
 }
 NEXT_UPDATE = "Se actualiza con 3 reseñas nuevas, con una de 1 o 2 estrellas o a los 30 días."
 
@@ -204,13 +207,16 @@ def test_sentiment_needs_a_session_and_a_selected_profile():
     assert client.get(SENTIMENT).status_code == 200
 
 
-def test_nothing_in_the_request_chooses_the_profile():
+def test_only_our_own_identifier_of_a_profile_chooses_it():
+    # ?location= takes our identifier (docs/multinegocio.md, 5.1); the name Google
+    # gives the profile, or anything else in the request, chooses nothing.
     world = World(locations=[BAR, SHOP])
     client = world.connect_as()
     world.select(client, BAR.title)
     world.analyzed(location=SHOP.location, reviews=BAD)
-    for params in ({"location": SHOP.location}, {"location_id": "x", "google_sub": SUB}):
-        assert client.get(SENTIMENT, params=params).json()["status"] == "pendiente"
+    assert client.get(SENTIMENT, params={"location": SHOP.location}).status_code == 404
+    params = {"location_id": "x", "google_sub": SUB}
+    assert client.get(SENTIMENT, params=params).json()["status"] == "pendiente"
 
 
 # --- pendiente ------------------------------------------------------------
@@ -286,6 +292,7 @@ def test_the_analysis_has_the_exact_shape_of_the_contract():
         "generated_at",
         "next_update",
         "provisional",
+        "location_id",
     ]
     assert body["status"] == "ok"
     assert (body["based_on"], body["with_text"]) == (9, 7)

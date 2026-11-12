@@ -166,6 +166,7 @@ class Scene:
             )
         )
         location_id = self.api.locations[0].id
+        self.location_id = location_id
         assert run(self.api.select_location(self.account, location_id))
         self.api.tables.save_reviews(
             SUB,
@@ -209,7 +210,8 @@ class Scene:
             "created_at": row.created_at,
             "unanswered": row.reply_text is None,
             "live": row.removed_at is None,
-            "accounts": (self.account,),
+            "accounts": (),
+            "targets": ((self.account, self.location_id),),
         }
         return ReviewTarget(**{**values, **changes})
 
@@ -243,7 +245,7 @@ def test_propose_review_drafts_like_the_panel_and_proposes_once():
         {"unanswered": False},
         {"live": False},
         {"stars": None},
-        {"accounts": ()},
+        {"targets": ()},
         {"created_at": NOW - timedelta(days=8)},
     ],
 )

@@ -2,8 +2,9 @@
 holiday, Nochebuena), answering one and dismissing one. Documented in
 docs/contrato-web-api.md, "Fechas clave".
 
-Every route works on the selected profile of the account of the session and on nothing
-else: a proposal id from the request is only ever looked up among that account's own.
+The list is of one active profile (`?location=`, or the preference of the panel); a
+proposal id from the request is only ever looked up among the account's own, of any of
+its active profiles (docs/multinegocio.md, 5.4).
 Answering is the owner's confirmation: a pending action plus a job; the worker's
 executor does the write to Google.
 """
@@ -17,7 +18,13 @@ from typing import Literal
 from fastapi import APIRouter, Depends, HTTPException, Query, Response
 from pydantic import BaseModel, Field
 
-from app.api.session import active_account_guard, require_csrf_header
+from app.api.session import (
+    MSG_NO_LOCATION,
+    active_account_guard,
+    location_param,
+    require_csrf_header,
+    resolve_location,
+)
 from app.api.summary_out import seconds
 from app.application.key_dates import Answer, KeyDates
 from app.domain.actions import status_label, status_message
@@ -45,7 +52,7 @@ log = logging.getLogger("fichaitor.key_dates")
 PROPOSAL_ID = re.compile(r"prop_[0-9a-f]{16}")
 MAX_RANGES_ACCEPTED = 10  # bounds the request; the rule (one or two) answers in Spanish
 
-MSG_NO_PROFILE = "Primero elige con qué ficha quieres trabajar."
+MSG_NO_PROFILE = MSG_NO_LOCATION
 MSG_NOT_FOUND = "Esa fecha no está en tu ficha."
 MSG_CLOSED = "Esa fecha ya no está pendiente: ya se respondió o se descartó."
 MSG_PAST = "Ese día ya ha pasado. No se ha cambiado nada."
@@ -96,10 +103,12 @@ class KeyDateOut(BaseModel):
     expires_at: datetime | None
     answer: AnswerOut | None
     action: KeyDateActionOut | None
+    location_id: str  # the profile it is of (docs/multinegocio.md, 5.1)
 
 
 class KeyDatesResponse(BaseModel):
     dates: list[KeyDateOut]
+    location_id: str  # the profile they are of
 
 
 def _hhmm(value: str) -> str:
@@ -145,6 +154,7 @@ def to_out(view: KeyDateView, answerable: bool, weekly=()) -> KeyDateOut:
         answerable=answerable,
         expires_at=seconds(view.expires_at),
         answer=_answer_out(view),
+        location_id=view.location_id,
         action=(
             KeyDateActionOut(
                 id=action.id,
@@ -176,10 +186,11 @@ def build_router(
             raise HTTPException(404, MSG_NOT_FOUND)
         return proposal_id
 
-    async def weekly_of(account: Account):
-        profile = await store.selected_profile(account.id)
+    async def weekly_of(account: Account, location_id: str):
+        """The usual hours of that active profile, as the last sync read them."""
+        profile = await store.profile(account.id, location_id)
         if profile is None:
-            raise HTTPException(409, MSG_NO_PROFILE)
+            return ()
         facts = profile.summary.facts if profile.summary is not None else None
         return facts.regular_hours if facts is not None else ()
 
@@ -190,10 +201,12 @@ def build_router(
     async def my_key_dates(
         filter: Literal["pending", "all"] = Query("pending"),  # noqa: A002
         account: Account = Depends(current_account),  # noqa: B008
+        location: str | None = Depends(location_param),  # noqa: B008
     ) -> KeyDatesResponse:
-        weekly = await weekly_of(account)
-        found = await key_dates.list(account.id, pending_only=filter == "pending")
-        return KeyDatesResponse(dates=[out(v, weekly) for v in found])
+        loc = await resolve_location(store, account, location)
+        weekly = await weekly_of(account, loc)
+        found = await key_dates.list(account.id, pending_only=filter == "pending", location_id=loc)
+        return KeyDatesResponse(dates=[out(v, weekly) for v in found], location_id=loc)
 
     @router.post(
         "/api/v1/me/key-dates/{proposal_id}/answer",
@@ -209,8 +222,9 @@ def build_router(
         # This request IS the owner's confirmation ("Confirmar" in the panel): a session,
         # the protection header and the exact hours. What goes to Google is what is
         # checked here.
+        # The proposal names its profile: it must be an active one of this account,
+        # whatever the preference (docs/multinegocio.md, 5.4).
         proposal_id = id_or_404(proposal_id)
-        weekly = await weekly_of(account)
         ranges = tuple((r.open, r.close) for r in body.ranges)
         try:
             view = await key_dates.answer(
@@ -227,7 +241,7 @@ def build_router(
         except Exception as exc:
             log.error("respuesta a una fecha clave no registrada: %s", type(exc).__name__)
             raise HTTPException(503, MSG_NOT_SAVED) from None
-        return out(view, weekly)
+        return out(view, await weekly_of(account, view.location_id))
 
     @router.post(
         "/api/v1/me/key-dates/{proposal_id}/dismiss",
@@ -239,7 +253,6 @@ def build_router(
         account: Account = Depends(current_account),  # noqa: B008
     ) -> Response:
         proposal_id = id_or_404(proposal_id)
-        await weekly_of(account)
         try:
             await key_dates.dismiss(account.id, proposal_id)
         except KeyDateNotFound:

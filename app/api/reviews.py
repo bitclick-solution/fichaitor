@@ -1,10 +1,10 @@
-"""Reviews of the connected profile and the replies to them.
+"""Reviews of the active profiles of the account and the replies to them.
 Documented in docs/contrato-web-api.md, "Reseñas y respuestas".
 
-Every route works on the selected profile of the account of the session and on nothing
-else: a review or an action id from the request is only ever looked up among that
-account's own. The API never talks to Google here. Publishing is a pending action plus
-a job; the worker's executor does the write.
+The list is of one active profile (`?location=`, or the preference of the panel); a
+review or an action id from the request is only ever looked up among the account's own,
+of any of its active profiles (docs/multinegocio.md, 5.4). The API never talks to Google
+here. Publishing is a pending action plus a job; the worker's executor does the write.
 """
 
 import logging
@@ -15,7 +15,13 @@ from typing import Literal
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel, Field
 
-from app.api.session import active_account_guard, require_csrf_header
+from app.api.session import (
+    MSG_NO_LOCATION,
+    active_account_guard,
+    location_param,
+    require_csrf_header,
+    resolve_location,
+)
 from app.api.summary_out import STATUS_PENDING, seconds
 from app.application.profile_sync import ProfileSync
 from app.application.review_replies import (
@@ -35,7 +41,7 @@ log = logging.getLogger("fichaitor.reviews")
 DEFAULT_LIMIT = 50
 MAX_LIMIT = 200
 
-MSG_NO_PROFILE = "Primero elige con qué ficha quieres trabajar."
+MSG_NO_PROFILE = MSG_NO_LOCATION
 MSG_REVIEW_NOT_FOUND = "Esa reseña no está en tu ficha."
 MSG_ACTION_NOT_FOUND = "No encontramos ese envío."
 MSG_DRAFT_REJECTED = (
@@ -70,6 +76,7 @@ class ReviewsResponse(BaseModel):
     stale: bool
     total: int
     reviews: list[ReviewOut]
+    location_id: str  # the profile they are of (docs/multinegocio.md, 5.1)
 
 
 class DraftResponse(BaseModel):
@@ -147,10 +154,12 @@ def build_router(
         filter: Literal["unanswered", "all"] = "unanswered",  # noqa: A002
         limit: int = Query(DEFAULT_LIMIT, ge=1, le=MAX_LIMIT),
         account: Account = Depends(current_account),  # noqa: B008
+        location: str | None = Depends(location_param),  # noqa: B008
     ) -> ReviewsResponse:
         # Reading the list asks for a sync under the same rules as the summary, and
         # also when the reviews of the profile have never been stored.
-        view = await sync.view(account.id, need_reviews=True)
+        loc = await resolve_location(store, account, location)
+        view = await sync.view(account.id, loc, need_reviews=True)
         if view is None:
             raise HTTPException(409, MSG_NO_PROFILE)
         summary = view.summary
@@ -160,7 +169,10 @@ def build_router(
         else:
             status = summary.status
         page = await store.list_reviews(
-            account.id, unanswered_only=filter == "unanswered", limit=limit
+            account.id,
+            unanswered_only=filter == "unanswered",
+            limit=limit,
+            location_id=view.location_id,
         )
         return ReviewsResponse(
             status=status,
@@ -168,6 +180,7 @@ def build_router(
             stale=view.stale,
             total=page.total,
             reviews=[_review_out(r) for r in page.reviews],
+            location_id=view.location_id,
         )
 
     @router.post(

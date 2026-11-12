@@ -64,17 +64,20 @@ Cuarto bloque: **cuentas y sesiones**. La cuenta es la identidad de Google: no h
 
 | Ruta | Qué hace |
 |---|---|
-| `GET /api/v1/me` | Correo, fichas de la cuenta y ficha elegida |
-| `POST /api/v1/me/location` | Elige una ficha. 404 si no es de esa cuenta |
-| `GET /api/v1/me/diagnosis` | Diagnóstico de la ficha elegida, calculado con lo que el worker lee de la ficha conectada. No usa Google Places |
-| `GET /api/v1/me/summary` | Resumen de la ficha elegida, leído de lo que guarda el worker |
-| `GET /api/v1/me/reviews` | Reseñas de la ficha elegida, las que están sin responder primero |
+| `GET /api/v1/me` | Correo, fichas de la cuenta con su plan y sus indicadores, ficha preferida, uso de los planes y precios |
+| `POST /api/v1/me/location` | Guarda la ficha preferida del panel. Hasta el paso 9 de `docs/multinegocio.md`, activa una ficha inactiva. 404 si no es de esa cuenta |
+| `POST /api/v1/me/locations/{id}/activation` | Activa una ficha o le cambia el plan. 402 si no queda hueco |
+| `DELETE /api/v1/me/locations/{id}/activation` | Desactiva una ficha: deja de vigilarla y cancela sus propuestas |
+| `GET /api/v1/me/diagnosis` | Diagnóstico de una ficha activa, calculado con lo que el worker lee de la ficha conectada. No usa Google Places |
+| `GET /api/v1/me/summary` | Resumen de una ficha activa, leído de lo que guarda el worker |
+| `GET /api/v1/me/reviews` | Reseñas de una ficha activa, las que están sin responder primero |
 | `POST /api/v1/me/reviews/{id}/draft` | Respuesta redactada por el modelo para esa reseña. No publica nada |
 | `POST /api/v1/me/reviews/{id}/reply` | Publica la respuesta que el dueño confirma: crea la acción y encola su envío |
 | `GET /api/v1/me/actions/{id}` | Estado del envío, con un mensaje listo para mostrar |
 | `POST /api/v1/auth/logout` | Cierra la sesión y borra la cookie |
 
 - Sin sesión, o con la sesión caducada o cerrada, responden 401.
+- Una cuenta puede tener varias fichas activas. Las lecturas de una ficha admiten `?location=loc_…` y responden con su `location_id`; sin el parámetro, usan la ficha preferida. El contrato está en [docs/contrato-web-api.md](docs/contrato-web-api.md), «Multinegocio».
 - Las rutas que cambian algo exigen la cabecera `X-Requested-With: fichaitor`. Sin ella, 403.
 - Cerrar sesión marca la sesión como revocada; no borra la fila.
 - El usuario de la API lee y escribe en `account`, `location` y `session` solo las columnas que usan estas rutas, y no puede borrar. Sigue sin poder leer contactos ni tokens de Google.
@@ -103,13 +106,13 @@ Quinto bloque: el **worker**, el **resumen de la ficha** y el **diagnóstico de 
 La API conecta el panel con esos datos:
 
 - **Encola la sincronización** cuando el dueño elige ficha y cuando pide el resumen y este no existe, tiene más de `FICHAITOR_SUMMARY_STALE_HOURS` horas (6 por defecto) o su último intento falló.
-- **Al volver a conectar con Google**, si la cuenta ya tenía ficha elegida, encola su sincronización al momento, sin esperar a la ventana. Como máximo, una por ficha y minuto.
+- **Al volver a conectar con Google**, encola al momento la sincronización de cada ficha activa de la cuenta, sin esperar a la ventana. Como máximo, una por ficha y minuto.
 - **Una sincronización por ficha y ventana** de `FICHAITOR_SYNC_WINDOW_SECONDS` (15 minutos por defecto). La ventana va en la clave de idempotencia del job.
 - **`GET /api/v1/me/summary`** devuelve las cifras, o `status: "pendiente"` mientras el worker no ha terminado la primera lectura. La web sondea cada 3 segundos.
 - **`GET /api/v1/me/diagnosis`** calcula el diagnóstico ("Qué mejorar") con los hechos guardados y el calendario de festivos nacionales (`app/domain/profile_diagnosis.py`). No llama a Google Places, no cuesta dinero y no tiene límite. Mientras no hay datos responde 404 con `status: "pendiente"`. Añade a las reglas del diagnóstico público las que solo se saben con la ficha conectada: reseñas sin responder, festivos próximos sin horario, descripción y cambios hechos por Google.
 - **Todo fallo de la sincronización deja un estado** en el resumen (`needs_reconnect` o `error`), también cuando no hay conexión guardada o la ficha ya no está en ella. `pendiente` solo dura lo que tarda el worker en tomar el job.
 - Si encolar falla, la ruta del usuario responde igual y el fallo queda en el log, sin identificadores.
-- El resumen se busca por la identidad de Google de la cuenta de la sesión y su ficha elegida. Una cuenta no lee el resumen de otra, aunque administren la misma ficha.
+- El resumen se busca por la identidad de Google de la cuenta de la sesión y una de sus fichas activas. Una cuenta no lee el resumen de otra, aunque administren la misma ficha.
 - La API sigue sin poder leer la cola ni escribir resúmenes: solo inserta jobs y lee `profile_summary`.
 
 Para ver el recorrido completo sin Google (conectar, elegir ficha y ver el resumen):

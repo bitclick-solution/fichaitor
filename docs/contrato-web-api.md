@@ -156,6 +156,7 @@ Al volver a conectar, las fichas se actualizan con lo que Google lista en ese mo
 - `id`: `loc_` seguido de letras y números. Es propio de cada cuenta: no sirve en otra.
 - `place_id` puede ser `null`: Google no siempre lo da (fichas sin verificar o sin ubicación en el mapa).
 - 401 si no hay sesión.
+- **Multinegocio (2026-11-12):** cada ficha trae además `active`, `plan`, `active_since`, `status` y `pending`, y el cuerpo trae `plans` y `pricing`. `selected_location_id` pasa a ser la ficha preferida del panel. Consulta [Multinegocio](#multinegocio-2026-11-12).
 
 ### `POST /api/v1/me/location`
 
@@ -169,6 +170,8 @@ Elegir ficha pide además la sincronización de esa ficha, para que `GET /api/v1
 
 Errores: 401, 403 (falta la cabecera), 404 (la ficha no es de esa cuenta o no existe; la respuesta es la misma en los dos casos), 422.
 
+> **Multinegocio (2026-11-12), hasta que la web nueva esté desplegada:** si la ficha elegida está inactiva, esta ruta la **activa** con el plan por defecto (Gratis si está libre; si no, el primer plan de pago con hueco) y no desactiva ninguna otra. Puede responder además 402 (no queda hueco) y 409 con `code` (`free_taken`, `offboarding_pending` o `location_removed`), como [la activación](#post-apiv1melocationsidactivation). La web nueva activa primero y usa esta ruta solo para guardar la preferencia. Más adelante la ruta solo guardará la preferencia.
+
 ### `GET /api/v1/me/diagnosis`
 
 > **Importante (cambio del 2026-11-11): el diagnóstico del panel sale de la ficha conectada, no de Google Maps.**
@@ -180,6 +183,8 @@ Errores: 401, 403 (falta la cabecera), 404 (la ficha no es de esa cuenta o no ex
 > - Hay un estado nuevo, "todavía no hay diagnóstico": **404 con `status` y `detail`**. Consulta [Cuando todavía no hay diagnóstico](#cuando-todavía-no-hay-diagnóstico).
 > - Desaparecen de esta ruta el 429 (ya no hay límite) y el 503 de Google. El 404 cambia de significado.
 > - Aparecen mejoras nuevas (`code`): `unanswered_reviews`, `no_holiday_hours`, `no_description`, `short_description` y `google_changed`.
+
+> **Multinegocio (2026-11-12):** admite `?location=loc_…` y la respuesta lleva `location_id`. Sin `?location=`, la ficha preferida (`selected_location_id`). Consulta [La ficha de cada lectura](#la-ficha-de-cada-lectura-location).
 
 Diagnóstico de la ficha elegida. La API no llama a Google en esta ruta: lo calcula en el momento con lo que el worker guardó en la última sincronización. Responde rápido, no cuesta dinero y no tiene límite de uso.
 
@@ -228,6 +233,7 @@ Los diez primeros campos tienen la misma forma y el mismo significado que en el 
 | `status` | texto | `ok`, `needs_reconnect` o `error`: cómo acabó la última sincronización. Los mismos valores y el mismo significado que en [Estados del resumen](#estados-del-resumen) |
 | `synced_at` | fecha y hora UTC | Última lectura correcta de Google. El diagnóstico es de la ficha en ese momento |
 | `stale` | booleano | `true` si los datos tienen más de 6 horas. La API ya ha pedido una actualización |
+| `location_id` | texto | La ficha de la respuesta (2026-11-12). También va en el 404 de «todavía no hay diagnóstico» |
 
 Con `needs_reconnect` y `error` la API sigue sirviendo el diagnóstico de la última lectura correcta. Muéstralo con su fecha; el aviso de reconectar o de error ya lo da el resumen.
 
@@ -283,6 +289,8 @@ Errores:
 | 404 | Todavía no hay diagnóstico. El cuerpo trae `status` y `detail` |
 
 ### `GET /api/v1/me/summary`
+
+> **Multinegocio (2026-11-12):** admite `?location=loc_…` y la respuesta lleva `location_id`. Sin `?location=`, la ficha preferida (`selected_location_id`). Consulta [La ficha de cada lectura](#la-ficha-de-cada-lectura-location).
 
 Resumen de la ficha elegida: reseñas sin responder, horarios y cambios hechos por Google. La API no llama a Google en esta ruta: lee lo que el worker guardó en la última sincronización. Por eso responde rápido y no tiene límite de uso.
 
@@ -577,6 +585,8 @@ Primera función que **escribe en Google**: el dueño ve las reseñas de su fich
 
 Las cuatro rutas trabajan sobre la **ficha elegida de la cuenta de la sesión** y sobre ninguna otra. Los identificadores (`rev_…`, `act_…`) son propios de cada cuenta: no sirven en otra.
 
+> **Multinegocio (2026-11-12):** la lista admite `?location=loc_…` y su respuesta lleva `location_id` (consulta [La ficha de cada lectura](#la-ficha-de-cada-lectura-location)). El borrador, la publicación y el estado del envío ya identifican la ficha por la reseña o la acción: valen para una reseña de **cualquier ficha activa** de la cuenta, elegida o no. Una reseña de una ficha inactiva da 404. El tope de borradores redactados es por ficha.
+
 | Ruta | Qué hace | Llama a |
 |---|---|---|
 | `GET /api/v1/me/reviews` | Lista las reseñas guardadas | Nada |
@@ -594,6 +604,7 @@ Parámetros de consulta, los dos opcionales:
 |---|---|---|
 | `filter` | `unanswered` (solo las que no tienen respuesta) o `all` | `unanswered` |
 | `limit` | De 1 a 200 | 50 |
+| `location` | `loc_…`, una ficha activa de la cuenta (2026-11-12) | La ficha preferida |
 
 Respuesta 200:
 
@@ -815,7 +826,7 @@ La API no llama a Google ni al modelo en esta ruta: lee el análisis que el work
 
 ### `GET /api/v1/me/sentiment`
 
-Con sesión. Devuelve el análisis de la ficha elegida de esa cuenta. No lleva parámetros: nada de la petición elige la ficha.
+Con sesión. Devuelve el análisis de una ficha activa de esa cuenta: la de `?location=loc_…` o, sin el parámetro, la preferida. Ningún otro parámetro elige la ficha. La respuesta lleva `location_id` (2026-11-12). Consulta [La ficha de cada lectura](#la-ficha-de-cada-lectura-location).
 
 Respuesta 200:
 
@@ -1021,6 +1032,8 @@ En desarrollo, sin token del bot, `POST /api/v1/channels/link-code` y las dos ru
 
 Con antelación, Fichaitor pregunta al dueño si abre un festivo (o Nochebuena y Nochevieja) y con qué horario. La misma pregunta llega por Telegram y aparece en el panel; se responde en uno de los dos sitios y el otro la ve resuelta. Cuando el dueño confirma, el worker aplica el horario especial de ese día en Google y no toca los demás días. Cómo se eligen las fechas: `docs/calendario.md`.
 
+> **Multinegocio (2026-11-12):** la lista admite `?location=loc_…`; su respuesta y cada fecha llevan `location_id`. Responder y descartar ya identifican la ficha por la propuesta: valen para una fecha de **cualquier ficha activa** de la cuenta, sin necesidad de ficha elegida, y `regular_hours` es el de la ficha de esa fecha. Una fecha de una ficha inactiva da 404. Consulta [La ficha de cada lectura](#la-ficha-de-cada-lectura-location).
+
 Las tres rutas trabajan sobre la ficha elegida de la cuenta de la sesión. Las de escritura llevan la cabecera `X-Requested-With: fichaitor` (403 sin ella). Todas responden 401 sin sesión, 409 durante una baja programada y 409 si no hay ficha elegida. Todo `detail` de error es un texto en español listo para mostrar.
 
 ### `GET /api/v1/me/key-dates`
@@ -1044,9 +1057,11 @@ Las fechas pendientes de respuesta, la más próxima primero. Lista vacía si no
       "answerable": true,
       "expires_at": "2026-12-07T23:00:00Z",
       "answer": null,
-      "action": null
+      "action": null,
+      "location_id": "loc_3f2a"
     }
-  ]
+  ],
+  "location_id": "loc_3f2a"
 }
 ```
 
@@ -1112,6 +1127,142 @@ El dueño no quiere cambiar nada ese día. Respuesta 204, sin cuerpo. La ficha m
 ### Sin Google real
 
 Con `FICHAITOR_FAKE_GOOGLE=true`, el worker "aplica" el horario en una ficha en memoria. Sin base de datos (`MemoryStore`) la lista sale vacía: las propuestas las crea el proceso de la conversación.
+
+## Multinegocio (2026-11-12)
+
+Una cuenta puede tener **varias fichas activas** a la vez. Fichaitor vigila, sincroniza y avisa de cada ficha activa; ver una en el panel no pausa las demás. El plan completo está en [multinegocio.md](multinegocio.md); aquí va el contrato exacto con la web.
+
+- **Activa** quiere decir que la ficha tiene plan: `gratis`, `pro` o `pro_whatsapp`. Como mucho una ficha Gratis por cuenta, y una ficha de Google solo puede estar en Gratis en una cuenta de Fichaitor. Durante la beta, cada cuenta tiene 3 fichas Pro.
+- `selected_location_id` es la **ficha preferida** del panel: la que sirven las lecturas sin `?location=`. No activa ni pausa nada. Se guarda con `POST /api/v1/me/location`.
+- No hay cobro: con `pricing.charging: false`, los precios son de referencia.
+
+### La ficha de cada lectura (`?location=`)
+
+Las cinco lecturas de una ficha admiten el parámetro opcional `location`:
+
+- `GET /api/v1/me/diagnosis`
+- `GET /api/v1/me/summary`
+- `GET /api/v1/me/sentiment`
+- `GET /api/v1/me/reviews`
+- `GET /api/v1/me/key-dates`
+
+```
+GET /api/v1/me/summary?location=loc_3f2a
+```
+
+- Sin `location`, la API usa `selected_location_id`. La web anterior sigue funcionando sin cambios.
+- La ficha se busca siempre con la cuenta de la sesión. Una ficha de otra cuenta, una que no existe y un valor que no tiene la forma `loc_…` dan **la misma** respuesta 404.
+- Toda respuesta 200 de estas rutas lleva `location_id`, la ficha de la que es. También el 404 de «todavía no hay diagnóstico». **Descarta la respuesta** si su `location_id` no es la ficha que tienes seleccionada: el dueño cambió de negocio mientras cargaba.
+- Las rutas con identificador propio (`POST /api/v1/me/reviews/{id}/draft` y `…/reply`, `GET /api/v1/me/actions/{id}`, `POST /api/v1/me/key-dates/{id}/answer` y `…/dismiss`) no llevan `location`: la ficha sale de la reseña o de la propuesta, que debe ser de una ficha activa de la cuenta.
+
+| Caso | Código | `detail` |
+|---|---|---|
+| Sin `location` y sin ficha preferida | 409 | "Primero elige con qué ficha quieres trabajar." |
+| Ficha de otra cuenta, inexistente o con otra forma | 404 | "Esa ficha no está en tu cuenta." |
+| Ficha de la cuenta, inactiva | 409 | "Esa ficha no está activa." |
+| Baja programada | 409 | El de la baja, como en el resto de rutas de la ficha |
+
+Una ficha preferida que Google dejó de listar por falta de acceso se sigue sirviendo sin `location`, con `status: "needs_reconnect"`, como hasta ahora.
+
+### `GET /api/v1/me` con varias fichas
+
+```json
+{
+  "email": "dueno@example.com",
+  "locations": [
+    { "id": "loc_3f2a", "title": "Bar La Parra", "place_id": "ChIJ...", "verified": true,
+      "active": true, "plan": "gratis", "active_since": "2026-11-12T10:00:00Z",
+      "status": "ok", "pending": { "reviews": 3, "key_dates": 1 } },
+    { "id": "loc_9b1c", "title": "La Parra Getafe", "place_id": null, "verified": true,
+      "active": false, "plan": null, "active_since": null, "status": null, "pending": null }
+  ],
+  "selected_location_id": "loc_3f2a",
+  "connected": true,
+  "pending_deletion": null,
+  "plans": { "active": 1, "free_available": false,
+             "available": { "pro": 3, "pro_whatsapp": 0 } },
+  "pricing": {
+    "currency": "EUR", "period": "year", "charging": false,
+    "plans": { "pro": { "first": 3500, "additional": 3325 },
+               "pro_whatsapp": { "first": 5900, "additional": 5605 } },
+    "total": 0,
+    "if_activate": { "pro": 3500, "pro_whatsapp": 5900 },
+    "if_deactivate": { "loc_3f2a": 0 }
+  }
+}
+```
+
+Campos nuevos de cada ficha de `locations`:
+
+| Campo | Tipo | Qué es |
+|---|---|---|
+| `active` | booleano | Si Fichaitor la vigila y avisa de ella |
+| `plan` | texto o `null` | `gratis`, `pro` o `pro_whatsapp`. `null` si está inactiva. Con `pricing.charging: false`, muestra «Pro (beta)» sin precio |
+| `active_since` | fecha y hora UTC, o `null` | Desde cuándo está activa. Un cambio de plan no la cambia |
+| `status` | texto o `null` | Los mismos valores que el `status` del resumen: `ok`, `pendiente` (activa y aún sin sincronizar), `error` o `needs_reconnect`. `null` si está inactiva. Con `error` o `needs_reconnect`, el selector enseña un aviso |
+| `pending` | objeto o `null` | `{"reviews": n, "key_dates": n}`: reseñas sin responder (según la última sincronización) y fechas clave por contestar desde hoy. `null` si está inactiva |
+
+Campos nuevos del cuerpo:
+
+| Campo | Qué es |
+|---|---|
+| `plans.active` | Fichas activas de la cuenta |
+| `plans.free_available` | Si la cuenta puede activar todavía una ficha Gratis |
+| `plans.available` | Huecos libres en cada plan de pago: `{"pro": n, "pro_whatsapp": n}` |
+| `pricing` | Precios en **céntimos** al año. La web no guarda ni calcula ninguna cifra |
+| `pricing.plans` | Precio de la primera ficha de pago (`first`) y de las siguientes (`additional`, con el 5 % de descuento) de cada plan |
+| `pricing.total` | Lo que pagaría la cuenta con sus fichas activas. La ficha Gratis no cuenta como primera: el descuento empieza en la segunda de pago |
+| `pricing.if_activate` | Total resultante de activar una ficha más en cada plan de pago |
+| `pricing.if_deactivate` | Total resultante de desactivar cada ficha activa, por su `id` |
+| `pricing.charging` | `false` mientras no haya cobro (beta) |
+
+- Las fichas siguen ordenadas por `title`. El selector pone primero las activas.
+- Durante una baja programada, `status` y `pending` van a `null` en todas las fichas: no se lee nada de ninguna. `active` y `plan` siguen diciendo cómo están.
+
+### `POST /api/v1/me/locations/{id}/activation`
+
+Activa una ficha de la cuenta o cambia el plan de una ya activa. Lleva `X-Requested-With: fichaitor`.
+
+```json
+{ "plan": "pro" }
+```
+
+- El cuerpo es opcional: sin cuerpo, `{}` o `{"plan": null}`, una ficha inactiva recibe Gratis si queda libre y, si no, el primer plan de pago con hueco; una activa se queda con su plan.
+- Con `plan`, la ficha pasa a ese plan si cabe. Activar una ficha ya activa con otro plan le cambia el plan.
+- Respuesta 200: el cuerpo de `GET /api/v1/me`, ya actualizado. La API pide además la sincronización de la ficha, para que el panel tenga sus datos cuanto antes.
+- La API no cambia `selected_location_id` al activar. Para ver la ficha, envía `?location=` o guárdala como preferida.
+
+### `DELETE /api/v1/me/locations/{id}/activation`
+
+Desactiva una ficha. Lleva `X-Requested-With: fichaitor`. Sin cuerpo.
+
+- Al momento, Fichaitor deja de sincronizarla y de avisar de ella, y cancela sus propuestas pendientes (fechas clave y reseñas por chat). Si no se vuelve a activar en 30 días, se borra lo que se tenía de ella. No retira el acceso de Fichaitor a la cuenta de Google: para eso está «Desconectar Google».
+- Respuesta 200: el cuerpo de `GET /api/v1/me`. Si era la ficha preferida, `selected_location_id` pasa a la ficha activa más antigua (`active_since`) o a `null` si no queda ninguna.
+- Se puede desactivar la última ficha activa: la cuenta vuelve al estado «activa tu primera ficha».
+- Desactivar una ficha que ya estaba inactiva no cambia nada y responde 200.
+- Antes de llamar, pide confirmación con el texto de la sección 12 de [multinegocio.md](multinegocio.md).
+
+### Errores de la activación
+
+Todos llevan `detail` en español listo para mostrar. Los 409 llevan además `code`, para distinguirlos:
+
+| Código | `code` | Cuándo | `detail` |
+|---|---|---|---|
+| 401 | — | Sin sesión | "No has iniciado sesión." |
+| 402 | — | No queda hueco en el plan pedido (o en ninguno, sin `plan`). Solo en `POST`. Enseña la oferta de planes y, con `charging: false`, «Escríbenos para activar más fichas» | "No te quedan fichas libres en tu plan. Escríbenos para activar más fichas." |
+| 403 | — | Falta la cabecera `X-Requested-With` | "Petición no permitida." |
+| 404 | — | La ficha no es de la cuenta, no existe o el `id` no tiene la forma `loc_…`. La misma respuesta en todos los casos | "Esa ficha no está en tu cuenta." |
+| 409 | `free_taken` | Se pidió `gratis` y esa ficha de Google ya está en Gratis en otra cuenta. Sin `plan`, la API pasa sola al primer plan de pago con hueco | "Esta ficha ya está activa en el plan Gratis en otra cuenta. Actívala con un plan de pago o pide a esa cuenta que la desactive." |
+| 409 | `offboarding_pending` | La cuenta tiene una baja programada. También en `DELETE` | "Tienes una baja programada. Restáurala para seguir usando Fichaitor." |
+| 409 | `location_removed` | Google ha dejado de listar la ficha justo antes. Solo en `POST` | "Google ya no muestra esa ficha en tu cuenta. Vuelve a conectar con Google para verla." |
+| 422 | — | `plan` desconocido o un campo de más en el cuerpo. `detail` es una lista | — |
+
+### Lo que la web NO debe hacer con el multinegocio
+
+- Calcular precios, descuentos o huecos: salen de `plans` y `pricing`.
+- Mezclar respuestas de fichas distintas: descarta la que no traiga el `location_id` seleccionado.
+- Llamar a `POST /api/v1/me/location` con una ficha inactiva para activarla: activa con `POST …/activation`.
+- Reintentar una activación tras un 402 o un 409: no cambiará hasta que cambie la cuenta.
 
 ## Pantallas mínimas para tener algo visible
 

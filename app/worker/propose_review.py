@@ -5,11 +5,13 @@ Two halves, in two processes:
 - `ReviewProposals`, in the worker: after a sync, one `propose_review` job per review
   stored for the first time without a reply and written in the last 7 days. It never
   raises: a review that is not proposed stays in the panel.
-- `ProposeReview`, the job, in the conversation process: for every account whose
-  selected profile has that review and that had a linked address before the review was
-  written, it asks for the draft exactly as the panel does (`ReviewReplies.draft`: the
-  stored draft, the cap per account, `validate_reply`) and hands it to the
-  conversation (`submit_review`), which proposes it once per account and review.
+- `ProposeReview`, the job, in the conversation process: for every active profile that
+  has that review (`ReviewTarget.targets`: of an account without a scheduled leave, whose
+  last sync is "ok" and that had an address that sees that profile linked before the
+  review was written), it asks for the draft exactly as the panel does
+  (`ReviewReplies.draft`: the stored draft, the cap per profile, `validate_reply`) and
+  hands it to the conversation (`submit_review`, with the profile), which proposes it
+  once per account and review, in the lane of that profile.
 
 The review is data written by a third party: it is shown to the owner and passed to
 the model as data, never read to decide anything. Without a valid draft the review is
@@ -99,7 +101,7 @@ class ProposeReview:
             return
         unavailable = False
         proposed = 0
-        for account_id in target.accounts:
+        for account_id, location_id in target.targets:
             try:
                 draft = await self._replies.draft(account_id, review_id)
             except DraftUnavailable:
@@ -111,7 +113,8 @@ class ProposeReview:
                 continue
             try:
                 created = await self._service.submit_review(
-                    account_id, ReviewInput(review_id, target.stars, target.text, draft.text)
+                    account_id,
+                    ReviewInput(review_id, target.stars, target.text, draft.text, location_id),
                 )
             except ValueError:
                 # The reply cannot be shown whole next to the review: panel only.

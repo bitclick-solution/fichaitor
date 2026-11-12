@@ -6,8 +6,9 @@
 - the text is checked against what Google accepts and never changed;
 - `Store.create_reply_action` creates, all or nothing, the pending action with the
   confirmation time, its `reply_confirmed` audit row and the `reply_review` job, and
-  only for a review of the selected profile of that very account (the second barrier
-  of ownership, after the conversation's own);
+  only for a review of an active profile of that very account (the second barrier of
+  ownership, after the conversation's own, which also checks that the chat sees that
+  profile);
 - at most one reply per review is on its way (`action_one_live_per_review`).
 
 Only the executor of the worker writes to Google, after `claim_action` checks that the
@@ -49,7 +50,7 @@ class ReviewReplyActions:
         except InvalidReplyText:
             raise ActionRejected(REJECT_INVALID) from None
         except ReviewNotFound:
-            # Gone from Google, from the selected profile, or a leave is scheduled.
+            # Gone from Google, its profile is no longer active, or a leave is scheduled.
             raise ActionRejected(REJECT_TARGET_GONE) from None
         except ReplyInProgress:
             raise ActionRejected(REJECT_UNAVAILABLE) from None

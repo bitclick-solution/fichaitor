@@ -27,6 +27,7 @@ from app.api.channels import build_router as build_channels_router
 from app.api.diagnosis_out import DiagnosisResponse, to_response
 from app.api.google_oauth import build_router as build_google_router
 from app.api.key_dates import build_router as build_key_dates_router
+from app.api.locations import build_router as build_locations_router
 from app.api.me import build_router as build_me_router
 from app.api.offboarding import build_router as build_offboarding_router
 from app.api.reviews import build_router as build_reviews_router
@@ -330,6 +331,12 @@ def create_app(
             cookie_secure=settings.cookie_secure,
             clock=clock,
             sentiment_policy=sentiment_policy,
+        )
+    )
+    # Multinegocio (docs/multinegocio.md, 5.3): activate and deactivate a profile.
+    app.include_router(
+        build_locations_router(
+            store=store, sync=sync, clock=clock, cookie_secure=settings.cookie_secure
         )
     )
 

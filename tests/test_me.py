@@ -216,12 +216,25 @@ def test_me_has_the_shape_of_the_contract():
         "selected_location_id",
         "connected",
         "pending_deletion",
+        "plans",
+        "pricing",
     }
     assert body["connected"] is True and body["pending_deletion"] is None
     assert body["email"] == "dueno@example.com"
     assert body["selected_location_id"] is None
     first, second = body["locations"]
-    assert set(first) == {"id", "title", "place_id", "verified"}
+    assert set(first) == {
+        "id",
+        "title",
+        "place_id",
+        "verified",
+        "active",
+        "plan",
+        "active_since",
+        "status",
+        "pending",
+    }
+    assert first["active"] is False and first["status"] is None
     assert first["id"].startswith("loc_") and first["id"] != second["id"]
     assert (first["title"], first["place_id"], first["verified"]) == (
         "Bar La Parra (ejemplo)",

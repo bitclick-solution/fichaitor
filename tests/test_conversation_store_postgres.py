@@ -145,6 +145,7 @@ async def cleanup():
         f"DELETE FROM channel_message WHERE conversation_id IN"
         f" (SELECT id FROM conversation WHERE account_id IN {mine})",
         f"UPDATE conversation SET active_proposal_id = NULL WHERE account_id IN {mine}",
+        f"DELETE FROM conversation_lane WHERE account_id IN {mine}",
         f"DELETE FROM conversation WHERE account_id IN {mine}",
         f"DELETE FROM proposal WHERE account_id IN {mine}",
         f"DELETE FROM channel_message WHERE identity_id IN"
@@ -287,6 +288,14 @@ class Scene:
         )
 
     async def sync(self, sub: str = SUB) -> list:
+        # A good sync: the channels only propose reviews of a profile whose last sync is
+        # "ok" (docs/multinegocio.md, 6.5).
+        await owner(
+            "INSERT INTO profile_summary (google_sub, location, status) VALUES ($1, $2, 'ok')"
+            " ON CONFLICT DO NOTHING",
+            sub,
+            BAR.location,
+        )
         return await self.wstore.save_reviews(sub, BAR.location, REVIEWS.reviews, self.now)
 
     async def review_id(self, gbp_id: str, sub: str = SUB) -> str:

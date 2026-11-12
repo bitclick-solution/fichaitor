@@ -49,6 +49,8 @@ class SentimentResponse(BaseModel):
     generated_at: datetime | None
     next_update: str | None
     provisional: bool
+    # The profile it is of (docs/multinegocio.md, 5.1). The routes set it.
+    location_id: str | None = None
 
 
 def empty_response(status: str) -> SentimentResponse:

@@ -11,8 +11,9 @@ What it covers:
 - the new methods of `PostgresConversationStore`: lanes, the filter of each chat, the
   focus, the header, the quoted message and the weekly cap per profile;
 - `linked_profiles`, `key_date_profiles` and `review_targets` over active profiles;
-- the backfill of the lanes (3.8.4), which applying the schemas again never runs, and
-  applying the schemas again over real data, which changes nothing that exists.
+- the backfill of the lanes (3.8.4), which db/schema_channels.sql runs at its end since
+  the deployment of step 6b, and applying the schemas again over real data, which only
+  moves open threads to their lanes once.
 
 Rows are written by the owner, as the old code and the other roles left them, and
 deleted at the end. Nothing here uses the API's store.
@@ -729,23 +730,35 @@ async def _apply_schemas() -> None:
         await conn.close()
 
 
-def test_applying_the_schemas_again_changes_nothing_that_exists_nor_fills_the_lanes():
+def test_applying_the_schemas_again_fills_the_lanes_once_and_changes_nothing_else():
+    """From the deployment of step 6b, db/schema_channels.sql ends by calling the backfill:
+    the open thread moves to the lane of its profile, the threads are emptied, and
+    everything else stays as it was. Applying it again changes nothing more."""
+
     async def go():
-        account, done_account, *_ = await _threads_as_the_old_code_left_them()
+        account, done_account, a, active, _ = await _threads_as_the_old_code_left_them()
         identity = await new_identity(account)
         await owner(
             "UPDATE channel_identity SET focus_proposal_id = $2, focus_at = now() WHERE id = $1",
             identity,
             f"prop_{'a' * 16}",
         )
-        before = await _state([account, done_account])
+        accounts = [account, done_account]
+        before = await _state(accounts)
         await _apply_schemas()
+        once = await _state(accounts)
         await _apply_schemas()
-        return before, await _state([account, done_account])
+        return account, done_account, a, active, before, once, await _state(accounts)
 
-    before, after = run(go())
-    assert after == before
-    assert after["lanes"] == []  # the backfill waits for the deployment of step 6b
+    account, done_account, a, active, before, once, twice = run(go())
+    assert once["lanes"] == [(account, a, active)]
+    assert {(c[0], c[1]) for c in once["conversation"]} == {
+        (account, None),
+        (done_account, None),
+    }
+    for table in ("proposal", "channel_identity", "location"):
+        assert once[table] == before[table]
+    assert twice == once
 
 
 def test_the_backfill_moves_open_threads_to_their_lane_once():
