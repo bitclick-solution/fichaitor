@@ -9,6 +9,25 @@ Decidido por el propietario el 2026-11-11. Precios anuales, por ficha. Se revisa
 | Pro WhatsApp | 59 € | WhatsApp | Lo mismo que Pro, por WhatsApp, con 80 mensajes nuestros al mes |
 | Agencias | Por definir, tras el lanzamiento | — | Con clave propia del modelo de IA |
 
+## Varias fichas en una cuenta
+
+Decidido por el propietario el 2026-11-12 (`docs/multinegocio.md`, sección 15). Una cuenta puede tener varias fichas activas, cada una con su plan.
+
+| Plan | Primera ficha de pago | Segunda y siguientes |
+|---|---|---|
+| Pro | 35 € | 33,25 € |
+| Pro WhatsApp | 59 € | 56,05 € |
+
+- **Descuento del 5 %** desde la segunda ficha **de pago** de la cuenta.
+- La ficha Gratis no cuenta como primera: con una Gratis y una Pro, la Pro paga 35 €.
+- Como mucho una ficha Gratis por cuenta, y una ficha de Google solo puede estar activa en Gratis en una cuenta de Fichaitor.
+- Se pueden mezclar planes. WhatsApp solo avisa de las fichas Pro WhatsApp; las demás avisan por Telegram, correo o panel.
+- Paga el precio completo la ficha del plan más caro y, si empatan, la más antigua. El descuento se calcula al cobrar; no se guarda en la ficha.
+- Los 80 mensajes de WhatsApp son por ficha Pro WhatsApp y se suman en la bolsa de la cuenta, porque el chat es uno.
+- **Beta:** cada cuenta tiene un derecho de 3 fichas Pro sin cobro hasta el lanzamiento, ampliable a mano.
+
+El cálculo está en `app/domain/plans.py` (`pricing`, `yearly_price`).
+
 ## Reglas
 
 - **Sin monedero.** Al agotar los 80 mensajes del mes, los avisos siguen llegando por correo, web o Telegram hasta el mes siguiente. El servicio no se corta.

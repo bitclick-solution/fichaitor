@@ -193,7 +193,7 @@ GRANT UPDATE (revoked_at) ON session TO fichaitor_api;
 -- scope: una palabra fija y, si es por cuenta, el id de la cuenta. Nunca una IP ni un texto
 -- tecleado. La tarea de retención del worker borra las ventanas vencidas.
 CREATE TABLE IF NOT EXISTS usage_counter (
-    scope        text NOT NULL CHECK (scope ~ '^[a-z_]{1,40}(:[0-9a-f-]{1,64})?$'),
+    scope        text NOT NULL CHECK (scope ~ '^[a-z_]{1,40}(:[0-9a-z_-]{1,64})?$'),
     window_start timestamptz NOT NULL,
     expires_at   timestamptz NOT NULL,
     hits         integer NOT NULL CHECK (hits >= 0),
@@ -202,6 +202,14 @@ CREATE TABLE IF NOT EXISTS usage_counter (
 );
 
 CREATE INDEX IF NOT EXISTS usage_counter_expires ON usage_counter (expires_at);
+
+-- Multinegocio (2026-11-12): el tope de borradores pasa a ser por ficha
+-- ("review_draft:loc_..."), así que el ámbito admite también letras y '_'. Bases
+-- anteriores: se recrea la restricción con la expresión nueva, que acepta todo lo que
+-- aceptaba la antigua.
+ALTER TABLE usage_counter DROP CONSTRAINT IF EXISTS usage_counter_scope_check;
+ALTER TABLE usage_counter ADD CONSTRAINT usage_counter_scope_check
+    CHECK (scope ~ '^[a-z_]{1,40}(:[0-9a-z_-]{1,64})?$');
 
 -- La API cuenta (INSERT ... ON CONFLICT DO UPDATE en una sola sentencia) y lee la cuenta.
 -- No puede borrar un contador, cambiarle el ámbito o la ventana, ni ponerlo a cero.
@@ -249,3 +257,296 @@ $$;
 DROP TRIGGER IF EXISTS usage_counter_guard ON usage_counter;
 CREATE TRIGGER usage_counter_guard BEFORE INSERT OR UPDATE ON usage_counter
     FOR EACH ROW EXECUTE FUNCTION usage_counter_guard();
+
+-- ---------------------------------------------------------------------------
+-- Multinegocio (2026-11-12): varias fichas activas por cuenta. Consulta
+-- docs/multinegocio.md, secciones 3 y 4, y su sección 15 (decisiones del propietario).
+
+-- La ficha activa: el estado actual de cada ficha va en su fila de location.
+-- - active_since: desde cuándo está activa. NULL = inactiva. Activa quiere decir que se
+--   sincroniza, se propone por los chats y el panel la sirve.
+-- - plan: con qué plan está activa. NULL si está inactiva.
+-- - deactivated_at: desde cuándo está inactiva una ficha que estuvo activa. De aquí
+--   cuentan los 30 días de retención. Lo pone el disparador, nunca la API.
+ALTER TABLE location
+    ADD COLUMN IF NOT EXISTS active_since   timestamptz,
+    ADD COLUMN IF NOT EXISTS plan           text,
+    ADD COLUMN IF NOT EXISTS deactivated_at timestamptz;
+
+ALTER TABLE location DROP CONSTRAINT IF EXISTS location_plan_check;
+ALTER TABLE location ADD CONSTRAINT location_plan_check
+    CHECK (plan IN ('gratis', 'pro', 'pro_whatsapp'));
+ALTER TABLE location DROP CONSTRAINT IF EXISTS location_active_has_plan;
+ALTER TABLE location ADD CONSTRAINT location_active_has_plan
+    CHECK ((active_since IS NULL) = (plan IS NULL));
+ALTER TABLE location DROP CONSTRAINT IF EXISTS location_removed_not_active;
+ALTER TABLE location ADD CONSTRAINT location_removed_not_active
+    CHECK (removed_at IS NULL OR active_since IS NULL);
+
+CREATE INDEX IF NOT EXISTS location_active ON location (account_id)
+    WHERE active_since IS NOT NULL;
+
+-- Decisión 5 del propietario: una ficha de Google solo puede estar activa en Gratis en
+-- una cuenta de Fichaitor. gbp_location ("locations/<id>") es único en todo Google.
+-- El disparador de abajo lo comprueba antes con un mensaje propio (gratis_ocupada); este
+-- índice es la barrera final, también con dos activaciones a la vez en dos cuentas.
+CREATE UNIQUE INDEX IF NOT EXISTS location_gratis_one_account ON location (gbp_location)
+    WHERE plan = 'gratis';
+
+-- Derechos de plan: "esta cuenta puede tener N fichas activas en este plan hasta esta
+-- fecha". Preparan el cobro sin construirlo; cada suscripción será un derecho 'pago'.
+-- El plan gratis no necesita derecho: como mucho una ficha gratis activa por cuenta.
+-- Solo los escribe el propietario (y el disparador de las cuentas nuevas, abajo). La API
+-- los lee; el worker los borra en la retención.
+-- ON DELETE CASCADE: una cuenta no se borra nunca (queda como lápida), así que en
+-- producción no actúa; deja que se borre a mano o en las pruebas sin tocar esta tabla.
+CREATE TABLE IF NOT EXISTS plan_entitlement (
+    id           uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+    account_id   uuid NOT NULL REFERENCES account (id) ON DELETE CASCADE,
+    plan         text NOT NULL CHECK (plan IN ('pro', 'pro_whatsapp')),
+    quantity     smallint NOT NULL CHECK (quantity BETWEEN 1 AND 100),
+    starts_at    timestamptz NOT NULL,
+    ends_at      timestamptz CHECK (ends_at IS NULL OR ends_at > starts_at),
+    source       text NOT NULL CHECK (source IN ('beta', 'manual', 'pago')),
+    external_ref text CHECK (length(external_ref) BETWEEN 1 AND 200),
+    created_at   timestamptz NOT NULL DEFAULT now()
+);
+
+CREATE INDEX IF NOT EXISTS plan_entitlement_account ON plan_entitlement (account_id);
+
+-- Registro de activaciones: de solo inserción, lo escribe el disparador (no se puede
+-- olvidar) y sirve para auditar y, con el cobro, para prorratear. Sin clave ajena: dura
+-- más que la fila de location, que la retención borra. Sin datos personales.
+-- written_by: el usuario con el que se conectó quien hizo el cambio (session_user).
+-- reason: owner (el dueño, desde la API), removed (la ficha se retiró), migration (el
+-- relleno de abajo) u otro código que pida quien escribe con fichaitor.activation_reason.
+CREATE TABLE IF NOT EXISTS location_activation_log (
+    id          bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+    at          timestamptz NOT NULL DEFAULT now(),
+    written_by  name NOT NULL DEFAULT current_user,
+    account_id  uuid NOT NULL,
+    location_id text NOT NULL CHECK (length(location_id) <= 64),
+    event       text NOT NULL CHECK (event IN ('activated', 'deactivated', 'plan_changed')),
+    plan        text CHECK (plan IN ('gratis', 'pro', 'pro_whatsapp')),
+    reason      text CHECK (reason ~ '^[a-z_]{1,40}$')
+);
+
+CREATE INDEX IF NOT EXISTS location_activation_log_account
+    ON location_activation_log (account_id);
+
+-- Reglas de la ficha activa, en la base y no solo en el código:
+-- 1. Al retirar una ficha (removed_at) deja de estar activa, la retire quien la retire
+--    (sync_locations de la API, record_denied y begin_offboarding del worker).
+-- 2. Al activar o cambiar de plan, fuera del propietario: la cuenta se bloquea (dos
+--    activaciones a la vez se cuentan una detrás de otra), no está dada de baja ni tiene
+--    una baja programada, active_since está a menos de un minuto del reloj de la base y
+--    hay hueco en el plan: gratis, una por cuenta y esa ficha de Google sin otra cuenta
+--    que la tenga en gratis; pro y pro_whatsapp, tantas como la suma de los derechos
+--    vigentes. Si no, check_violation con un mensaje fijo que la API traduce:
+--      limite_fichas (402), gratis_ocupada (409 free_taken), baja_programada (409
+--      offboarding_pending), cuenta_de_baja, fecha_activacion y ficha_retirada.
+-- 3. Al desactivar, deactivated_at = now(); al activar otra vez, NULL.
+-- Con los privilegios de quien escribe (no SECURITY DEFINER): así fichaitor_is_owner ve
+-- al propietario de verdad. Quien activa es la API, que lee todo lo que se consulta aquí.
+-- Los privilegios de columna se comprueban sobre las del SET, no sobre las que cambia el
+-- disparador: el worker sigue retirando fichas con solo UPDATE (removed_at).
+CREATE OR REPLACE FUNCTION location_active_guard() RETURNS trigger
+LANGUAGE plpgsql SET search_path = pg_catalog, public AS $$
+DECLARE
+    is_owner boolean := fichaitor_is_owner(TG_RELID);
+    was_active boolean := false;
+    gone timestamptz;
+    used integer;
+    allowed integer;
+BEGIN
+    IF TG_OP = 'UPDATE' THEN
+        was_active := OLD.active_since IS NOT NULL;
+    ELSIF NOT is_owner THEN
+        NEW.deactivated_at := NULL;
+    END IF;
+    -- 1. Retirada. Activar una ficha que ya estaba retirada es un error, no un no-op.
+    IF NEW.removed_at IS NOT NULL THEN
+        IF NOT is_owner AND NEW.active_since IS NOT NULL
+           AND (TG_OP = 'INSERT' OR OLD.removed_at IS NOT NULL) THEN
+            RAISE EXCEPTION 'ficha_retirada' USING ERRCODE = 'check_violation';
+        END IF;
+        IF was_active THEN
+            NEW.deactivated_at := now();
+        END IF;
+        NEW.active_since := NULL;
+        NEW.plan := NULL;
+        RETURN NEW;
+    END IF;
+    -- 3. Desactivar (o seguir inactiva). Un plan sin active_since lo rechaza la
+    -- restricción location_active_has_plan.
+    IF NEW.active_since IS NULL THEN
+        IF was_active THEN
+            NEW.plan := NULL;
+            NEW.deactivated_at := now();
+        END IF;
+        RETURN NEW;
+    END IF;
+    -- Activa y sin cambios en lo que decide el plan: nada que comprobar.
+    IF was_active AND NEW.active_since = OLD.active_since
+       AND NEW.plan IS NOT DISTINCT FROM OLD.plan THEN
+        RETURN NEW;
+    END IF;
+    -- 2. Activar o cambiar de plan.
+    NEW.deactivated_at := NULL;
+    IF is_owner OR NEW.plan IS NULL THEN
+        RETURN NEW;
+    END IF;
+    SELECT a.deleted_at INTO gone FROM account a WHERE a.id = NEW.account_id FOR UPDATE;
+    IF NOT FOUND OR gone IS NOT NULL THEN
+        RAISE EXCEPTION 'cuenta_de_baja' USING ERRCODE = 'check_violation';
+    END IF;
+    IF EXISTS (SELECT 1 FROM offboarding o
+               WHERE o.account_id = NEW.account_id
+                 AND o.restored_at IS NULL AND o.effective_at IS NULL) THEN
+        RAISE EXCEPTION 'baja_programada' USING ERRCODE = 'check_violation';
+    END IF;
+    IF (NOT was_active OR NEW.active_since <> OLD.active_since)
+       AND abs(extract(epoch FROM NEW.active_since - now())) > 60 THEN
+        RAISE EXCEPTION 'fecha_activacion' USING ERRCODE = 'check_violation';
+    END IF;
+    SELECT count(*) INTO used FROM location l
+    WHERE l.account_id = NEW.account_id AND l.id <> NEW.id AND l.plan = NEW.plan;
+    IF NEW.plan = 'gratis' THEN
+        allowed := 1;
+    ELSE
+        SELECT coalesce(sum(e.quantity), 0) INTO allowed FROM plan_entitlement e
+        WHERE e.account_id = NEW.account_id AND e.plan = NEW.plan
+          AND e.starts_at <= now() AND (e.ends_at IS NULL OR e.ends_at > now());
+    END IF;
+    IF used + 1 > allowed THEN
+        RAISE EXCEPTION 'limite_fichas' USING ERRCODE = 'check_violation';
+    END IF;
+    IF NEW.plan = 'gratis' AND EXISTS (
+        SELECT 1 FROM location l
+        WHERE l.gbp_location = NEW.gbp_location AND l.account_id <> NEW.account_id
+          AND l.plan = 'gratis') THEN
+        RAISE EXCEPTION 'gratis_ocupada' USING ERRCODE = 'check_violation';
+    END IF;
+    RETURN NEW;
+END
+$$;
+
+DROP TRIGGER IF EXISTS location_active_guard ON location;
+CREATE TRIGGER location_active_guard BEFORE INSERT OR UPDATE ON location
+    FOR EACH ROW EXECUTE FUNCTION location_active_guard();
+
+-- 4. Cada activación, desactivación y cambio de plan deja su fila en el registro, también
+-- las del propietario (el relleno queda registrado). SECURITY DEFINER: nadie más tiene
+-- INSERT en el registro. written_by es session_user: dentro de esta función current_user
+-- es el propietario.
+-- Además, al desactivar a mano la ficha que el panel tenía elegida, la preferencia pasa
+-- a la activa más antigua, o a NULL si no queda ninguna (docs/multinegocio.md,
+-- «Aclaraciones para la web», 3). Al retirarla no: el código antiguo la deja elegida para
+-- enseñar «sin acceso», o la vacía él.
+CREATE OR REPLACE FUNCTION location_activation_audit() RETURNS trigger
+LANGUAGE plpgsql SECURITY DEFINER SET search_path = pg_catalog, public AS $$
+DECLARE
+    happened text;
+    why text;
+BEGIN
+    IF TG_OP = 'INSERT' THEN
+        IF NEW.active_since IS NULL THEN
+            RETURN NULL;
+        END IF;
+        happened := 'activated';
+    ELSIF OLD.active_since IS NULL AND NEW.active_since IS NOT NULL THEN
+        happened := 'activated';
+    ELSIF OLD.active_since IS NOT NULL AND NEW.active_since IS NULL THEN
+        happened := 'deactivated';
+    ELSIF NEW.active_since IS NOT NULL AND NEW.plan IS DISTINCT FROM OLD.plan THEN
+        happened := 'plan_changed';
+    ELSE
+        RETURN NULL;
+    END IF;
+    why := nullif(current_setting('fichaitor.activation_reason', true), '');
+    IF why IS NULL OR why !~ '^[a-z_]{1,40}$' THEN
+        why := CASE WHEN NEW.removed_at IS NOT NULL THEN 'removed' ELSE 'owner' END;
+    END IF;
+    INSERT INTO location_activation_log (written_by, account_id, location_id, event, plan, reason)
+    VALUES (session_user, NEW.account_id, NEW.id, happened,
+            CASE WHEN happened = 'deactivated' THEN OLD.plan ELSE NEW.plan END, why);
+    IF happened = 'deactivated' AND NEW.removed_at IS NULL THEN
+        UPDATE account a SET selected_location_id = (
+            SELECT l.id FROM location l
+            WHERE l.account_id = a.id AND l.active_since IS NOT NULL
+            ORDER BY l.active_since, l.id LIMIT 1)
+        WHERE a.id = NEW.account_id AND a.selected_location_id = NEW.id;
+    END IF;
+    RETURN NULL;
+END
+$$;
+
+REVOKE ALL ON FUNCTION location_activation_audit() FROM PUBLIC;
+DROP TRIGGER IF EXISTS location_activation_audit ON location;
+CREATE TRIGGER location_activation_audit AFTER INSERT OR UPDATE ON location
+    FOR EACH ROW EXECUTE FUNCTION location_activation_audit();
+
+-- Derecho beta (decisión 4 del propietario): 3 fichas Pro por cuenta hasta el
+-- lanzamiento, ampliable a mano con otro derecho ('manual'). Cada cuenta nueva lo recibe
+-- al crearse; las existentes, con el relleno de abajo.
+-- Al lanzar: quitar este disparador y poner ends_at a los derechos 'beta'.
+CREATE OR REPLACE FUNCTION account_beta_entitlement() RETURNS trigger
+LANGUAGE plpgsql SECURITY DEFINER SET search_path = pg_catalog, public AS $$
+BEGIN
+    INSERT INTO plan_entitlement (account_id, plan, quantity, starts_at, source)
+    VALUES (NEW.id, 'pro', 3, now(), 'beta');
+    RETURN NULL;
+END
+$$;
+
+REVOKE ALL ON FUNCTION account_beta_entitlement() FROM PUBLIC;
+DROP TRIGGER IF EXISTS account_beta_entitlement ON account;
+CREATE TRIGGER account_beta_entitlement AFTER INSERT ON account
+    FOR EACH ROW EXECUTE FUNCTION account_beta_entitlement();
+
+-- Privilegios. La API activa, desactiva y cambia de plan (UPDATE de active_since y plan:
+-- el disparador decide si cabe) y lee los derechos. No fija deactivated_at, no escribe
+-- derechos ni el registro y no borra nada. El worker solo borra, en la retención.
+-- Las columnas nuevas de location para el worker y la conversación se conceden en
+-- schema_worker.sql y schema_channels.sql.
+REVOKE ALL ON plan_entitlement, location_activation_log FROM PUBLIC, fichaitor_api, fichaitor_worker;
+GRANT UPDATE (active_since, plan) ON location TO fichaitor_api;
+GRANT SELECT ON plan_entitlement TO fichaitor_api;
+GRANT SELECT (account_id) ON plan_entitlement, location_activation_log TO fichaitor_worker;
+GRANT DELETE ON plan_entitlement, location_activation_log TO fichaitor_worker;
+
+-- Relleno (docs/multinegocio.md, 3.8). Se puede repetir sin efecto, y no cambia nada
+-- que no sea de las columnas y las tablas nuevas.
+-- a) El derecho beta de las cuentas que ya existían.
+INSERT INTO plan_entitlement (account_id, plan, quantity, starts_at, source)
+SELECT a.id, 'pro', 3, now(), 'beta' FROM account a
+WHERE a.deleted_at IS NULL
+  AND NOT EXISTS (SELECT 1 FROM plan_entitlement e
+                  WHERE e.account_id = a.id AND e.source = 'beta');
+
+-- b) La ficha elegida pasa a activa en gratis, con reason = 'migration' en el registro.
+-- Solo si está elegida, no está retirada, la cuenta no está dada de baja y la cuenta no
+-- tiene ninguna fila en el registro: esa es la marca de "ya migrada", para no reactivar
+-- al volver a aplicar el esquema una ficha que el dueño desactivó.
+-- Si la misma ficha de Google está elegida en varias cuentas, solo puede quedar gratis
+-- en una (decisión 5): la de la cuenta más antigua. Las demás quedan inactivas.
+DO $$
+BEGIN
+    PERFORM set_config('fichaitor.activation_reason', 'migration', true);
+    WITH candidate AS (
+        SELECT l.id, l.gbp_location, a.created_at, a.id AS account_id
+        FROM location l
+        JOIN account a ON a.id = l.account_id AND a.selected_location_id = l.id
+        WHERE l.removed_at IS NULL AND l.active_since IS NULL AND a.deleted_at IS NULL
+          AND NOT EXISTS (SELECT 1 FROM location_activation_log g WHERE g.account_id = a.id)
+          AND NOT EXISTS (SELECT 1 FROM location o
+                          WHERE o.gbp_location = l.gbp_location AND o.plan = 'gratis')
+    ), first_per_google AS (
+        SELECT DISTINCT ON (gbp_location) id FROM candidate
+        ORDER BY gbp_location, created_at, account_id
+    )
+    UPDATE location l SET active_since = now(), plan = 'gratis'
+    WHERE l.id IN (SELECT id FROM first_per_google);
+    PERFORM set_config('fichaitor.activation_reason', '', true);
+END
+$$;

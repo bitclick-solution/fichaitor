@@ -97,6 +97,12 @@ TERMINAL_STATES = frozenset({S.APPLIED, S.EXPIRED, S.DISMISSED, S.FAILED, S.CANC
 # action already left, and its result is recorded without telling anybody.
 OUTCOME_OFFBOARDING = "offboarding"
 CANCELLED_BY_LEAVE = (S.SCHEDULED, S.SENT, S.REMINDED, S.COLLECTING, S.TO_CONFIRM)
+# Multinegocio (docs/multinegocio.md, 5.3 and 6.5): the profile of the proposal stopped
+# being active (the owner deactivated it, or it was removed). The same states as with a
+# leave are cancelled, with this reason and without telling anybody. The database lets
+# the API write it (policy proposal_api_update).
+OUTCOME_LOCATION_INACTIVE = "location_inactive"
+CANCELLED_BY_DEACTIVATION = CANCELLED_BY_LEAVE
 # Shown to the owner and still waiting for them: the only states in which a button or
 # a text of the owner can move the proposal.
 OPEN_STATES = frozenset({S.SENT, S.REMINDED, S.COLLECTING, S.TO_CONFIRM})

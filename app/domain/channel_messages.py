@@ -176,18 +176,29 @@ class InboundEvent:
     callback_id: str = ""  # what the channel wants acknowledged
     message_ref: str = ""  # BUTTON: the message the button was on
     sender_name: str = ""
+    # TEXT: the message it answers by quoting it, if any (Telegram's
+    # reply_to_message.message_id). Chooses the proposal among several open ones.
+    reply_to: str = ""
 
 
 # --- text written by third parties ---------------------------------------------------
 
 REVIEW_EXCERPT_MAX = 280
-REVIEW_EXCERPT_MIN = 40
+# Below this the excerpt says nothing: the proposal is not built. With the longest
+# reply shown, the longest header and the prefix, 32 characters are left (multinegocio).
+REVIEW_EXCERPT_MIN = 30
 # The suggested reply is never cut: the owner confirms exactly what is shown.
 SHOWN_REPLY_MAX = 700
 # Room kept in every proposal for the line that goes before it in a reminder or when
 # it is taken up again ("Sigue pendiente: ...").
 PREFIX_RESERVE = 120
 NAME_MAX = 40
+# Multinegocio (docs/multinegocio.md, 6.2): room kept, apart from PREFIX_RESERVE, for the
+# line with the name of the business that opens every message about a proposal, with
+# its line break. The excerpt of the review is what gives way.
+HEADER_RESERVE = 70
+BUSINESS_NAME_MAX = 60
+LOCALITY_MAX = 30
 
 
 def one_line(value: object, max_length: int) -> str:
@@ -205,6 +216,83 @@ def quoted(value: object, max_length: int) -> str:
     """Third party text made safe to show between «»: one line, bounded, and unable
     to close the quotation and pass for words of the agent."""
     return one_line(value, max_length).replace("«", "“").replace("»", "”")
+
+
+def review_excerpt_room(fixed_length: int, header: str = "") -> int:
+    """How many characters the excerpt of a review may take in a message whose text
+    without excerpt is `fixed_length` long and that opens with `header` (empty if it
+    has none). Always within CORE_LIMITS with PREFIX_RESERVE kept for a prefix."""
+    header_length = len(header) + 1 if header else 0
+    return min(
+        REVIEW_EXCERPT_MAX, CORE_LIMITS.max_body - PREFIX_RESERVE - header_length - fixed_length
+    )
+
+
+# --- the business a message is about (multinegocio) ------------------------------------
+
+_POSTAL_CODE = re.compile(r"\b\d{5}\b")
+
+
+def locality(address: object) -> str:
+    """The town of a postal address as Google writes it ("Calle Mayor 3, 28901 Getafe,
+    Madrid" gives "Getafe"); empty if it cannot be told."""
+    if not isinstance(address, str):
+        return ""
+    parts = [p.strip() for p in address.split(",") if p.strip()]
+    for part in parts:
+        if _POSTAL_CODE.search(part):
+            town = _POSTAL_CODE.sub(" ", part)
+            return one_line(town, LOCALITY_MAX)
+    return ""
+
+
+def business_label(
+    title: object,
+    *,
+    same_title_elsewhere: bool = False,
+    address: object = "",
+    location_id: str = "",
+) -> str:
+    """The name of the business for the header, the choices of `text.which` and the
+    welcome. If another active profile of the account has the same name, the town is
+    added ("Bar La Parra · Getafe") or, without address, the end of the public id. Never
+    longer than HEADER_RESERVE minus its line break."""
+    if not same_title_elsewhere:
+        return one_line(title, BUSINESS_NAME_MAX) or "tu negocio"
+    suffix = locality(address) or one_line(location_id[-4:], 4)
+    if not suffix:
+        return one_line(title, BUSINESS_NAME_MAX) or "tu negocio"
+    room = min(BUSINESS_NAME_MAX, HEADER_RESERVE - 1 - len(" · ") - len(suffix))
+    return f"{one_line(title, room) or 'tu negocio'} · {suffix}"
+
+
+def with_header(label: str, text: str) -> str:
+    """A message about a proposal, opened by the line with the business (fmt.business)."""
+    return render("fmt.business", negocio=label) + "\n" + text
+
+
+def choice_titles(labels: list[str] | tuple[str, ...]) -> tuple[str, ...]:
+    """Button titles for the businesses of `text.which`: within the title limit and
+    all different (a cut that makes two equal gets a number)."""
+    titles: list[str] = []
+    for index, label in enumerate(labels, start=1):
+        title = one_line(label, CORE_LIMITS.max_button_title)
+        if title in titles:
+            number = f" {index}"
+            title = one_line(label, CORE_LIMITS.max_button_title - len(number)) + number
+        titles.append(title)
+    return tuple(titles)
+
+
+def businesses_phrase(labels: list[str] | tuple[str, ...], *, filtered: bool) -> str:
+    """What `welcome.linked_many` says this chat will see: the list of its businesses
+    if it is limited to some, or "tus N negocios" if it sees them all."""
+    if not filtered:
+        return f"tus {len(labels)} negocios"
+    names = [one_line(label, BUSINESS_NAME_MAX) for label in labels]
+    if len(names) == 1:
+        return names[0]
+    return ", ".join(names[:-1]) + " y " + names[-1]
 
 
 # --- catalog -----------------------------------------------------------------------
@@ -231,6 +319,13 @@ TEXTS: dict[str, str] = {
     "google.rejected": "Google no ha aceptado el cambio: {motivo}. Tu ficha sigue como estaba.",
     "welcome.linked": (
         "Listo{nombre}. Ya llevo la ficha de {negocio} desde aquí.\n"
+        "Te aviso de las reseñas nuevas y de los festivos, y puedes pedirme cambios "
+        "cuando quieras.\n"
+        "No cambio nada sin que me lo confirmes."
+    ),
+    # NEW (multinegocio): the account has several profiles, or this chat sees only some.
+    "welcome.linked_many": (
+        "Listo{nombre}. Ya llevo desde aquí las fichas de {negocios}.\n"
         "Te aviso de las reseñas nuevas y de los festivos, y puedes pedirme cambios "
         "cuando quieras.\n"
         "No cambio nada sin que me lo confirmes."
@@ -345,6 +440,16 @@ TEXTS: dict[str, str] = {
     ),
     # NEW: what is left on the message once its buttons are removed.
     "fmt.choice": "Tu respuesta: {titulo}",
+    # NEW (multinegocio): the line that opens every message about a proposal.
+    "fmt.business": "{negocio}",
+    # NEW (multinegocio): a text that could be about several open proposals.
+    "text.which": "¿De qué negocio me hablas?",
+    "text.quote": (
+        "Tengo varias cosas abiertas contigo. Respóndeme citando el mensaje del que me hablas."
+    ),
+    # NEW (multinegocio): after choosing the business, the text is asked again (it is
+    # not kept anywhere but in the record of messages).
+    "text.write_again": "Escríbelo otra vez, por favor.",
     # NEW (2026-11-12, B3): too many wrong codes from every chat together. Typed codes
     # wait; the link of the panel still works.
     "link.paused": (

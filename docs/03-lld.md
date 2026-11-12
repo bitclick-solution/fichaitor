@@ -65,6 +65,40 @@ llm_usage(id, account_id, agent, model, tokens_in, tokens_out, cost)
 
 Índices mínimos: `job(state, run_at)`, `proposal(business_id, state)`, `message(conversation_id, id)`, `review(location_id, published_at)`.
 
+### 1.1 Varias fichas activas por cuenta (implementado, 2026-11-12)
+
+El esquema real está en `db/schema*.sql`; el plan, en `docs/multinegocio.md`. Esto es lo que añade el paso 1:
+
+```sql
+-- schema.sql
+location(..., active_since, plan,          -- 'gratis' | 'pro' | 'pro_whatsapp'; NULL = inactiva
+         deactivated_at)                   -- desde cuándo está inactiva (retención de 30 días)
+plan_entitlement(id, account_id, plan, quantity, starts_at, ends_at,
+                 source,                   -- 'beta' | 'manual' | 'pago'
+                 external_ref)
+location_activation_log(id, at, written_by, account_id, location_id,
+                        event,             -- 'activated' | 'deactivated' | 'plan_changed'
+                        plan, reason)      -- owner | removed | migration | ...
+-- schema_channels.sql
+proposal(..., location_id)                 -- FK (account_id, location_id) -> location
+conversation_lane(account_id, location_id, active_proposal_id, updated_at)
+channel_identity(..., location_filter text[], focus_proposal_id, focus_at)
+link_code(..., location_filter text[])
+```
+
+Reglas en la base:
+
+| Regla | Dónde |
+|---|---|
+| Activar, cambiar de plan y desactivar: límites por plan, cuenta sin baja, fecha de activación a menos de un minuto y ficha sin retirar. Errores `check_violation` con mensaje `limite_fichas`, `gratis_ocupada`, `baja_programada`, `cuenta_de_baja`, `fecha_activacion` o `ficha_retirada` | Disparador `location_active_guard` (`BEFORE INSERT OR UPDATE` en `location`) |
+| Una ficha de Google, en Gratis en una sola cuenta | El mismo disparador (`gratis_ocupada`) y el índice único `location_gratis_one_account` |
+| Registro de cada cambio, con `written_by = session_user`. Al desactivar a mano la ficha elegida, la preferencia pasa a la activa más antigua o a `NULL` | Disparador `location_activation_audit` (`AFTER`, `SECURITY DEFINER`) |
+| Derecho beta de 3 fichas Pro en cada cuenta nueva | Disparador `account_beta_entitlement` |
+| Una propuesta, un carril o un filtro no nombran fichas de otra cuenta | Claves ajenas compuestas y disparador `location_filter_guard` (`filtro_ajeno`) |
+| La API solo libera un carril | Política `conversation_lane_api_release` |
+
+El relleno (activar la ficha elegida, `deactivated_at` de las demás con datos, `proposal.location_id` y el derecho beta de las cuentas existentes) va en los mismos archivos y se puede repetir sin efecto.
+
 ## 2. Agentes
 
 Cada agente es una función pura: recibe contexto y devuelve un objeto que cumple un esquema. Ninguno tiene herramientas de escritura.

@@ -564,6 +564,10 @@ GRANT UPDATE (disconnected_at, deleted_at, selected_location_id) ON account TO f
 GRANT SELECT (id, account_id, gbp_location, removed_at) ON location TO fichaitor_worker;
 GRANT UPDATE (removed_at) ON location TO fichaitor_worker;
 GRANT DELETE ON location TO fichaitor_worker;
+-- Multinegocio (2026-11-12): si la ficha está activa, con qué plan y desde cuándo está
+-- inactiva (coherencia de las acciones y retención de las fichas desactivadas). Activar
+-- o desactivar, no: retirar una ficha la desactiva por el disparador de schema.sql.
+GRANT SELECT (active_since, plan, deactivated_at) ON location TO fichaitor_worker;
 -- Sesiones: cerrarlas al dar de baja la cuenta y borrar las vencidas. La huella del
 -- token no se lee.
 GRANT SELECT (id, account_id, expires_at, revoked_at) ON session TO fichaitor_worker;
@@ -598,6 +602,19 @@ CREATE POLICY audit_log_worker_delete_expired ON audit_log FOR DELETE TO fichait
               coalesce(nullif(current_setting('fichaitor.audit_cutoff', true), '')::timestamptz,
                        now() - interval '12 months'))
     ));
+
+-- ---------------------------------------------------------------------------
+-- Multinegocio (2026-11-12), relleno 3.8.2 de docs/multinegocio.md: lo que se guardó de
+-- una ficha que ya no está elegida (la que estuvo elegida antes) se trata como el de una
+-- ficha desactivada: deactivated_at = ahora, y la retención lo borrará a los 30 días.
+-- Solo las fichas inactivas con resumen y sin fecha: repetirlo no cambia nada. Lo
+-- escribe el propietario: el disparador de location no lo impide ni lo registra (no es
+-- una activación ni una desactivación).
+UPDATE location l SET deactivated_at = now()
+FROM account a
+WHERE a.id = l.account_id AND l.active_since IS NULL AND l.deactivated_at IS NULL
+  AND EXISTS (SELECT 1 FROM profile_summary ps
+              WHERE ps.google_sub = a.google_sub AND ps.location = l.gbp_location);
 
 -- ---------------------------------------------------------------------------
 -- Solo desarrollo local y pruebas: copiar a db/dev-init.sql.

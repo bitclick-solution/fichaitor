@@ -278,6 +278,9 @@ GRANT SELECT (google_sub, location, status, facts) ON profile_summary
     TO fichaitor_conversation;
 GRANT SELECT (id, account_id, gbp_location, title, removed_at) ON location
     TO fichaitor_conversation;
+-- Multinegocio (2026-11-12): qué fichas están activas y con qué plan. No las activa ni
+-- las desactiva.
+GRANT SELECT (active_since, plan, deactivated_at) ON location TO fichaitor_conversation;
 GRANT SELECT (account_id, google_sub, restored_at, effective_at, purged_at) ON offboarding
     TO fichaitor_conversation;
 GRANT SELECT ON review TO fichaitor_conversation;
@@ -394,7 +397,8 @@ $$;
 -- cuenta: eso lo hacen sus sentencias (siempre con account_id = la de la sesión). Lo que sí
 -- limita aquí, para el caso de SQL arbitrario con su usuario:
 -- - Propuestas: solo cambia las de fechas clave (las que se contestan en el panel). Una
---   propuesta de respuesta a una reseña solo puede cancelarla por una baja (B12).
+--   propuesta de respuesta a una reseña solo puede cancelarla por una baja (B12) o
+--   porque su ficha se desactiva (multinegocio, 'location_inactive').
 -- - Hilos: solo los libera (active_proposal_id a NULL); nunca apunta uno a otra propuesta.
 -- La conversación hace lo de siempre; el worker lee lo que usan sus WHERE y borra.
 ALTER TABLE proposal ENABLE ROW LEVEL SECURITY;
@@ -403,7 +407,8 @@ CREATE POLICY proposal_api_read ON proposal FOR SELECT TO fichaitor_api USING (t
 DROP POLICY IF EXISTS proposal_api_update ON proposal;
 CREATE POLICY proposal_api_update ON proposal FOR UPDATE TO fichaitor_api
     USING (true)
-    WITH CHECK (type = 'key_date' OR (state = 'cancelada' AND outcome_reason = 'offboarding'));
+    WITH CHECK (type = 'key_date'
+                OR (state = 'cancelada' AND outcome_reason IN ('offboarding', 'location_inactive')));
 DROP POLICY IF EXISTS proposal_conversation ON proposal;
 CREATE POLICY proposal_conversation ON proposal FOR ALL TO fichaitor_conversation
     USING (true) WITH CHECK (true);
@@ -423,6 +428,165 @@ CREATE POLICY conversation_conversation ON conversation FOR ALL TO fichaitor_con
 DROP POLICY IF EXISTS conversation_worker ON conversation;
 CREATE POLICY conversation_worker ON conversation FOR ALL TO fichaitor_worker
     USING (true) WITH CHECK (true);
+
+-- ---------------------------------------------------------------------------
+-- Multinegocio (2026-11-12): propuestas por ficha, un carril por ficha y filtro por
+-- chat. Consulta docs/multinegocio.md, secciones 3.6, 3.7, 3.8 y 4. Necesita las
+-- columnas nuevas de location (schema.sql).
+
+-- Propuestas por ficha. La clave ajena compuesta es la segunda barrera entre cuentas:
+-- una propuesta no puede nombrar la ficha de otra cuenta. Si la retención borra la
+-- ficha, la propuesta se queda sin ella (ON DELETE SET NULL solo de location_id).
+-- Mientras el código antiguo siga creando propuestas sin ficha, location_id admite NULL;
+-- el disparador que lo exige llega con el paso 6a.
+ALTER TABLE proposal ADD COLUMN IF NOT EXISTS location_id text;
+DO $$
+BEGIN
+    IF NOT EXISTS (SELECT FROM pg_constraint
+                   WHERE conname = 'proposal_location_fk' AND conrelid = 'proposal'::regclass) THEN
+        ALTER TABLE proposal ADD CONSTRAINT proposal_location_fk
+            FOREIGN KEY (account_id, location_id) REFERENCES location (account_id, id)
+            ON DELETE SET NULL (location_id);
+    END IF;
+END
+$$;
+-- Una fecha clave es de la ficha que dice su carga.
+ALTER TABLE proposal DROP CONSTRAINT IF EXISTS proposal_key_date_location;
+ALTER TABLE proposal ADD CONSTRAINT proposal_key_date_location
+    CHECK (type <> 'key_date' OR location_id IS NULL OR location_id = payload->>'location_id');
+CREATE INDEX IF NOT EXISTS proposal_unfinished_location ON proposal (account_id, location_id)
+    WHERE state IN ('programada', 'enviada', 'recordada', 'recopilando', 'por_confirmar',
+                    'ejecutando');
+-- Para la clave ajena del carril: la propuesta activa es de esa cuenta y esa ficha.
+CREATE UNIQUE INDEX IF NOT EXISTS proposal_account_location_id
+    ON proposal (account_id, location_id, id);
+
+-- Carriles: como mucho una propuesta activa por ficha. El hilo (conversation) se queda:
+-- es el bloqueo por cuenta y guarda unknown_streak. Su active_proposal_id queda obsoleto
+-- cuando el paso 6 use los carriles.
+-- La clave ajena a proposal incluye la cuenta y la ficha: un carril no puede apuntar a
+-- la propuesta de otra ficha ni de otra cuenta. Al borrar la ficha se borra su carril.
+CREATE TABLE IF NOT EXISTS conversation_lane (
+    account_id         uuid NOT NULL,
+    location_id        text NOT NULL,
+    active_proposal_id text,
+    updated_at         timestamptz NOT NULL DEFAULT now(),
+    PRIMARY KEY (account_id, location_id),
+    CONSTRAINT conversation_lane_location_fk FOREIGN KEY (account_id, location_id)
+        REFERENCES location (account_id, id) ON DELETE CASCADE,
+    CONSTRAINT conversation_lane_proposal_fk
+        FOREIGN KEY (account_id, location_id, active_proposal_id)
+        REFERENCES proposal (account_id, location_id, id)
+);
+
+-- Filtro por chat y foco. location_filter NULL = el chat ve todas las fichas activas de
+-- la cuenta, también las que se activen después. Se fija al pedir el código de
+-- vinculación (link_code) y se copia a la dirección al vincularla.
+-- focus_*: la última propuesta en la que esa dirección pulsó un botón (para resolver el
+-- texto libre con varias propuestas abiertas).
+ALTER TABLE channel_identity
+    ADD COLUMN IF NOT EXISTS location_filter   text[],
+    ADD COLUMN IF NOT EXISTS focus_proposal_id text,
+    ADD COLUMN IF NOT EXISTS focus_at          timestamptz;
+ALTER TABLE link_code ADD COLUMN IF NOT EXISTS location_filter text[];
+ALTER TABLE channel_identity DROP CONSTRAINT IF EXISTS channel_identity_location_filter_check;
+ALTER TABLE channel_identity ADD CONSTRAINT channel_identity_location_filter_check
+    CHECK (location_filter IS NULL
+           OR (array_ndims(location_filter) = 1 AND cardinality(location_filter) BETWEEN 1 AND 50));
+ALTER TABLE channel_identity DROP CONSTRAINT IF EXISTS channel_identity_focus_check;
+ALTER TABLE channel_identity ADD CONSTRAINT channel_identity_focus_check
+    CHECK (focus_proposal_id ~ '^prop_[0-9a-f]{16}$');
+ALTER TABLE link_code DROP CONSTRAINT IF EXISTS link_code_location_filter_check;
+ALTER TABLE link_code ADD CONSTRAINT link_code_location_filter_check
+    CHECK (location_filter IS NULL
+           OR (array_ndims(location_filter) = 1 AND cardinality(location_filter) BETWEEN 1 AND 50));
+
+-- Cada ficha del filtro es de la cuenta de la fila: con SQL de la API o de la
+-- conversación no se puede apuntar un chat a la ficha de otra cuenta. Solo se comprueba
+-- cuando el filtro o la cuenta cambian: una ficha borrada después por la retención no
+-- impide anotar la última actividad del chat.
+CREATE OR REPLACE FUNCTION location_filter_guard() RETURNS trigger
+LANGUAGE plpgsql SET search_path = pg_catalog, public AS $$
+BEGIN
+    IF NEW.location_filter IS NULL THEN
+        RETURN NEW;
+    END IF;
+    IF TG_OP = 'UPDATE' AND NEW.location_filter IS NOT DISTINCT FROM OLD.location_filter
+       AND NEW.account_id = OLD.account_id THEN
+        RETURN NEW;
+    END IF;
+    IF array_position(NEW.location_filter, NULL) IS NOT NULL
+       OR EXISTS (SELECT 1 FROM unnest(NEW.location_filter) AS f (id)
+                  WHERE NOT EXISTS (SELECT 1 FROM location l
+                                    WHERE l.id = f.id AND l.account_id = NEW.account_id)) THEN
+        RAISE EXCEPTION 'filtro_ajeno' USING ERRCODE = 'check_violation';
+    END IF;
+    RETURN NEW;
+END
+$$;
+
+DROP TRIGGER IF EXISTS location_filter_guard ON channel_identity;
+CREATE TRIGGER location_filter_guard BEFORE INSERT OR UPDATE ON channel_identity
+    FOR EACH ROW EXECUTE FUNCTION location_filter_guard();
+DROP TRIGGER IF EXISTS location_filter_guard ON link_code;
+CREATE TRIGGER location_filter_guard BEFORE INSERT OR UPDATE ON link_code
+    FOR EACH ROW EXECUTE FUNCTION location_filter_guard();
+
+-- Privilegios (sección 4). Se retira todo del carril y se concede lo justo.
+REVOKE ALL ON conversation_lane
+    FROM PUBLIC, fichaitor_api, fichaitor_worker, fichaitor_conversation;
+-- API: fija el filtro de un chat y el del código que pide; libera el carril de una ficha
+-- que desactiva (como libera hoy el hilo). location_id de una propuesta no lo cambia
+-- nadie: no está en ningún UPDATE.
+GRANT UPDATE (location_filter) ON channel_identity TO fichaitor_api;
+GRANT INSERT (location_filter) ON link_code TO fichaitor_api;
+GRANT SELECT ON conversation_lane TO fichaitor_api;
+GRANT UPDATE (active_proposal_id, updated_at) ON conversation_lane TO fichaitor_api;
+-- Conversación: crea la propuesta con su ficha (ya tiene INSERT en proposal), lleva los
+-- carriles, copia el filtro del código al vincular y anota el foco. No cambia el filtro.
+GRANT INSERT (location_filter) ON channel_identity TO fichaitor_conversation;
+GRANT UPDATE (focus_proposal_id, focus_at) ON channel_identity TO fichaitor_conversation;
+GRANT SELECT, INSERT ON conversation_lane TO fichaitor_conversation;
+GRANT UPDATE (active_proposal_id, updated_at) ON conversation_lane TO fichaitor_conversation;
+-- Worker: lee y borra (baja y retención).
+GRANT SELECT, DELETE ON conversation_lane TO fichaitor_worker;
+
+-- Segunda barrera, como en conversation: la API solo libera un carril.
+ALTER TABLE conversation_lane ENABLE ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS conversation_lane_api_read ON conversation_lane;
+CREATE POLICY conversation_lane_api_read ON conversation_lane FOR SELECT TO fichaitor_api
+    USING (true);
+DROP POLICY IF EXISTS conversation_lane_api_release ON conversation_lane;
+CREATE POLICY conversation_lane_api_release ON conversation_lane FOR UPDATE TO fichaitor_api
+    USING (true) WITH CHECK (active_proposal_id IS NULL);
+DROP POLICY IF EXISTS conversation_lane_conversation ON conversation_lane;
+CREATE POLICY conversation_lane_conversation ON conversation_lane FOR ALL
+    TO fichaitor_conversation USING (true) WITH CHECK (true);
+DROP POLICY IF EXISTS conversation_lane_worker ON conversation_lane;
+CREATE POLICY conversation_lane_worker ON conversation_lane FOR ALL TO fichaitor_worker
+    USING (true) WITH CHECK (true);
+
+-- Relleno 3.8.3: la ficha de cada propuesta, solo donde falta. Se puede repetir.
+-- - Fechas clave: la de su carga, si es una ficha de la cuenta.
+UPDATE proposal p SET location_id = p.payload->>'location_id'
+WHERE p.location_id IS NULL AND p.type = 'key_date'
+  AND EXISTS (SELECT 1 FROM location l
+              WHERE l.account_id = p.account_id AND l.id = p.payload->>'location_id');
+-- - Respuestas a reseñas: la ficha de la cuenta que tiene esa reseña (mismo usuario de
+--   Google y misma ficha de Google).
+UPDATE proposal p SET location_id = l.id
+FROM account a, review r, location l
+WHERE p.location_id IS NULL AND p.type = 'review_reply'
+  AND a.id = p.account_id AND r.id = p.source_ref AND r.google_sub = a.google_sub
+  AND l.account_id = a.id AND l.gbp_location = r.location;
+-- - Las demás que siguen sin terminar: la ficha elegida de la cuenta. Las terminadas
+--   que no se pueden resolver se quedan sin ficha.
+UPDATE proposal p SET location_id = a.selected_location_id
+FROM account a
+WHERE p.location_id IS NULL AND p.type <> 'key_date' AND a.id = p.account_id
+  AND a.selected_location_id IS NOT NULL
+  AND p.state IN ('programada', 'enviada', 'recordada', 'recopilando', 'por_confirmar',
+                  'ejecutando');
 
 -- ---------------------------------------------------------------------------
 -- Solo desarrollo local y pruebas: está en db/dev-init.sql.

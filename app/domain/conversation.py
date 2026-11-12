@@ -68,6 +68,9 @@ class ChannelIdentity:
     verified_at: datetime
     last_inbound_at: datetime | None = None
     unlinked_at: datetime | None = None
+    # Multinegocio: the profiles ("loc_...") this address sees. None = every active
+    # profile of the account, also those activated later (docs/multinegocio.md, 3.7).
+    location_filter: tuple[str, ...] | None = None
 
     @property
     def active(self) -> bool:
@@ -102,10 +105,30 @@ def plan_link(current: ChannelIdentity | None, account_id: str) -> LinkOutcome:
     return LinkOutcome.SAME if current.account_id == account_id else LinkOutcome.MOVED
 
 
-def may_act(identity: ChannelIdentity | None, proposal_account_id: str) -> bool:
+def sees(identity: ChannelIdentity, location_id: str | None) -> bool:
+    """Whether that address receives what concerns that profile. Without a filter it
+    sees every profile of its account. A filtered address never sees a proposal that
+    names no profile."""
+    if identity.location_filter is None:
+        return True
+    return location_id is not None and location_id in identity.location_filter
+
+
+def may_act(
+    identity: ChannelIdentity | None,
+    proposal_account_id: str,
+    location_id: str | None = None,
+) -> bool:
     """Whether that sender can move that proposal. Knowing the id of a proposal is
-    never enough: the address must be linked, now, to the account that owns it."""
-    return identity is not None and identity.active and identity.account_id == proposal_account_id
+    never enough: the address must be linked, now, to the account that owns it and,
+    if it is limited to some profiles, see the profile of the proposal (decision 6 of
+    the owner: the manager acts, only on their profiles)."""
+    return (
+        identity is not None
+        and identity.active
+        and identity.account_id == proposal_account_id
+        and sees(identity, location_id)
+    )
 
 
 @dataclass(frozen=True)
@@ -388,6 +411,105 @@ def classify_reply(text: str) -> Reply:
     if words in _COURTESY:
         return Reply.COURTESY
     return Reply.OTHER
+
+
+# --- which proposal a text is about --------------------------------------------------
+# docs/multinegocio.md, 6.3. With one proposal open per profile, a text written in the
+# chat may be about several of them. It is never guessed.
+
+FOCUS_TTL = timedelta(minutes=30)
+MAX_WHICH_CHOICES = 3  # one button per business: WhatsApp has 3 at most
+
+
+@dataclass(frozen=True)
+class TextCandidate:
+    """An open proposal of a profile the address sees, and what its step takes.
+
+    `message_ref`: the channel's id of the last message of this proposal sent to this
+    address (`message_refs[identity.id]`). `any_text`: the step takes any text as the
+    answer (the reply after "Editar"), so a text never rules it out. `hours`: a text
+    with hours is an answer here."""
+
+    proposal_id: str
+    message_ref: str = ""
+    any_text: bool = False
+    hours: bool = False
+
+
+@dataclass(frozen=True)
+class Focus:
+    """The last proposal on which that address pressed a button, and when."""
+
+    proposal_id: str
+    at: datetime
+
+
+class TargetKind(StrEnum):
+    PROPOSAL = "proposal"  # it is about `proposal_id`
+    WHICH = "which"  # ask "¿De qué negocio?" with a button for each of `choices`
+    QUOTE = "quote"  # more than 3 candidates: ask to answer quoting the message
+    IGNORE = "ignore"  # a courtesy when nothing is decided: no answer
+    NONE = "none"  # no proposal open for that address: as without proposals
+
+
+class TargetReason(StrEnum):
+    REPLY_TO = "reply_to"
+    SINGLE = "single"
+    FOCUS = "focus"
+    ANSWER_TYPE = "answer_type"
+
+
+@dataclass(frozen=True)
+class TextTarget:
+    kind: TargetKind
+    proposal_id: str | None = None
+    reason: TargetReason | None = None
+    choices: tuple[str, ...] = ()
+
+
+def resolve_text_target(
+    text: str,
+    candidates: Sequence[TextCandidate],
+    reply_to: str,
+    focus: Focus | None,
+    now: datetime,
+) -> TextTarget:
+    """Which proposal a free text answers. The criteria, in this order:
+
+    1. It quotes a message of a candidate (`reply_to`): that one.
+    2. There is one candidate: that one, as with a single proposal.
+    3. The focus (a button pressed less than 30 minutes ago) is a candidate: that one.
+    4. Only one candidate can take that kind of answer with fixed rules: hours, read
+       by `parse_hours`, and only one candidate takes hours. A step that takes any
+       text always counts, so with one of them open this criterion decides nothing;
+       a "sí" or a "no" never decides here: alone, it could be about any of them.
+    5. Otherwise it asks which business (or, with more than 3, to quote the message).
+       A greeting or a thanks is not answered.
+
+    What the chosen step then does with the text (a courtesy, a "sí") is the step's
+    business, as today."""
+    if not candidates:
+        return TextTarget(TargetKind.NONE)
+    ids = [c.proposal_id for c in candidates]
+    if reply_to:
+        for candidate in candidates:
+            if candidate.message_ref and candidate.message_ref == reply_to:
+                return TextTarget(TargetKind.PROPOSAL, candidate.proposal_id, TargetReason.REPLY_TO)
+    if len(candidates) == 1:
+        return TextTarget(TargetKind.PROPOSAL, ids[0], TargetReason.SINGLE)
+    if focus is not None and focus.proposal_id in ids and now - focus.at < FOCUS_TTL:
+        return TextTarget(TargetKind.PROPOSAL, focus.proposal_id, TargetReason.FOCUS)
+    reply = classify_reply(text)
+    if reply is Reply.OTHER and not any(c.any_text for c in candidates):
+        if parse_hours(text) is not None:
+            takers = [c.proposal_id for c in candidates if c.hours]
+            if len(takers) == 1:
+                return TextTarget(TargetKind.PROPOSAL, takers[0], TargetReason.ANSWER_TYPE)
+    if reply is Reply.COURTESY:
+        return TextTarget(TargetKind.IGNORE)
+    if len(candidates) > MAX_WHICH_CHOICES:
+        return TextTarget(TargetKind.QUOTE, choices=tuple(ids))
+    return TextTarget(TargetKind.WHICH, choices=tuple(ids))
 
 
 # --- hours written by the owner ------------------------------------------------------

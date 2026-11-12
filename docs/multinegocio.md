@@ -447,12 +447,12 @@ La web no guarda ninguna cifra: todo precio sale de la API. `GET /me` (y la resp
   "plans": { "pro": { "first": 3500, "additional": 3325 },
              "pro_whatsapp": { "first": 5900, "additional": 5605 } },
   "total": 0,
-  "if_activate": { "pro": 3325, "pro_whatsapp": 5605 },
+  "if_activate": { "pro": 3500, "pro_whatsapp": 5900 },
   "if_deactivate": { "loc_3f2a": 0 }
 }
 ```
 
-- Importes en céntimos. `total` es lo que pagaría la cuenta con sus fichas activas; `if_activate` y `if_deactivate`, el total resultante de cada cambio. Los calcula `app/domain/plans.py` con las reglas de la sección 11 y las decisiones de la sección 15.
+- Ejemplo: una cuenta con una sola ficha Gratis; la primera de pago va a precio completo (decisión 2). Importes en céntimos. `total` es lo que pagaría la cuenta con sus fichas activas; `if_activate` y `if_deactivate`, el total resultante de cada cambio. Los calcula `app/domain/plans.py` con las reglas de la sección 11 y las decisiones de la sección 15.
 - `charging: false` mientras no haya cobro (beta): la web enseña los precios como referencia y, ante un 402, «Escríbenos para activar más fichas».
 
 ### Aclaraciones para la web (2026-11-12)
