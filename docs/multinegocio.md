@@ -455,6 +455,15 @@ La web no guarda ninguna cifra: todo precio sale de la API. `GET /me` (y la resp
 - Importes en céntimos. `total` es lo que pagaría la cuenta con sus fichas activas; `if_activate` y `if_deactivate`, el total resultante de cada cambio. Los calcula `app/domain/plans.py` con las reglas de la sección 11 y las decisiones de la sección 15.
 - `charging: false` mientras no haya cobro (beta): la web enseña los precios como referencia y, ante un 402, «Escríbenos para activar más fichas».
 
+### Aclaraciones para la web (2026-11-12)
+
+1. **Precios:** el bloque `pricing` de arriba. Con `charging: false` (beta), la web enseña los planes sin cobro y, ante un 402, «Escríbenos para activar más fichas».
+2. **`status` por ficha** usa los mismos valores que el `status` del resumen: `ok`, `pendiente`, `error` o `needs_reconnect`, y `null` si la ficha está inactiva. Donde este documento dice `reconectar`, léase `needs_reconnect`.
+3. **Desactivar la ficha seleccionada:** `selected_location_id` pasa a la ficha activa más antigua (`active_since`) o a `null` si no queda ninguna. La respuesta 200 ya lo trae.
+4. **Desactivar la última activa:** se permite. La cuenta vuelve al estado «activa tu primera ficha».
+5. **Gratis ocupada en otra cuenta:** 409 con `{"detail": "Esta ficha ya está activa en el plan Gratis en otra cuenta. Actívala con un plan de pago o pide a esa cuenta que la desactive.", "code": "free_taken"}`. Los 409 de esta ruta llevan `code`: `free_taken` u `offboarding_pending`. El 402 (sin hueco en el plan) no cambia.
+6. **Plan en el selector:** `plan` vale `gratis`, `pro` o `pro_whatsapp`. Con `pricing.charging: false`, la web muestra «Pro (beta)» sin precio.
+
 ### Canales
 
 - Cada chat enseña «Recibe: todos tus negocios» o la lista de fichas, y se puede editar.
