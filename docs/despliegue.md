@@ -333,6 +333,10 @@ El estado del proyecto de Google y los trámites pendientes están en [fase0/goo
 
    Debe aparecer un evento `job_done`.
 
+5. Comprueba el correo: en `/app`, **Ajustes**, pide un código de baja de ficha y no lo confirmes. Debe llegar desde `avisos@fichaitor.es`, y al responder debe ir a `soporte@fichaitor.es`. Si la web dice que no ha podido enviarlo, revisa `docker logs fichaitor-worker` (evento `send_mail`) y las variables `FICHAITOR_SMTP_*` de `worker.env`.
+
+6. Envía el mapa del sitio en Google Search Console: propiedad `fichaitor.es`, **Sitemaps**, añade `https://fichaitor.es/sitemap.xml`. Comprueba también que `https://www.fichaitor.es/` redirige a `https://fichaitor.es/` (paso 8).
+
 ## Desplegar una versión nueva
 
 Hay dos formas. Las dos exigen que el commit esté en `main` y que su integración continua haya terminado bien.
