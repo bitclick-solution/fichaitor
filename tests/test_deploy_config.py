@@ -168,10 +168,21 @@ PEPPER = "b" * 32
             False,
         ),
         (f"FICHAITOR_LINK_CODE_PEPPER={PEPPER}\n", f"FICHAITOR_LINK_CODE_PEPPER={PEPPER}\n", False),
-        # With long polling there is no webhook: its secret is not needed.
+        # I22: production has no long polling (the Compose forces it off and the webhook is
+        # always on): asking for it is refused, and the secret is measured anyway.
         (
             f"FICHAITOR_LINK_CODE_PEPPER={PEPPER}\n",
             f"FICHAITOR_LINK_CODE_PEPPER={PEPPER}\nFICHAITOR_TELEGRAM_POLLING=true\n",
+            False,
+        ),
+        (
+            f"FICHAITOR_TELEGRAM_WEBHOOK_SECRET={SECRET}\nFICHAITOR_LINK_CODE_PEPPER={PEPPER}\n",
+            f"FICHAITOR_LINK_CODE_PEPPER={PEPPER}\nFICHAITOR_TELEGRAM_POLLING=1\n",
+            False,
+        ),
+        (
+            f"FICHAITOR_TELEGRAM_WEBHOOK_SECRET={SECRET}\nFICHAITOR_LINK_CODE_PEPPER={PEPPER}\n",
+            f"FICHAITOR_LINK_CODE_PEPPER={PEPPER}\nFICHAITOR_TELEGRAM_POLLING=false\n",
             True,
         ),
     ],
@@ -194,3 +205,33 @@ def test_the_webhook_route_has_a_limit_per_address_and_a_small_body():
     assert "client_max_body_size 64k;" in block
     assert re.search(r"limit_conn_zone \$binary_remote_addr zone=webhook_conn_ip:", NGINX)
     assert re.search(r"limit_req_zone \$binary_remote_addr zone=webhook_ip:", NGINX)
+
+
+# --- third review (docs/seguridad/revision-2026-11-12-c.md) ----------------------------
+
+
+def test_only_main_or_a_version_tag_reaches_the_deploy_job():
+    # I19: a workflow_dispatch from another branch runs that branch's deploy.yml, so this
+    # is not the real barrier (the rules of the environment `production` are); it stops
+    # the honest mistake.
+    block = DEPLOY[DEPLOY.index("\n  desplegar:\n") :]
+    block = block[: block.index("    steps:")]
+    condition = re.search(r"^    if: (.+)$", block, re.M)
+    assert condition is not None
+    assert "github.ref == 'refs/heads/main'" in condition.group(1)
+    assert "startsWith(github.ref, 'refs/tags/v')" in condition.group(1)
+    assert "environment: production" in block
+
+
+def test_the_email_leave_tool_runs_in_a_one_off_container_with_only_db_env():
+    # I20: not inside the worker; the owner's password only in a container of its own.
+    block = _service("fichaitor-baja")
+    assert "profiles:" in block and "herramientas" in block
+    assert "db.env" in block
+    for other in ("api.env", "worker.env", "conversation.env"):
+        assert other not in block
+    assert 'restart: "no"' in block
+    assert "scripts/baja_manual.py" in block
+    assert "FICHAITOR_OWNER_DB_HOST: fichaitor-db" in block
+    assert "read_only: true" in block and "no-new-privileges" in COMPOSE
+    assert "FICHAITOR_OWNER_DATABASE_URL" not in _service("fichaitor-worker")

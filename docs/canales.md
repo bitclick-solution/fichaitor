@@ -480,7 +480,7 @@ Añade en `app/worker/__main__.py` una tarea `planner` que, cada minuto, encola 
 | `sync_profile` de cada ficha activa con una dirección vinculada que la ve | Cada 30 minutos, de 8:30 a 21:00; cada 3 horas por la noche. Cada ficha con su `run_at` dentro de la franja | `sync:<google_sub>:<location>:<franja>` |
 | `plan_key_dates` | Una vez al día, a las 9:05 | `plan_key_dates:<fecha>` |
 
-El `run_at` de cada sincronización es el inicio de la franja más un desplazamiento fijo de esa ficha: `sha256(google_sub, location)` módulo la duración de la franja (`spread_run_at`). Así, muchas fichas no llaman a Google en el mismo minuto, y cada ficha se sincroniza siempre en el mismo momento de su franja. La clave de idempotencia no cambia.
+El `run_at` de cada sincronización es el inicio de la franja más un desplazamiento fijo de esa ficha: `sha256(google_sub, location)` módulo la duración de la franja (`spread_run_at`). Así, muchas fichas no llaman a Google en el mismo minuto, y cada ficha se sincroniza siempre en el mismo momento de su franja. La clave de idempotencia no cambia. La forma `sync:...` es solo del planificador (y del worker): la API no puede encolar un job con ella, así que no puede ocupar la franja de una ficha y suprimir su sincronización (I16 de `docs/seguridad/revision-2026-11-12-c.md`).
 
 Treinta minutos es el compromiso propuesto entre "al momento" y la cuota de la API de reseñas. Hay que contrastarlo con `docs/fase0/matriz-api.md` antes de fijarlo. Cuando existan las notificaciones de Google (Pub/Sub), la sincronización periódica pasa a ser el respaldo.
 

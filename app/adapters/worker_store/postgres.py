@@ -89,7 +89,9 @@ _AUDIT_FROM_ACTION = """
 # Google user of that very account, still not deleted, and scheduled with the floor of
 # hours the database imposes. Or one support processed for an email request
 # (scripts/baja_manual.py): only the owner of the database can write that reason
-# (offboarding_guard and the column privileges), and it is effective at once.
+# (offboarding_guard and the column privileges). It is scheduled 48 hours like one of the
+# panel (B15), or effective at once with --inmediata, which is why the floor does not
+# apply to it.
 # `o` is the leave.
 _COHERENT_LEAVE = f"""
     EXISTS (SELECT 1 FROM account a
@@ -158,17 +160,12 @@ class PostgresWorkerStore:
                 connection_id,
                 at,
             )
-            # The ones it replaced share its grant: dead too, and never used again.
-            await conn.execute(
-                """
-                DELETE FROM google_connection c
-                USING google_connection gone
-                WHERE gone.id = $2::uuid AND gone.google_sub = $1 AND c.google_sub = $1
-                  AND (c.connected_at, c.id) < (gone.connected_at, gone.id)
-                """,
-                google_sub,
-                connection_id,
-            )
+            # Only this one (B14 of docs/seguridad/revision-2026-11-12-c.md). The older
+            # ones are not deleted here: the API can store a connection with a junk token
+            # for anybody, and its invalid_grant must not take the real one with it. Each
+            # older one falls by its own invalid_grant, if it is dead too, and
+            # latest_connection moves on to the next valid one. Older ones go only after
+            # a newer one has worked (drop_replaced_connections).
             return not await conn.fetchval(
                 """
                 SELECT EXISTS (SELECT 1 FROM google_connection
@@ -965,9 +962,19 @@ class PostgresWorkerStore:
         """Delete what was obtained from Google of a user who removed the access at
         Google `days` ago and has not connected again: the same tables and rules as an
         effective leave of the profile (begin_offboarding and _purge_leave together).
-        Decided again under lock: a connection stored in the meantime cancels it."""
+        Decided again under lock: a connection stored in the meantime cancels it.
+
+        The lock is the row of the account (I17 of docs/seguridad/revision-2026-11-12-c.md):
+        `FOR UPDATE` on the connections does not stop a new one from being inserted. The
+        OAuth callback stores the connection and then writes the account
+        (`upsert_account`, which waits for this lock); the connections are read after
+        taking it, in a statement of their own, so they include one stored before."""
         counts: dict[str, int] = {}
         async with self._pool.acquire() as conn, conn.transaction():
+            await conn.execute(
+                "SELECT 1 FROM account WHERE google_sub = $1 AND deleted_at IS NULL FOR UPDATE",
+                google_sub,
+            )
             rows = await conn.fetch(
                 "SELECT revoked_at FROM google_connection WHERE google_sub = $1 FOR UPDATE",
                 google_sub,

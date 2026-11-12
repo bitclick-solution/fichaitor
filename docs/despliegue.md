@@ -13,6 +13,7 @@ Esta guía explica cómo publicar Fichaitor en el VPS de Bitclick y cómo actual
 | `fichaitor-worker` | Worker, con la misma imagen que la API | `fichaitor-interna` | `worker.env` |
 | `fichaitor-conversation` | Conversación por Telegram (`docs/canales.md`), con la misma imagen | `fichaitor-interna` | `conversation.env` |
 | `fichaitor-web` | Sitio público, `/app` y reenvío de `/api/` | `fichaitor-interna` y `bitclick-network` | Ninguno |
+| `fichaitor-baja` | Solo con `docker compose run --rm`: la baja por correo ([Tareas habituales](#tareas-habituales)), con la imagen de la API. No arranca con el despliegue (perfil `herramientas`) | `fichaitor-interna` | `db.env` |
 
 - Ningún contenedor publica puertos en el servidor. Nginx Proxy Manager (`bitclick-proxy`) llega a `fichaitor-web:8080` por la red `bitclick-network`. La base de datos y la API solo son visibles dentro de `fichaitor-interna`.
 - Las imágenes `fichaitor-api` y `fichaitor-web` se etiquetan con el commit. Actualizar es cambiar la etiqueta, aplicar el esquema y recrear los contenedores.
@@ -71,6 +72,8 @@ En GitHub solo están los secretos de acceso al servidor y a GHCR, con los mismo
    > **Nota:** en un repositorio privado, los revisores obligatorios dependen del plan de GitHub. Si la opción no aparece, el despliegue sigue siendo manual, pero sin paso de aprobación.
 
 4. En **Deployment branches and tags**, permite solo la rama `main` y las etiquetas `v*`.
+
+   > **Importante:** esta regla es la protección real del despliegue, no las comprobaciones del flujo. `workflow_dispatch` se puede lanzar desde cualquier rama y entonces se ejecuta el `deploy.yml` **de esa rama**: quien pueda escribir en el repositorio puede quitar en su rama la condición del trabajo `desplegar` (`main` o una etiqueta `v*`), la comprobación «el commit está en `main`» y la de la integración continua. Lo que no puede saltarse es la regla del entorno: GitHub no entrega los secretos de `production` (la clave SSH y `GHCR_TOKEN`) a un trabajo de otra rama. Por eso hacen falta las dos cosas: esta regla y los revisores obligatorios del paso 3 (hallazgo I19 de `docs/seguridad/revision-2026-11-12-c.md`).
 
 5. Crea estos secretos en el entorno `production`:
 
@@ -188,7 +191,8 @@ Reglas que `deploy.sh` comprueba antes de tocar nada:
 - Ni `api.env` ni `conversation.env` contienen `FICHAITOR_TOKEN_PRIVATE_KEY`.
 - `api.env` no contiene `FICHAITOR_WORKER_DATABASE_URL` ni `FICHAITOR_CONVERSATION_DATABASE_URL`.
 - `FICHAITOR_LINK_CODE_PEPPER` existe, tiene 32 caracteres o más y es igual en `api.env` y `conversation.env`.
-- `FICHAITOR_TELEGRAM_WEBHOOK_SECRET` tiene 32 caracteres o más en `api.env` (salvo con `FICHAITOR_TELEGRAM_POLLING=true` en `conversation.env`, que en producción no se usa).
+- `FICHAITOR_TELEGRAM_WEBHOOK_SECRET` tiene 32 caracteres o más en `api.env`, siempre.
+- `conversation.env` no pide sondeo largo: `FICHAITOR_TELEGRAM_POLLING` vacío o `false`. En producción solo hay webhook (el Compose lo fuerza), así que pedir sondeo detiene el despliegue en vez de saltarse la medida del secreto (I22).
 - Ningún archivo activa un modo de ejemplo: ninguna variable `FICHAITOR_FAKE_*` (`PLACES`, `GOOGLE`, `SCREENSHOT`, `MAIL` y las que se añadan) con un valor que no sea vacío, `false`, `0`, `no` u `off`.
 - El identificador del cliente OAuth coincide en los dos archivos.
 
@@ -345,6 +349,8 @@ Sirve para tener `fichaitor.es` en línea, con la portada y las páginas legales
 
 Con este modo, `/app` enseña «Muy pronto» y `/api/` responde 503. El primer despliegue completo sustituye el contenedor `fichaitor-web` sin pasos a mano (mismo nombre de proyecto y de contenedor).
 
+> **Precaución:** no lances `solo_web = 1` con el producto completo en marcha. Sustituye su `fichaitor-web` por la del modo solo web (mismo proyecto y mismo contenedor) y **la API deja de estar accesible: `/api/` responde 503** para todos los clientes, aunque `fichaitor-api` siga en marcha. Para volver, despliega otra vez el producto completo (`solo_web = 0`) o haz `./deploy.sh rollback` a la etiqueta en uso (hallazgo I19 de `docs/seguridad/revision-2026-11-12-c.md`).
+
 1. Haz los pasos 1 (GitHub) y 2 (carpeta en el VPS) de la primera instalación. Los pasos 3 a 6 no hacen falta.
 2. Haz los pasos 7 (DNS) y 8 (host en Nginx Proxy Manager, con la redirección de `www`).
 3. En GitHub, **Actions > Desplegar > Run workflow**, con `solo_web = 1` y `legal_estricto = 1`. Si los textos legales tienen marcas abiertas, el flujo se detiene antes de publicar.
@@ -362,7 +368,7 @@ Lo hace `deploy/deploy-web.sh` con `deploy/docker-compose.web.yml`. Si la web nu
 
 ## Desplegar una versión nueva
 
-Hay dos formas. Las dos exigen que el commit esté en `main` y que su integración continua haya terminado bien.
+Hay dos formas. Las dos exigen que el commit esté en `main` y que su integración continua haya terminado bien. El trabajo `desplegar` solo corre desde `main` o desde una etiqueta `v*`; la barrera que de verdad lo asegura es la regla de ramas del entorno `production` (paso 1).
 
 **A mano:**
 
@@ -526,40 +532,36 @@ docker exec fichaitor-db psql -U fichaitor -d fichaitor \
 
 **Tramitar una baja pedida por correo:**
 
-Cuando alguien pide por correo la baja de su ficha o de su cuenta, soporte la tramita con `scripts/baja_manual.py`. Hace lo mismo que la baja del panel, pero sin código ni espera de 48 horas: es efectiva al momento. Qué hace y por qué la base lo admite está en `docs/retencion.md`, «Baja por correo».
+Cuando alguien pide por correo la baja de su ficha o de su cuenta, soporte la tramita con `scripts/baja_manual.py`. Hace lo mismo que la baja del panel, sin código: la baja queda **programada 48 horas** y a la dirección de la cuenta le llega el correo de «baja programada» con su enlace de restauración, igual que desde el panel. Si el correo no lo mandó el dueño, la restaura con un clic y no se ha borrado nada (hallazgo B15 de `docs/seguridad/revision-2026-11-12-c.md`). Qué hace y por qué la base lo admite está en `docs/retencion.md`, «Baja por correo».
 
 Antes de ejecutarlo, comprueba:
 
-- **Que el correo viene de la dirección de la cuenta.** Mira la dirección real del remitente (no el nombre que se muestra) y las cabeceras de autenticación del mensaje (`spf=pass`, `dkim=pass` o `dmarc=pass` para su dominio). Si no coincide o no pasa, no la tramites: contesta pidiendo que la haga desde el panel o desde esa dirección.
+- **Que el correo viene de la dirección de la cuenta, con `dmarc=pass` alineado.** Abre el original del mensaje y mira la cabecera `Authentication-Results` que puso **nuestro** servidor de correo (la primera, la más alta; las de más abajo las puede escribir cualquiera). Tiene que decir `dmarc=pass` y `header.from=` el dominio de la dirección del remitente (`From:`), que a su vez es la dirección de la cuenta. `spf=pass` o `dkim=pass` solos **no valen**: pueden pasar para el dominio de quien lo envía con un `From:` ajeno; solo DMARC liga la autenticación al dominio del `From:`. Si no hay `dmarc=pass` alineado (falta, `fail`, `none`, `bestguesspass` o el dominio no coincide), **no la tramites por correo**: contesta pidiendo que la haga desde el panel, en **Ajustes** («Desconectar Google» o borrar la cuenta), con el código que le llega a su correo.
 - **Qué pide:** desconectar Google (`ficha`) o borrar la cuenta (`cuenta`). Si dice una ficha y la cuenta tiene varias, apunta cuál. Google concede el acceso por usuario: la baja de `ficha` desconecta todas las fichas de la cuenta. Si solo quiere dejar de usar una, que la desactive en el panel.
 - **Una referencia para `--motivo`**, por ejemplo el número del ticket. Sin direcciones de correo ni otros datos personales: se guarda 12 meses en la auditoría.
 
-Ejecútalo en el servidor, dentro del contenedor del worker, con el usuario propietario de la base de datos. La contraseña se lee de `db.env` y viaja en una variable de entorno, nunca en la línea de órdenes:
+Ejecútalo en el servidor, en un **contenedor de un solo uso** (servicio `fichaitor-baja` de `docker-compose.yml`, perfil `herramientas`), nunca dentro del worker: así la contraseña del propietario no entra en el entorno ni en el espacio de procesos del worker (hallazgo I20). El contenedor usa la imagen de la API, recibe solo `db.env`, compone la URL del propietario con `POSTGRES_PASSWORD` y se borra al terminar (`--rm`). La contraseña no pasa por la línea de órdenes ni por la sesión del servidor:
 
-1. Prepara la URL del propietario en la sesión del servidor:
+1. Mira lo que haría. Sin `--confirmar` no cambia nada:
 
    ```bash
    cd /opt/bitclick/fichaitor
-   set -a; . ./db.env; set +a
-   export FICHAITOR_OWNER_DATABASE_URL="postgresql://fichaitor:${POSTGRES_PASSWORD}@fichaitor-db:5432/fichaitor"
-   ```
-
-2. Mira lo que haría. Sin `--confirmar` no cambia nada:
-
-   ```bash
-   docker exec -e FICHAITOR_OWNER_DATABASE_URL fichaitor-worker \
-     python scripts/baja_manual.py --email dueno@example.com --scope ficha --motivo "Ticket 1234"
+   docker compose run --rm fichaitor-baja \
+     --email dueno@example.com --scope ficha --motivo "Ticket 1234"
    ```
 
    Enseña la cuenta (con el correo enmascarado), sus fichas, si ya tiene una baja programada desde el panel (la nueva la sustituye) y qué va a pasar. Si la cuenta tiene más de una ficha y el alcance es `ficha`, pide `--location loc_...`: la ficha que nombra el correo, para comprobar que es de esa cuenta.
 
-3. Si todo cuadra, repite la orden con `--confirmar`. Imprime el identificador de la baja, una línea JSON `baja_manual` de auditoría y, en unos segundos, `Efectiva: ... Revocación en Google: revoked`. Si dice que el worker todavía no la ha hecho efectiva, comprueba que `fichaitor-worker` está en marcha: los datos ya no se sirven y el worker la aplicará al tomar el job.
+2. Si todo cuadra, repite la orden con `--confirmar`. Imprime el identificador de la baja, una línea JSON `baja_manual` de auditoría y `Programada: se hace efectiva el ...`. El worker envía en unos segundos el correo de baja programada a la dirección de la cuenta.
 
-4. Borra la variable de la sesión y contesta a la persona: la baja está hecha y lo obtenido de Google se borra en un máximo de 30 días.
+3. Contesta a la persona: la baja está programada; le llega un correo con el enlace para anularla durante 48 horas; pasado ese plazo se hace efectiva y lo obtenido de Google se borra en un máximo de 30 días.
 
-   ```bash
-   unset FICHAITOR_OWNER_DATABASE_URL POSTGRES_PASSWORD
-   ```
+**Baja inmediata (`--inmediata`), solo en casos excepcionales.** Hace la baja efectiva al momento, sin plazo, sin correo y sin enlace de restauración: no tiene vuelta atrás. Úsala solo con el visto bueno del responsable del tratamiento y por un motivo que conste en el ticket, por ejemplo una orden de una autoridad, o un dueño que ya no puede recibir correo en la dirección de la cuenta y ha acreditado su identidad por otra vía. Nunca porque «corra prisa»: la baja programada ya deja de leer la ficha y de enviar avisos desde el primer momento. Con `--inmediata`, el script espera hasta 60 segundos y escribe `Efectiva: ... Revocación en Google: revoked`; si dice que el worker todavía no la ha hecho efectiva, comprueba que `fichaitor-worker` está en marcha: los datos ya no se sirven y el worker la aplicará al tomar el job.
+
+```bash
+docker compose run --rm fichaitor-baja \
+  --email dueno@example.com --scope cuenta --motivo "Ticket 1234: orden judicial" --inmediata --confirmar
+```
 
 | Código de salida | Qué significa |
 |---|---|
@@ -567,14 +569,14 @@ Ejecútalo en el servidor, dentro del contenedor del worker, con el usuario prop
 | `1` | No se ha tramitado: no hay cuenta con ese correo, hay más de una, la ficha no es de la cuenta, falta `--location`, la cuenta ya está desconectada o el motivo no vale. El mensaje lo explica |
 | `2` | Uso o configuración: falta la URL, o no es el usuario propietario |
 
-Para ver las bajas tramitadas por correo:
+Para ver las bajas tramitadas por correo (`delete_at = confirmed_at` en las inmediatas):
 
 ```bash
 docker exec fichaitor-db psql -U fichaitor -d fichaitor \
-  -c "SELECT at, written_by, action_id AS baja, action_type, text AS motivo FROM audit_log WHERE event = 'offboarding_email_request' ORDER BY at DESC LIMIT 20"
+  -c "SELECT l.at, l.written_by, l.action_id AS baja, l.action_type, l.text AS motivo, o.delete_at = o.confirmed_at AS inmediata, o.restored_at FROM audit_log l LEFT JOIN offboarding o ON o.id::text = l.action_id WHERE l.event = 'offboarding_email_request' ORDER BY l.at DESC LIMIT 20"
 ```
 
-> **Nota:** el script viaja en la imagen de la API y del worker desde la versión que lo incluye. Con una imagen anterior, despliega primero.
+> **Nota:** el script viaja en la imagen de la API desde la versión que lo incluye, y el servicio `fichaitor-baja` en el `docker-compose.yml` que copia el despliegue desde esta versión. Con una versión anterior, despliega primero.
 
 > **Precaución:** no ejecutes `docker compose down -v`. La opción `-v` borra el volumen de la base de datos.
 

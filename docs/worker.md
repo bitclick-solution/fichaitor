@@ -321,7 +321,7 @@ El adaptador SMTP usa `smtplib`, de la biblioteca estándar, en un hilo. Basta p
 
 ### El job `apply_offboarding`
 
-Carga: `{"offboarding_id": "<uuid>"}`. La API lo encola al confirmar la baja, para ejecutarse en su fecha (`run_at`), con la clave `apply_offboarding:<id>` y 5 intentos. Una baja por correo (`scripts/baja_manual.py`) lo encola igual, para ya: lleva `reason = 'email_request'`, que solo el propietario puede escribir, y es la única que el job hace efectiva sin las 47 horas ([retencion.md](retencion.md#baja-por-correo)).
+Carga: `{"offboarding_id": "<uuid>"}`. La API lo encola al confirmar la baja, para ejecutarse en su fecha (`run_at`), con la clave `apply_offboarding:<id>` y 5 intentos. Una baja por correo (`scripts/baja_manual.py`) lo encola igual, para su fecha: 48 horas después, como la del panel, o para ya con `--inmediata` (casos excepcionales). Lleva `reason = 'email_request'`, que solo el propietario puede escribir, y es la única que el job hace efectiva sin las 47 horas ([retencion.md](retencion.md#baja-por-correo)).
 
 1. **Hace efectiva la baja**, en una transacción. Solo si sigue programada y su fecha ha llegado: una baja restaurada, o un job que corre antes de tiempo, no hace nada (`offboarding_skipped`). Desde aquí ya no se puede restaurar.
 2. **Revoca en Google todas las conexiones guardadas** de ese usuario, no solo la última: `POST https://oauth2.googleapis.com/revoke`, con el token de renovación en el cuerpo (`token=...`, `application/x-www-form-urlencoded`). Una petición por token.

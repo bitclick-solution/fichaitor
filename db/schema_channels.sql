@@ -340,14 +340,18 @@ REVOKE SELECT (title) ON location FROM fichaitor_worker;
 -- - La conversación: ve, toma y cierra solo sus tipos (app/domain/channel_jobs.py:KINDS),
 --   así que nunca lee la carga de un send_mail (el correo del dueño, el código de baja y el
 --   token de restauración). Encola solo lo que encola su código.
--- - Clave de idempotencia: vacía, o "<tipo>:..." del tipo que se encola (más las dos formas
---   antiguas: "sync:..." de sync_profile y "<canal>:<update_id>" de channel_inbound). Así
---   nadie más que el worker ocupa "retention:<fecha>" ni otra clave diaria del sistema.
+-- - Clave de idempotencia: vacía, o "<tipo>:..." del tipo que se encola (más la forma
+--   antigua "<canal>:<update_id>" de channel_inbound). Así nadie más que el worker ocupa
+--   "retention:<fecha>" ni otra clave diaria del sistema.
+-- - I16 de docs/seguridad/revision-2026-11-12-c.md: "sync:<google_sub>:<ficha>:<franja>",
+--   la clave de la sincronización periódica, es del planificador (la conversación) y del
+--   worker. La API no la puede ocupar: si lo hacía, su job (con su carga) ocupaba la
+--   franja y el planificador no encolaba el suyo. Las sincronizaciones que pide la API
+--   llevan "sync_profile:..." (app/application/profile_sync.py), otro espacio de claves.
 CREATE OR REPLACE FUNCTION job_key_fits(kind text, key text) RETURNS boolean
-LANGUAGE sql IMMUTABLE AS $$
+LANGUAGE sql IMMUTABLE SET search_path = pg_catalog, public, pg_temp AS $$
     SELECT key IS NULL
         OR starts_with(key, kind || ':')
-        OR (kind = 'sync_profile' AND starts_with(key, 'sync:'))
         OR (kind = 'channel_inbound' AND key ~ '^(telegram|whatsapp|email):[0-9]{1,20}$')
 $$;
 
@@ -373,7 +377,8 @@ DROP POLICY IF EXISTS job_conversation_insert ON job;
 CREATE POLICY job_conversation_insert ON job FOR INSERT TO fichaitor_conversation
     WITH CHECK (kind IN ('conversation_tick', 'sync_profile', 'plan_key_dates', 'reply_review',
                          'set_special_hours')
-                AND job_key_fits(kind, idempotency_key));
+                AND (job_key_fits(kind, idempotency_key)
+                     OR (kind = 'sync_profile' AND starts_with(idempotency_key, 'sync:'))));
 
 -- Solo en una base de pruebas (su nombre termina en _test): las pruebas encolan y toman
 -- jobs de tipos propios ('pytest-...') para que ningún proceso real los ejecute. Con las
@@ -506,7 +511,7 @@ ALTER TABLE link_code ADD CONSTRAINT link_code_location_filter_check
 -- cuando el filtro o la cuenta cambian: una ficha borrada después por la retención no
 -- impide anotar la última actividad del chat.
 CREATE OR REPLACE FUNCTION location_filter_guard() RETURNS trigger
-LANGUAGE plpgsql SET search_path = pg_catalog, public AS $$
+LANGUAGE plpgsql SET search_path = pg_catalog, public, pg_temp AS $$
 BEGIN
     IF NEW.location_filter IS NULL THEN
         RETURN NEW;
@@ -517,7 +522,7 @@ BEGIN
     END IF;
     IF array_position(NEW.location_filter, NULL) IS NOT NULL
        OR EXISTS (SELECT 1 FROM unnest(NEW.location_filter) AS f (id)
-                  WHERE NOT EXISTS (SELECT 1 FROM location l
+                  WHERE NOT EXISTS (SELECT 1 FROM public.location l
                                     WHERE l.id = f.id AND l.account_id = NEW.account_id)) THEN
         RAISE EXCEPTION 'filtro_ajeno' USING ERRCODE = 'check_violation';
     END IF;
@@ -601,7 +606,7 @@ WHERE p.location_id IS NULL AND p.type <> 'key_date' AND a.id = p.account_id
 -- vea al propietario de verdad. La conversación lee account.selected_location_id y
 -- location.active_since.
 CREATE OR REPLACE FUNCTION proposal_location_guard() RETURNS trigger
-LANGUAGE plpgsql SET search_path = pg_catalog, public AS $$
+LANGUAGE plpgsql SET search_path = pg_catalog, public, pg_temp AS $$
 BEGIN
     IF fichaitor_is_owner(TG_RELID) THEN
         RETURN NEW;
@@ -610,14 +615,14 @@ BEGIN
         IF NEW.type = 'key_date' THEN
             NEW.location_id := NEW.payload->>'location_id';
         ELSE
-            NEW.location_id := (SELECT a.selected_location_id FROM account a
+            NEW.location_id := (SELECT a.selected_location_id FROM public.account a
                                 WHERE a.id = NEW.account_id);
         END IF;
     END IF;
     IF NEW.location_id IS NULL THEN
         RAISE EXCEPTION 'propuesta_sin_ficha' USING ERRCODE = 'check_violation';
     END IF;
-    IF NOT EXISTS (SELECT 1 FROM location l
+    IF NOT EXISTS (SELECT 1 FROM public.location l
                    WHERE l.account_id = NEW.account_id AND l.id = NEW.location_id
                      AND l.active_since IS NOT NULL) THEN
         RAISE EXCEPTION 'ficha_inactiva' USING ERRCODE = 'check_violation';
@@ -630,26 +635,29 @@ DROP TRIGGER IF EXISTS proposal_location_guard ON proposal;
 CREATE TRIGGER proposal_location_guard BEFORE INSERT ON proposal
     FOR EACH ROW EXECUTE FUNCTION proposal_location_guard();
 
--- Relleno 3.8.4 de los carriles. NO se ejecuta al aplicar este esquema: lo llama el
--- despliegue del paso 6b, con el proceso de la conversación detenido y el código nuevo
--- ya en su sitio (consulta la precaución de la sección 3.8):
---   SELECT fichaitor_fill_conversation_lanes();
--- Mientras el código antiguo lleve el hilo, conversation.active_proposal_id es lo que
--- vale: moverlo antes al carril cambiaría su comportamiento.
+-- Relleno 3.8.4 de los carriles. SÍ se ejecuta en cada aplicación de este esquema: la
+-- última línea del archivo lo llama (I18 de docs/seguridad/revision-2026-11-12-c.md). Por
+-- eso deploy/deploy.sh para la conversación antes de aplicar los esquemas y la arranca
+-- después con el código nuevo, que ya lleva los carriles (ola 3): el código anterior
+-- podría volver a escribir en el hilo después del relleno. Consulta la precaución de la
+-- sección 3.8 de docs/multinegocio.md.
+-- Cada pasada vacía conversation.active_proposal_id de todos los hilos. Una propuesta
+-- abierta cuyo carril ya tenía otra queda fuera de los dos sin perderse: el carril la
+-- vuelve a entregar.
 -- Copia la propuesta activa de cada hilo al carril de su ficha, solo si sigue abierta y
 -- tiene ficha, sin pisar un carril que ya tenga una; después vacía la del hilo. Devuelve
 -- cuántos carriles ha escrito. Se puede repetir: la segunda vez no hay nada que copiar.
 -- Solo el propietario la ejecuta.
 CREATE OR REPLACE FUNCTION fichaitor_fill_conversation_lanes() RETURNS integer
-LANGUAGE plpgsql SET search_path = pg_catalog, public AS $$
+LANGUAGE plpgsql SET search_path = pg_catalog, public, pg_temp AS $$
 DECLARE
     written integer;
 BEGIN
     WITH moved AS (
-        INSERT INTO conversation_lane AS cl (account_id, location_id, active_proposal_id)
+        INSERT INTO public.conversation_lane AS cl (account_id, location_id, active_proposal_id)
         SELECT p.account_id, p.location_id, p.id
-        FROM conversation c
-        JOIN proposal p ON p.id = c.active_proposal_id AND p.account_id = c.account_id
+        FROM public.conversation c
+        JOIN public.proposal p ON p.id = c.active_proposal_id AND p.account_id = c.account_id
         WHERE p.location_id IS NOT NULL
           AND p.state IN ('enviada', 'recordada', 'recopilando', 'por_confirmar')
         ON CONFLICT (account_id, location_id) DO UPDATE
@@ -658,7 +666,7 @@ BEGIN
         RETURNING 1
     )
     SELECT count(*) INTO written FROM moved;
-    UPDATE conversation SET active_proposal_id = NULL, updated_at = now()
+    UPDATE public.conversation SET active_proposal_id = NULL, updated_at = now()
     WHERE active_proposal_id IS NOT NULL;
     RETURN written;
 END
@@ -668,4 +676,6 @@ REVOKE ALL ON FUNCTION fichaitor_fill_conversation_lanes() FROM PUBLIC;
 -- ---------------------------------------------------------------------------
 -- Solo desarrollo local y pruebas: está en db/dev-init.sql.
 -- En producción el usuario fichaitor_conversation_prod lo crea deploy/init-roles.sh.
+
+-- El relleno de los carriles, en cada aplicación (ver el comentario de la función).
 SELECT fichaitor_fill_conversation_lanes();

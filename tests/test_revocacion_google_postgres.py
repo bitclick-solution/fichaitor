@@ -55,6 +55,18 @@ async def revoked_sync(s: Scene, sub: str, error: Exception | None = None) -> No
     s.google.refresh_error = None
 
 
+async def access_removed(s: Scene, sub: str) -> None:
+    """The owner removed the access at Google: every stored connection is dead. Each one
+    falls by its own invalid_grant, one sync after another (B14 of
+    docs/seguridad/revision-2026-11-12-c.md), until none is valid."""
+    for _ in range(5):
+        valid = await count("google_connection", "google_sub = $1 AND revoked_at IS NULL", sub)
+        if not valid:
+            return
+        await revoked_sync(s, sub)
+    raise AssertionError("connections left after five syncs")
+
+
 async def connections(sub: str) -> list[asyncpg.Record]:
     return await owner(
         "SELECT revoked_at, refresh_token_enc IS NULL AS no_token FROM google_connection"
@@ -74,7 +86,10 @@ def test_invalid_grant_marks_the_connection_revoked_and_deletes_only_the_tokens(
         ana, session = await s.furnished(ANA)  # two connections: the second never synced
         luis, _ = await s.furnished(LUIS)
         await revoked_sync(s, ANA)
+        first = await connections(ANA)
+        await revoked_sync(s, ANA)  # the older one, by its own invalid_grant
         return (
+            first,
             await connections(ANA),
             await s.stored(ANA, ana),
             await s.stored(LUIS, luis),
@@ -83,11 +98,13 @@ def test_invalid_grant_marks_the_connection_revoked_and_deletes_only_the_tokens(
             list(s.google.revoked),
         )
 
-    rows, ana_rows, luis_rows, status, me, revoked = scene(scenario)
-    # The connection that failed stays, revoked and without token; the one it replaced goes.
-    assert [(r["revoked_at"], r["no_token"]) for r in rows] == [(NOW, True)]
+    first, rows, ana_rows, luis_rows, status, me, revoked = scene(scenario)
+    # The connection that failed stays, revoked and without token. The older one is not
+    # touched by that failure (B14): it falls by its own invalid_grant in the next sync.
+    assert [(r["revoked_at"], r["no_token"]) for r in first] == [(None, False), (NOW, True)]
+    assert [(r["revoked_at"], r["no_token"]) for r in rows] == [(NOW, True), (NOW, True)]
     # Everything else is kept for now, and still shown: the panel asks to reconnect.
-    assert ana_rows == {**FULL, "google_connection": 1}
+    assert ana_rows == FULL
     assert luis_rows == FULL
     assert status == "needs_reconnect"
     # The session lives on, and the account still counts as connected until the term.
@@ -116,7 +133,7 @@ def test_what_came_from_google_is_deleted_30_days_after_the_revocation_and_not_b
             proposal,
             ana,
         )
-        await revoked_sync(s, ANA)
+        await access_removed(s, ANA)
         at = s.now
         early = await s.retain(at + 30 * DAY - timedelta(minutes=1))
         before = await s.stored(ANA, ana)
@@ -161,15 +178,15 @@ def test_what_came_from_google_is_deleted_30_days_after_the_revocation_and_not_b
         at,
     ) = scene(scenario)
     early.pop("job_finished", None)
-    assert "revoked_identity" not in early and before == {**FULL, "google_connection": 1}
+    assert "revoked_identity" not in early and before == FULL
     # The same tables as an effective leave of the profile, for every profile of that
     # Google user, the revoked connection included.
     assert after == EMPTY
     assert counts["revoked_identity"] == 1
     for table in ("review", "review_sentiment"):
         assert counts[table] == 2, table
+    assert counts["google_connection"] == 2  # both revoked connections
     for table in (
-        "google_connection",
         "profile_summary",
         "sentiment_analysis",
         "sentiment_history",
@@ -218,7 +235,7 @@ def test_revoking_again_after_reconnecting_starts_the_countdown_again():
         s.now = first + 10 * DAY
         await s.connect(ANA, "refresh-again")
         s.now = first + 20 * DAY
-        await revoked_sync(s, ANA)
+        await access_removed(s, ANA)
         not_yet = await s.retain(first + 35 * DAY)
         kept = await s.stored(ANA, ana)
         done = await s.retain(first + 50 * DAY)
@@ -232,7 +249,7 @@ def test_revoking_again_after_reconnecting_starts_the_countdown_again():
 def test_an_effective_leave_with_a_revoked_connection_has_nothing_to_revoke():
     async def scenario(s: Scene):
         ana, session = await s.furnished(ANA)
-        await revoked_sync(s, ANA)
+        await access_removed(s, ANA)
         s.now = await s.leave(session)
         await s.apply_leave(ana)
         leave = (await owner("SELECT revoke_state FROM offboarding"))[0]["revoke_state"]
@@ -241,7 +258,7 @@ def test_an_effective_leave_with_a_revoked_connection_has_nothing_to_revoke():
 
     revoked, state, purged, after = scene(scenario)
     assert revoked == [] and state == "none"
-    assert after == EMPTY and purged["google_connection"] == 1
+    assert after == EMPTY and purged["google_connection"] == 2
 
 
 # --- the database rules -----------------------------------------------------------------
@@ -261,7 +278,7 @@ async def _try(url: str, sql: str, *args) -> str:
 def test_a_revoked_connection_never_gets_a_token_back_and_the_api_cannot_revoke():
     async def scenario(s: Scene):
         await s.furnished(ANA)
-        await revoked_sync(s, ANA)
+        await access_removed(s, ANA)
         await s.connect(LUIS)
         results = {
             # The worker: only "revoked, without token", and never undone.
@@ -281,7 +298,8 @@ def test_a_revoked_connection_never_gets_a_token_back_and_the_api_cannot_revoke(
                 "UPDATE google_connection SET locations = '[]' WHERE google_sub = $1",
                 LUIS,
             ),
-            # The API: cannot read, change or create a revoked connection.
+            # The API: cannot read, change or create a revoked connection (nor date one:
+            # B14, it has no privilege on revoked_at or connected_at).
             "api_inserts_revoked": await _try(
                 API_URL,
                 "INSERT INTO google_connection"
@@ -310,9 +328,9 @@ def test_a_revoked_connection_never_gets_a_token_back_and_the_api_cannot_revoke(
         "worker_restores_token": "CheckViolationError",
         "worker_revokes_keeping_token": "CheckViolationError",
         "worker_changes_locations": "InsufficientPrivilegeError",
-        "api_inserts_revoked": "CheckViolationError",
+        "api_inserts_revoked": "InsufficientPrivilegeError",
         "api_revokes": "InsufficientPrivilegeError",
         "owner_token_less": "CheckViolationError",
     }
-    assert [(r["revoked_at"], r["no_token"]) for r in ana] == [(NOW, True)]
+    assert [(r["revoked_at"], r["no_token"]) for r in ana] == [(NOW, True), (NOW, True)]
     assert [(r["revoked_at"], r["no_token"]) for r in luis] == [(None, False)]

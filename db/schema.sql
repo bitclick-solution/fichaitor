@@ -15,6 +15,37 @@ BEGIN
 END
 $$;
 
+-- M6 de docs/seguridad/revision-2026-11-12-c.md: ningún rol de la aplicación crea tablas
+-- temporales. Una tabla temporal tapaba a las de verdad dentro de las funciones de la base
+-- (pg_temp va el primero del search_path si no se nombra) y con eso se saltaban los
+-- disparadores de guardia. La aplicación no usa tablas temporales. Es la barrera de toda la
+-- clase; la otra es que cada función fija search_path = pg_catalog, public, pg_temp.
+-- Sobre la base en la que se aplica (fichaitor, las _test o la de producción), quitado a
+-- PUBLIC y, por si alguien se lo concedió, a los roles de la aplicación y a sus usuarios.
+-- El propietario lo conserva. De paso, nadie más que el propietario crea objetos en public
+-- (PostgreSQL 15 ya lo hace así en las bases nuevas; aquí se asegura en las anteriores).
+-- Idempotente: repetirlo no cambia nada.
+DO $$
+DECLARE
+    who name;
+BEGIN
+    EXECUTE format('REVOKE TEMPORARY ON DATABASE %I FROM PUBLIC', current_database());
+    FOR who IN
+        SELECT r.rolname FROM pg_catalog.pg_roles r
+        WHERE r.rolname IN ('fichaitor_api', 'fichaitor_worker', 'fichaitor_conversation')
+        UNION
+        SELECT m.rolname FROM pg_catalog.pg_auth_members am
+        JOIN pg_catalog.pg_roles g ON g.oid = am.roleid
+        JOIN pg_catalog.pg_roles m ON m.oid = am.member
+        WHERE g.rolname IN ('fichaitor_api', 'fichaitor_worker', 'fichaitor_conversation')
+          AND NOT m.rolsuper
+    LOOP
+        EXECUTE format('REVOKE TEMPORARY ON DATABASE %I FROM %I', current_database(), who);
+    END LOOP;
+    REVOKE CREATE ON SCHEMA public FROM PUBLIC;
+END
+$$;
+
 -- Lista de espera del experimento de captación.
 -- Datos personales: el contacto. Base legal: consentimiento, con versión del texto y fecha.
 CREATE TABLE IF NOT EXISTS waitlist_entry (
@@ -68,8 +99,13 @@ CREATE INDEX IF NOT EXISTS google_connection_sub_at
 
 -- La API solo puede insertar. No puede leer, cambiar ni borrar contactos ni tokens:
 -- si la API se ve comprometida, no se pueden extraer por ella.
+-- B14 de docs/seguridad/revision-2026-11-12-c.md: tampoco elige la fecha de la conexión
+-- (connected_at toma now()), así que no puede colar una conexión «más nueva» que las que
+-- vengan después, ni crearla revocada (eso lo impide además google_connection_guard).
 REVOKE ALL ON waitlist_entry, funnel_event, google_connection FROM fichaitor_api;
-GRANT INSERT ON waitlist_entry, funnel_event, google_connection TO fichaitor_api;
+GRANT INSERT ON waitlist_entry, funnel_event TO fichaitor_api;
+GRANT INSERT (google_sub, email, refresh_token_enc, key_version, scopes, locations)
+    ON google_connection TO fichaitor_api;
 
 -- Cuentas. Una cuenta es una identidad de Google: no hay contraseñas.
 -- Datos personales: el correo. Se toma de Google al conectar.
@@ -99,7 +135,7 @@ ALTER TABLE account ADD COLUMN IF NOT EXISTS deleted_at timestamptz;
 -- - Solo el worker (o el propietario) puede fechar una desconexión o una baja. La API
 --   solo puede quitar disconnected_at, que es lo que hace al volver a conectar.
 CREATE OR REPLACE FUNCTION account_baja_guard() RETURNS trigger
-LANGUAGE plpgsql AS $$
+LANGUAGE plpgsql SET search_path = pg_catalog, public, pg_temp AS $$
 BEGIN
     IF OLD.deleted_at IS NOT NULL THEN
         NEW.google_sub := OLD.google_sub;
@@ -221,10 +257,13 @@ GRANT UPDATE (hits) ON usage_counter TO fichaitor_api;
 -- Quién no está sujeto a los disparadores de guardia: el propietario de la tabla (aplica
 -- los esquemas y prepara las pruebas) y un superusuario. Los roles de la aplicación, sí.
 -- pg_has_role no sirve aquí: un superusuario es "miembro" de todos los roles.
+-- M6 de docs/seguridad/revision-2026-11-12-c.md: catálogos cualificados y pg_temp el
+-- último del search_path. Sin eso, una tabla temporal "pg_roles" con rolsuper = true
+-- la tapaba y todos los disparadores eximían a quien la creara.
 CREATE OR REPLACE FUNCTION fichaitor_is_owner(rel regclass) RETURNS boolean
-LANGUAGE sql STABLE AS $$
+LANGUAGE sql STABLE SET search_path = pg_catalog, public, pg_temp AS $$
     SELECT coalesce(bool_or(r.rolsuper OR c.relowner = r.oid), false)
-    FROM pg_roles r, pg_class c
+    FROM pg_catalog.pg_roles r, pg_catalog.pg_class c
     WHERE r.rolname = current_user AND c.oid = rel
 $$;
 
@@ -233,7 +272,7 @@ $$;
 -- conversación podían ponerlo a cero y el tope dejaba de serlo. Un contador nuevo empieza
 -- en 1, y su ámbito, su ventana y su fin no cambian.
 CREATE OR REPLACE FUNCTION usage_counter_guard() RETURNS trigger
-LANGUAGE plpgsql AS $$
+LANGUAGE plpgsql SET search_path = pg_catalog, public, pg_temp AS $$
 BEGIN
     IF fichaitor_is_owner(TG_RELID) THEN
         RETURN NEW;
@@ -319,7 +358,9 @@ CREATE INDEX IF NOT EXISTS plan_entitlement_account ON plan_entitlement (account
 -- más que la fila de location, que la retención borra. Sin datos personales.
 -- written_by: el usuario con el que se conectó quien hizo el cambio (session_user).
 -- reason: owner (el dueño, desde la API), removed (la ficha se retiró), migration (el
--- relleno de abajo) u otro código que pida quien escribe con fichaitor.activation_reason.
+-- relleno de abajo) u otro código que pida el propietario con fichaitor.activation_reason.
+-- Si lo pide otro rol, untrusted («no fiable»): B16 de
+-- docs/seguridad/revision-2026-11-12-c.md.
 CREATE TABLE IF NOT EXISTS location_activation_log (
     id          bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
     at          timestamptz NOT NULL DEFAULT now(),
@@ -351,7 +392,7 @@ CREATE INDEX IF NOT EXISTS location_activation_log_account
 -- Los privilegios de columna se comprueban sobre las del SET, no sobre las que cambia el
 -- disparador: el worker sigue retirando fichas con solo UPDATE (removed_at).
 CREATE OR REPLACE FUNCTION location_active_guard() RETURNS trigger
-LANGUAGE plpgsql SET search_path = pg_catalog, public AS $$
+LANGUAGE plpgsql SET search_path = pg_catalog, public, pg_temp AS $$
 DECLARE
     is_owner boolean := fichaitor_is_owner(TG_RELID);
     was_active boolean := false;
@@ -396,11 +437,11 @@ BEGIN
     IF is_owner OR NEW.plan IS NULL THEN
         RETURN NEW;
     END IF;
-    SELECT a.deleted_at INTO gone FROM account a WHERE a.id = NEW.account_id FOR UPDATE;
+    SELECT a.deleted_at INTO gone FROM public.account a WHERE a.id = NEW.account_id FOR UPDATE;
     IF NOT FOUND OR gone IS NOT NULL THEN
         RAISE EXCEPTION 'cuenta_de_baja' USING ERRCODE = 'check_violation';
     END IF;
-    IF EXISTS (SELECT 1 FROM offboarding o
+    IF EXISTS (SELECT 1 FROM public.offboarding o
                WHERE o.account_id = NEW.account_id
                  AND o.restored_at IS NULL AND o.effective_at IS NULL) THEN
         RAISE EXCEPTION 'baja_programada' USING ERRCODE = 'check_violation';
@@ -409,12 +450,12 @@ BEGIN
        AND abs(extract(epoch FROM NEW.active_since - now())) > 60 THEN
         RAISE EXCEPTION 'fecha_activacion' USING ERRCODE = 'check_violation';
     END IF;
-    SELECT count(*) INTO used FROM location l
+    SELECT count(*) INTO used FROM public.location l
     WHERE l.account_id = NEW.account_id AND l.id <> NEW.id AND l.plan = NEW.plan;
     IF NEW.plan = 'gratis' THEN
         allowed := 1;
     ELSE
-        SELECT coalesce(sum(e.quantity), 0) INTO allowed FROM plan_entitlement e
+        SELECT coalesce(sum(e.quantity), 0) INTO allowed FROM public.plan_entitlement e
         WHERE e.account_id = NEW.account_id AND e.plan = NEW.plan
           AND e.starts_at <= now() AND (e.ends_at IS NULL OR e.ends_at > now());
     END IF;
@@ -422,7 +463,7 @@ BEGIN
         RAISE EXCEPTION 'limite_fichas' USING ERRCODE = 'check_violation';
     END IF;
     IF NEW.plan = 'gratis' AND EXISTS (
-        SELECT 1 FROM location l
+        SELECT 1 FROM public.location l
         WHERE l.gbp_location = NEW.gbp_location AND l.account_id <> NEW.account_id
           AND l.plan = 'gratis') THEN
         RAISE EXCEPTION 'gratis_ocupada' USING ERRCODE = 'check_violation';
@@ -444,7 +485,7 @@ CREATE TRIGGER location_active_guard BEFORE INSERT OR UPDATE ON location
 -- «Aclaraciones para la web», 3). Al retirarla no: el código antiguo la deja elegida para
 -- enseñar «sin acceso», o la vacía él.
 CREATE OR REPLACE FUNCTION location_activation_audit() RETURNS trigger
-LANGUAGE plpgsql SECURITY DEFINER SET search_path = pg_catalog, public AS $$
+LANGUAGE plpgsql SECURITY DEFINER SET search_path = pg_catalog, public, pg_temp AS $$
 DECLARE
     happened text;
     why text;
@@ -464,15 +505,27 @@ BEGIN
         RETURN NULL;
     END IF;
     why := nullif(current_setting('fichaitor.activation_reason', true), '');
+    -- B16 de docs/seguridad/revision-2026-11-12-c.md: el motivo pedido solo vale si lo
+    -- pide el propietario (o un superusuario), que es quien rellena. Aquí current_user es
+    -- el propietario (SECURITY DEFINER): se mira session_user, el usuario con el que se
+    -- conectó quien escribe. La aplicación nunca lo pide; si otro rol lo hace, queda
+    -- 'untrusted' («no fiable») y no lo que pidió.
+    IF why IS NOT NULL AND NOT EXISTS (
+        SELECT 1 FROM pg_catalog.pg_roles r, pg_catalog.pg_class c
+        WHERE r.rolname = session_user AND c.oid = TG_RELID
+          AND (r.rolsuper OR c.relowner = r.oid)) THEN
+        why := 'untrusted';
+    END IF;
     IF why IS NULL OR why !~ '^[a-z_]{1,40}$' THEN
         why := CASE WHEN NEW.removed_at IS NOT NULL THEN 'removed' ELSE 'owner' END;
     END IF;
-    INSERT INTO location_activation_log (written_by, account_id, location_id, event, plan, reason)
+    INSERT INTO public.location_activation_log
+        (written_by, account_id, location_id, event, plan, reason)
     VALUES (session_user, NEW.account_id, NEW.id, happened,
             CASE WHEN happened = 'deactivated' THEN OLD.plan ELSE NEW.plan END, why);
     IF happened = 'deactivated' AND NEW.removed_at IS NULL THEN
-        UPDATE account a SET selected_location_id = (
-            SELECT l.id FROM location l
+        UPDATE public.account a SET selected_location_id = (
+            SELECT l.id FROM public.location l
             WHERE l.account_id = a.id AND l.active_since IS NOT NULL
             ORDER BY l.active_since, l.id LIMIT 1)
         WHERE a.id = NEW.account_id AND a.selected_location_id = NEW.id;
@@ -491,9 +544,9 @@ CREATE TRIGGER location_activation_audit AFTER INSERT OR UPDATE ON location
 -- al crearse; las existentes, con el relleno de abajo.
 -- Al lanzar: quitar este disparador y poner ends_at a los derechos 'beta'.
 CREATE OR REPLACE FUNCTION account_beta_entitlement() RETURNS trigger
-LANGUAGE plpgsql SECURITY DEFINER SET search_path = pg_catalog, public AS $$
+LANGUAGE plpgsql SECURITY DEFINER SET search_path = pg_catalog, public, pg_temp AS $$
 BEGIN
-    INSERT INTO plan_entitlement (account_id, plan, quantity, starts_at, source)
+    INSERT INTO public.plan_entitlement (account_id, plan, quantity, starts_at, source)
     VALUES (NEW.id, 'pro', 3, now(), 'beta');
     RETURN NULL;
 END

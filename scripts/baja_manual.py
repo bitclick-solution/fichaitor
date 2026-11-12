@@ -1,23 +1,34 @@
 """Baja manual: soporte tramita una baja pedida por correo.
 
-Hace lo mismo que la baja del panel (docs/retencion.md), sin código ni espera de 48 horas:
-la persona ya la ha confirmado por correo desde la dirección de la cuenta. La baja es
-efectiva al momento: el worker revoca el acceso en Google, borra los tokens y empiezan
+Hace lo mismo que la baja del panel (docs/retencion.md), sin código: la persona la ha
+pedido por correo desde la dirección de la cuenta. Igual que la del panel, queda
+PROGRAMADA 48 horas y a la dirección de la cuenta le llega el correo de «baja programada»
+con su enlace de restauración (B15 de docs/seguridad/revision-2026-11-12-c.md): si el
+correo no lo mandó el dueño, la restaura con un clic y no se ha borrado nada. Pasado el
+plazo, el worker la hace efectiva: revoca el acceso en Google, borra los tokens y empiezan
 los plazos de borrado. El procedimiento está en docs/despliegue.md, «Tareas habituales».
 
-Se ejecuta en el servidor, con el rol PROPIETARIO de la base de datos. La URL va en la
-variable FICHAITOR_OWNER_DATABASE_URL, nunca en la línea de órdenes. Por defecto solo
+--inmediata: solo para casos excepcionales y con el visto bueno del responsable (por
+ejemplo, lo ordena una autoridad, o el dueño no puede recibir correo en esa dirección y lo
+ha confirmado por otra vía verificable). Efectiva al momento, sin correo ni enlace: no
+tiene vuelta atrás.
+
+Se ejecuta en el servidor, con el rol PROPIETARIO de la base de datos, en un contenedor de
+un solo uso (servicio fichaitor-baja de docker-compose.prod.yml, I20), nunca dentro del
+worker. La URL va en la variable FICHAITOR_OWNER_DATABASE_URL o, en ese contenedor, se
+compone con POSTGRES_PASSWORD de db.env; nunca en la línea de órdenes. Por defecto solo
 enseña lo que haría; con --confirmar lo aplica.
 
     python scripts/baja_manual.py --email dueno@example.com --scope ficha \\
-        --motivo "Ticket 1234" [--location loc_...] [--confirmar]
+        --motivo "Ticket 1234" [--location loc_...] [--inmediata] [--confirmar]
 
 Cómo encaja con las reglas de la base (disparador offboarding_guard, M5):
 - Una baja normal se programa con al menos 47 horas, y el worker no hace efectiva una que
-  no las tenga. Este script la escribe con delete_at = confirmed_at y reason =
-  'email_request'. Solo el propietario puede: el disparador le exime
-  (fichaitor_is_owner) y rechaza reason a cualquier otro rol, y la API no tiene privilegio
-  sobre esa columna. El worker acepta sin las 47 horas solo las que llevan esa razón.
+  no las tenga. Este script la escribe con reason = 'email_request' y delete_at a 48
+  horas (con --inmediata, delete_at = confirmed_at). Solo el propietario puede escribir
+  esa razón: el disparador le exime (fichaitor_is_owner) y la rechaza a cualquier otro
+  rol, y la API no tiene privilegio sobre esa columna. El worker acepta sin las 47 horas
+  solo las que llevan esa razón.
 - Deja una línea en audit_log (evento 'offboarding_email_request', written_by = el
   usuario de la base, el motivo en text) y otra en la salida estándar.
 
@@ -34,10 +45,11 @@ import os
 import re
 import secrets
 import sys
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from urllib.parse import quote
 
 import asyncpg
 
@@ -48,11 +60,17 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from app.domain.offboarding import (  # noqa: E402
     APPLY_KIND,
     APPLY_MAX_ATTEMPTS,
+    MAIL_MAX_ATTEMPTS,
+    MAIL_SCHEDULED,
+    MIN_GRACE_HOURS,
     REASON_EMAIL_REQUEST,
     SCOPE_ACCOUNT,
     SCOPE_PROFILE,
     SCOPES,
+    SEND_MAIL_KIND,
     mask_email,
+    new_restore_token,
+    restore_token_hash,
 )
 from app.domain.proposals import (  # noqa: E402
     CANCELLED_BY_LEAVE,
@@ -61,6 +79,11 @@ from app.domain.proposals import (  # noqa: E402
 )
 
 URL_VARIABLE = "FICHAITOR_OWNER_DATABASE_URL"
+# I20: en el contenedor de un solo uso (servicio fichaitor-baja), la URL se compone con la
+# contraseña de db.env y el servidor que fija el Compose.
+HOST_VARIABLE = "FICHAITOR_OWNER_DB_HOST"
+# Como en el panel: 48 horas para restaurarla desde el enlace del correo.
+GRACE = timedelta(hours=MIN_GRACE_HOURS)
 AUDIT_EVENT = "offboarding_email_request"
 MOTIVO_MIN, MOTIVO_MAX = 3, 500
 _LOCATION_ID = re.compile(r"loc_[0-9a-z]{4,32}")
@@ -101,6 +124,11 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     )
     parser.add_argument(
         "--motivo", required=True, help="Referencia de la petición, sin datos personales"
+    )
+    parser.add_argument(
+        "--inmediata",
+        action="store_true",
+        help="Solo casos excepcionales: efectiva al momento, sin plazo ni enlace de restauración",
     )
     parser.add_argument("--confirmar", action="store_true", help="Aplica la baja")
     return parser.parse_args(argv)
@@ -175,7 +203,7 @@ async def make_plan(conn: asyncpg.Connection, args: argparse.Namespace) -> Plan:
     )
 
 
-def describe(plan: Plan, out: Callable[[str], None]) -> None:
+def describe(plan: Plan, out: Callable[[str], None], immediate: bool = False) -> None:
     out(f"Cuenta: {plan.account_id} ({mask_email(plan.email)})")
     if plan.scope == SCOPE_PROFILE:
         out("Alcance: ficha (desconectar Google; la cuenta sigue existiendo, sin fichas)")
@@ -201,17 +229,46 @@ def describe(plan: Plan, out: Callable[[str], None]) -> None:
             "esta la sustituye."
         )
     out("Qué se hará:")
-    out("  - Baja efectiva al momento, sin código ni 48 horas (reason = email_request).")
+    if immediate:
+        out(
+            "  - INMEDIATA: efectiva al momento, sin plazo ni enlace de restauración. No tiene "
+            "vuelta atrás (reason = email_request)."
+        )
+    else:
+        out(
+            f"  - Baja programada {MIN_GRACE_HOURS} horas, como en el panel "
+            "(reason = email_request)."
+        )
+        out(
+            f"  - Correo de «baja programada» a {mask_email(plan.email)}, con el enlace para "
+            "restaurarla hasta entonces."
+        )
     out("  - Las rutas de la ficha dejan de servir datos y se cancelan las propuestas.")
     if plan.scope == SCOPE_ACCOUNT:
         out("  - Se cierran todas las sesiones y se desvinculan los chats.")
-    out("  - El worker revoca el acceso en Google y borra los tokens (job apply_offboarding).")
+    if immediate:
+        out("  - El worker revoca el acceso en Google y borra los tokens (job apply_offboarding).")
+    else:
+        out(
+            "  - Pasado el plazo, el worker revoca el acceso en Google y borra los tokens "
+            "(job apply_offboarding)."
+        )
     out("  - Lo obtenido de Google se borra en 30 días; el registro de respuestas, en 12 meses.")
 
 
-async def apply(conn: asyncpg.Connection, plan: Plan, motivo: str, now: datetime) -> str:
-    """Escribe la baja, su línea de auditoría y el job que la hace efectiva, en una
-    transacción. Devuelve el id de la baja."""
+async def apply(
+    conn: asyncpg.Connection,
+    plan: Plan,
+    motivo: str,
+    now: datetime,
+    *,
+    immediate: bool = False,
+) -> tuple[str, datetime]:
+    """Escribe la baja, su línea de auditoría, el correo de baja programada (salvo con
+    immediate) y el job que la hace efectiva, en una transacción. Devuelve el id de la
+    baja y cuándo se hace efectiva."""
+    delete_at = now if immediate else now + GRACE
+    token = None if immediate else new_restore_token()
     async with conn.transaction():
         still = await conn.fetchval(
             "SELECT google_sub FROM account WHERE id = $1::uuid AND deleted_at IS NULL FOR UPDATE",
@@ -231,15 +288,18 @@ async def apply(conn: asyncpg.Connection, plan: Plan, motivo: str, now: datetime
         offboarding_id = await conn.fetchval(
             """
             INSERT INTO offboarding
-                (account_id, scope, google_sub, confirmed_at, delete_at, reason)
-            VALUES ($1::uuid, $2, $3, $4, $4, $5)
+                (account_id, scope, google_sub, confirmed_at, delete_at, reason,
+                 restore_token_hash)
+            VALUES ($1::uuid, $2, $3, $4, $5, $6, $7)
             RETURNING id::text
             """,
             plan.account_id,
             plan.scope,
             plan.google_sub,
             now,
+            delete_at,
             REASON_EMAIL_REQUEST,
+            restore_token_hash(token) if token else None,
         )
         # Lo mismo que al confirmar en el panel (B12): lo que esperaba en el chat no sale.
         await conn.execute(
@@ -295,6 +355,26 @@ async def apply(conn: asyncpg.Connection, plan: Plan, motivo: str, now: datetime
             now,
             REASON_EMAIL_REQUEST,
         )
+        if token is not None:
+            # El mismo correo que manda el panel al confirmar: la fecha y el enlace
+            # #restaurar=. Va a la dirección de la cuenta, no a la que escribió: si el
+            # correo era falso, el dueño de verdad se entera y la restaura.
+            await conn.execute(
+                "INSERT INTO job (kind, payload, max_attempts) VALUES ($1, $2::jsonb, $3)",
+                SEND_MAIL_KIND,
+                json.dumps(
+                    {
+                        "template": MAIL_SCHEDULED,
+                        "to": plan.email,
+                        "scope": plan.scope,
+                        "delete_at": delete_at.isoformat(),
+                        "token": token,
+                    }
+                ),
+                MAIL_MAX_ATTEMPTS,
+            )
+        # El job que la hace efectiva espera a la fecha y decide otra vez al correr: una
+        # baja restaurada se deja como está.
         await conn.execute(
             """
             INSERT INTO job (kind, payload, run_at, idempotency_key, max_attempts)
@@ -302,11 +382,11 @@ async def apply(conn: asyncpg.Connection, plan: Plan, motivo: str, now: datetime
             """,
             APPLY_KIND,
             json.dumps({"offboarding_id": offboarding_id}),
-            now,
+            delete_at,
             f"{APPLY_KIND}:{offboarding_id}",
             APPLY_MAX_ATTEMPTS,
         )
-    return offboarding_id
+    return offboarding_id, delete_at
 
 
 async def wait_effective(
@@ -345,12 +425,12 @@ async def run(
             raise Refused("Ejecútalo con el rol propietario de la base de datos.", USAGE)
         motivo = checked_motivo(args.motivo)
         plan = await make_plan(conn, args)
-        describe(plan, out)
+        describe(plan, out, args.inmediata)
         if not args.confirmar:
             out("Simulación: no se ha cambiado nada. Repite con --confirmar para aplicarla.")
             return OK
         when = now or datetime.now(UTC)
-        offboarding_id = await apply(conn, plan, motivo, when)
+        offboarding_id, delete_at = await apply(conn, plan, motivo, when, immediate=args.inmediata)
         who = await conn.fetchval("SELECT session_user")
         out(f"Baja registrada: {offboarding_id}.")
         # La línea de auditoría también en la salida, para el registro de quien lo ejecuta.
@@ -365,10 +445,19 @@ async def run(
                     "scope": plan.scope,
                     "location": plan.named_location,
                     "reason": REASON_EMAIL_REQUEST,
+                    "inmediata": args.inmediata,
+                    "delete_at": delete_at.isoformat(),
                 },
                 ensure_ascii=False,
             )
         )
+        if not args.inmediata:
+            out(
+                f"Programada: se hace efectiva el {delete_at.isoformat()}. El correo de baja "
+                f"programada, con el enlace de restauración, sale hacia {mask_email(plan.email)} "
+                "en cuanto el worker tome el job."
+            )
+            return OK
         done = await wait_effective(conn, offboarding_id, wait_seconds)
         if done is None:
             out(
@@ -388,10 +477,32 @@ async def run(
         await conn.close()
 
 
+def owner_url(env: Mapping[str, str]) -> str | None:
+    """La URL del propietario: FICHAITOR_OWNER_DATABASE_URL o, en el contenedor de un solo
+    uso (I20), la que se compone con POSTGRES_PASSWORD de db.env y el servidor, el usuario
+    y la base que fija el Compose. None si no hay ninguna."""
+    url = env.get(URL_VARIABLE)
+    if url:
+        return url
+    host, password = env.get(HOST_VARIABLE), env.get("POSTGRES_PASSWORD")
+    if not (host and password):
+        return None
+    user = env.get("POSTGRES_USER") or "fichaitor"
+    database = env.get("POSTGRES_DB") or user
+    return (
+        f"postgresql://{quote(user, safe='')}:{quote(password, safe='')}"
+        f"@{host}:5432/{quote(database, safe='')}"
+    )
+
+
 def main() -> int:
-    url = os.environ.get(URL_VARIABLE)
+    url = owner_url(os.environ)
     if not url:
-        print(f"Falta {URL_VARIABLE} (URL del rol propietario).", file=sys.stderr)
+        print(
+            f"Falta {URL_VARIABLE} (URL del rol propietario), o {HOST_VARIABLE} y "
+            "POSTGRES_PASSWORD.",
+            file=sys.stderr,
+        )
         return USAGE
     return asyncio.run(run(sys.argv[1:], url=url))
 

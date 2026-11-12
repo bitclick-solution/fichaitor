@@ -182,6 +182,42 @@ services:
         limits:
           memory: 256M
 
+  # Baja por correo (scripts/baja_manual.py), en un contenedor de un solo uso: I20 de
+  # docs/seguridad/revision-2026-11-12-c.md. Antes se ejecutaba dentro del worker con la
+  # URL del propietario en su entorno: un worker comprometido podía leerla. Aquí solo entra
+  # db.env (la contraseña del propietario), con la imagen de la API, y el contenedor se
+  # borra al terminar. Nunca arranca con "up": solo con el perfil "herramientas":
+  #   docker compose run --rm fichaitor-baja --email ... --scope ficha --motivo "..."
+  # Procedimiento en docs/despliegue.md, «Tramitar una baja pedida por correo».
+  fichaitor-baja:
+    image: ${FICHAITOR_API_IMAGE:?Falta FICHAITOR_API_IMAGE. La fija deploy.sh}
+    profiles: ["herramientas"]
+    entrypoint: ["python", "scripts/baja_manual.py"]
+    restart: "no"
+    env_file:
+      - ${FICHAITOR_ENV_DIR:-.}/db.env
+    environment:
+      # Con POSTGRES_PASSWORD de db.env, el script compone la URL del propietario.
+      FICHAITOR_OWNER_DB_HOST: fichaitor-db
+      POSTGRES_USER: fichaitor
+      POSTGRES_DB: fichaitor
+    depends_on:
+      fichaitor-db:
+        condition: service_healthy
+    networks:
+      - fichaitor-interna
+    healthcheck:
+      disable: true
+    read_only: true
+    tmpfs:
+      - /tmp
+    <<: *endurecido
+    logging: *registro
+    deploy:
+      resources:
+        limits:
+          memory: 128M
+
   # Sitio público y aplicación /app. Reenvía /api/ a la API: mismo origen, sin CORS.
   fichaitor-web:
     image: ${FICHAITOR_WEB_IMAGE:?Falta FICHAITOR_WEB_IMAGE. La fija deploy.sh}

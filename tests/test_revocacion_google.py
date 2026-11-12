@@ -17,7 +17,7 @@ from app.adapters.job_queue.memory import MemoryJobQueue
 from app.adapters.memory_tables import MemoryTables
 from app.adapters.worker_store.memory import MemoryWorkerStore
 from app.domain import actions
-from app.domain.jobs import FAILED, PENDING
+from app.domain.jobs import DONE, FAILED, PENDING
 from app.domain.profile_summary import Review, ReviewSet
 from app.domain.special_hours import KIND_CLOSED, checked
 from app.ports.google_profile import (
@@ -151,7 +151,8 @@ def test_invalid_grant_in_a_sync_marks_the_connection_revoked_and_drops_its_toke
     failed = world.jobs(SYNC_KIND)[-1]
     assert (failed.state, failed.attempts) == (FAILED, 1)  # never retried
     assert world.store.summaries[(SUB, LOCATION)].status == "needs_reconnect"
-    # The connection is gone with its token, and the one it replaced too.
+    # The connection is gone with its token; the one it replaced went with the first good
+    # sync (drop_replaced_connections), not with this failure.
     assert world.store.connections[SUB] == []
     assert world.store.revoked[SUB] == [("c-new", world.now)]
     assert run(world.store.latest_connection(SUB)) is None
@@ -164,6 +165,7 @@ def test_invalid_grant_in_a_sync_marks_the_connection_revoked_and_drops_its_toke
 
 def test_after_a_revoked_grant_the_next_sync_asks_to_reconnect_without_calling_google():
     world = World()
+    run(world.sync())  # a first good sync: the replaced connection goes
     world.google.refresh_error = GrantRevoked("x")
     run(world.sync())
     world.google.refresh_error = None
@@ -172,6 +174,21 @@ def test_after_a_revoked_grant_the_next_sync_asks_to_reconnect_without_calling_g
     assert len(world.google.refreshed_with) == calls
     assert world.jobs(SYNC_KIND)[-1].state == FAILED
     assert world.store.summaries[(SUB, LOCATION)].status == "needs_reconnect"
+
+
+def test_a_newer_connection_that_never_worked_takes_only_itself_with_it():
+    # B14 of docs/seguridad/revision-2026-11-12-c.md: the API can store a connection with
+    # a junk token for anybody. Its invalid_grant must not delete the real one.
+    world = World()  # c-old (real) and c-new (never synced)
+    world.google.refresh_error = GrantRevoked("x")
+    run(world.sync())
+    assert [c.connection_id for c in world.store.connections[SUB]] == ["c-old"]
+    assert world.store.revoked[SUB] == [("c-new", NOW)]
+    world.google.refresh_error = None
+    run(world.sync())
+    assert world.google.refreshed_with[-1] == "old-token"
+    assert world.jobs(SYNC_KIND)[-1].state == DONE
+    assert world.store.summaries[(SUB, LOCATION)].status == "ok"
 
 
 def test_a_newer_valid_connection_stops_the_countdown_from_starting(caplog):
@@ -242,5 +259,7 @@ def test_invalid_grant_while_setting_special_hours_marks_the_connection_revoked(
 
     run(go())
     assert (action.state, action.error_code) == (actions.FAILED, actions.ERROR_RECONNECT)
-    assert world.store.connections[SUB] == [] and SUB in world.store.revoked
+    # Only the connection that failed; the older one falls by its own invalid_grant.
+    assert [c.connection_id for c in world.store.connections[SUB]] == ["c-old"]
+    assert world.store.revoked[SUB] == [("c-new", NOW)]
     assert not world.google.special_writes

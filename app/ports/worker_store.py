@@ -79,10 +79,12 @@ class WorkerStore(Protocol):
 
     async def revoke_connection(self, google_sub: str, connection_id: str, at: datetime) -> bool:
         """Google answered `invalid_grant`: the owner removed the access (or it expired).
-        Mark that connection as revoked at `at` and delete its encrypted token, and
-        delete the older ones it had replaced. Returns True when that Google user is
-        left without any valid connection: from then on the countdown to delete what
-        was obtained from Google runs (`run_retention`). Safe to repeat."""
+        Mark that connection, and only that one, as revoked at `at` and delete its
+        encrypted token. The older ones stay: a connection that never worked proves
+        nothing about them (B14 of docs/seguridad/revision-2026-11-12-c.md), and each
+        one falls by its own `invalid_grant` if it is dead too. Returns True when that
+        Google user is left without any valid connection: from then on the countdown to
+        delete what was obtained from Google runs (`run_retention`). Safe to repeat."""
         ...
 
     async def drop_replaced_connections(self, google_sub: str, connection_id: str) -> int:

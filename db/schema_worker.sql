@@ -485,7 +485,7 @@ CREATE INDEX IF NOT EXISTS offboarding_open_sub ON offboarding (google_sub)
 -- reason (baja por correo): solo el propietario la fija, al crear la baja, y nadie la
 -- cambia después. Es la vía explícita del propietario para una baja sin las 47 horas.
 CREATE OR REPLACE FUNCTION offboarding_guard() RETURNS trigger
-LANGUAGE plpgsql AS $$
+LANGUAGE plpgsql SET search_path = pg_catalog, public, pg_temp AS $$
 DECLARE
     account_sub text;
     min_hours numeric;
@@ -512,7 +512,7 @@ BEGIN
         RAISE EXCEPTION 'solo el propietario tramita una baja por correo'
             USING ERRCODE = 'insufficient_privilege';
     END IF;
-    SELECT a.google_sub INTO account_sub FROM account a
+    SELECT a.google_sub INTO account_sub FROM public.account a
     WHERE a.id = NEW.account_id AND a.deleted_at IS NULL;
     IF account_sub IS NULL OR NEW.google_sub IS DISTINCT FROM account_sub THEN
         RAISE EXCEPTION 'la baja no es de esa cuenta' USING ERRCODE = 'check_violation';
@@ -721,7 +721,7 @@ CREATE INDEX IF NOT EXISTS google_connection_sub_valid
 --   fecha y el token se borra en la misma escritura. Nada más cambia, y una conexión
 --   revocada no vuelve a cambiar (nadie le pone un token).
 CREATE OR REPLACE FUNCTION google_connection_guard() RETURNS trigger
-LANGUAGE plpgsql AS $$
+LANGUAGE plpgsql SET search_path = pg_catalog, public, pg_temp AS $$
 BEGIN
     IF fichaitor_is_owner(TG_RELID) THEN
         RETURN NEW;

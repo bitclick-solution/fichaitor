@@ -1,6 +1,8 @@
 """Integration: scripts/baja_manual.py, the tool support uses for a leave asked for by
-email. It runs with the owner role of the database; the worker makes the leave
-effective, as with one asked for in the panel.
+email. It runs with the owner role of the database. By default the leave is scheduled
+48 hours, with the email of the scheduled leave and its restore link, as in the panel
+(B15 of docs/seguridad/revision-2026-11-12-c.md); with --inmediata it is effective at
+once. The worker makes it effective, as with one asked for in the panel.
 
 Skipped unless the test URLs are set. They must point to the TEST database (its name
 ends in `_test`; tests/conftest.py stops the run otherwise). Google is the fake adapter.
@@ -15,7 +17,7 @@ import asyncpg
 import pytest
 
 from app.domain.jobs import Job
-from app.domain.offboarding import APPLY_KIND
+from app.domain.offboarding import APPLY_KIND, SEND_MAIL_KIND, restore_token_hash
 from app.ports.google_oauth import ProfileLocation
 from tests.test_offboarding_postgres import (
     ANA,
@@ -53,7 +55,7 @@ SECOND = ProfileLocation(
 
 
 async def clean_jobs() -> None:
-    # The script enqueues the real kind; these are the only ones of the test accounts.
+    # The script enqueues the real kinds; these are the only ones of the test accounts.
     await owner(
         """
         DELETE FROM job WHERE kind = $1 AND payload->>'offboarding_id' IN (
@@ -61,6 +63,9 @@ async def clean_jobs() -> None:
             WHERE a.google_sub LIKE 'pytest-%' OR a.google_sub LIKE 'deleted:%')
         """,
         APPLY_KIND,
+    )
+    await owner(
+        "DELETE FROM job WHERE kind = $1 AND payload->>'to' LIKE 'pytest-%'", SEND_MAIL_KIND
     )
 
 
@@ -91,13 +96,26 @@ async def cli(s: Scene, *args: str, url: str = OWNER_URL) -> tuple[int, str]:
     return code, out.text
 
 
-async def apply_job(s: Scene) -> None:
+async def apply_job(s: Scene, run_at=None) -> None:
     """The worker takes the job the script enqueued."""
     rows = await owner(
         "SELECT payload::text AS payload, run_at, max_attempts FROM job WHERE kind = $1", APPLY_KIND
     )
-    assert len(rows) == 1 and rows[0]["run_at"] == s.now and rows[0]["max_attempts"] == 5
+    assert len(rows) == 1 and rows[0]["max_attempts"] == 5
+    assert rows[0]["run_at"] == (run_at or s.now)
     await s.apply(Job("pytest-apply", APPLY_KIND, json.loads(rows[0]["payload"])))
+
+
+async def mail_jobs() -> list[dict]:
+    rows = await owner(
+        "SELECT id::text AS id, payload::text AS payload, max_attempts FROM job"
+        " WHERE kind = $1 AND payload->>'to' LIKE 'pytest-%'",
+        SEND_MAIL_KIND,
+    )
+    return [
+        {**json.loads(r["payload"]), "max_attempts": r["max_attempts"], "job_id": r["id"]}
+        for r in rows
+    ]
 
 
 def args(email: str, scope: str = "ficha", *extra: str) -> list[str]:
@@ -131,14 +149,77 @@ def test_by_default_it_only_shows_what_it_would_do():
     assert "refresh-" not in text  # never a token
 
 
-# --- the leave of the profile ------------------------------------------------------------
+# --- by default: scheduled 48 hours, with the email and its restore link (B15) --------
 
 
-def test_confirmed_it_is_effective_at_once_like_the_panel_without_code_or_48_hours():
+def test_by_default_it_is_scheduled_48_hours_with_the_email_and_its_restore_link():
+    async def scenario(s: Scene):
+        ana, session = await s.furnished(ANA)
+        code, text = await cli(s, *args(f"{ANA}@example.com"), "--confirmar")
+        leave = (await owner("SELECT * FROM offboarding WHERE account_id = $1::uuid", ana))[0]
+        closed = await s.reads(ana)  # already closed while scheduled, as in the panel
+        mails = await mail_jobs()
+        apply_rows = await owner("SELECT run_at FROM job WHERE kind = $1", APPLY_KIND)
+        # The worker sends the email of the panel, with the link to restore it.
+        payload = {k: v for k, v in mails[0].items() if k not in ("max_attempts", "job_id")}
+        await s.send_mail(Job(mails[0]["job_id"], SEND_MAIL_KIND, payload))
+        # Before the date the worker does nothing with it.
+        await s.apply(Job("pytest-apply", APPLY_KIND, {"offboarding_id": str(leave["id"])}))
+        early = (await owner("SELECT * FROM offboarding WHERE id = $1", leave["id"]))[0]
+        return code, text, leave, closed, mails, apply_rows, s.mailer.sent, early, session
+
+    code, text, leave, closed, mails, apply_rows, sent, early, _ = scene(scenario)
+    assert code == 0
+    assert leave["reason"] == "email_request" and leave["scope"] == "ficha"
+    assert leave["confirmed_at"] == NOW and leave["delete_at"] == NOW + 2 * DAY
+    assert leave["google_sub"] == ANA and leave["restore_token_hash"] is not None
+    assert closed == (None, 0, None)
+    # One email, to the address of the account, with the token of the restore link.
+    (mail,) = mails
+    assert mail["template"] == "offboarding_scheduled" and mail["to"] == f"{ANA}@example.com"
+    assert mail["scope"] == "ficha" and mail["max_attempts"] == 3
+    assert restore_token_hash(mail["token"]) == leave["restore_token_hash"]
+    assert [r["run_at"] for r in apply_rows] == [NOW + 2 * DAY]
+    (email,) = sent
+    assert "#restaurar=" in email.text and "Restaurar" in email.html
+    assert early["effective_at"] is None and early["revoke_state"] is None
+    assert early["restored_at"] is None
+    # What it prints: scheduled, the date, the address masked. Never the token.
+    assert "Programada" in text and "p***a@example.com" in text
+    assert mail["token"] not in text and f"{ANA}@example.com" not in text
+
+
+def test_the_owner_restores_it_from_the_link_and_nothing_is_revoked():
+    async def scenario(s: Scene):
+        ana, _ = await s.furnished(ANA)
+        await cli(s, *args(f"{ANA}@example.com", "cuenta"), "--confirmar")
+        (mail,) = await mail_jobs()
+        s.now = NOW + DAY
+        restored = await s.offboarding.restore_by_token(mail["token"])
+        leave = (await owner("SELECT * FROM offboarding WHERE account_id = $1::uuid", ana))[0]
+        # The job of the date finds it restored and leaves it alone.
+        s.now = NOW + 2 * DAY
+        await apply_job(s, run_at=NOW + 2 * DAY)
+        after = (await owner("SELECT * FROM offboarding WHERE id = $1", leave["id"]))[0]
+        account = (await owner("SELECT * FROM account WHERE id = $1::uuid", ana))[0]
+        return ana, restored, after, account, list(s.google.revoked), await s.stored(ANA, ana)
+
+    ana, restored, after, account, revoked, stored = scene(scenario)
+    assert restored == ana
+    assert after["restored_at"] == NOW + DAY and after["effective_at"] is None
+    assert after["restore_token_hash"] is None and after["google_sub"] is None
+    assert account["deleted_at"] is None and account["email"] == f"{ANA}@example.com"
+    assert revoked == [] and stored == FULL
+
+
+# --- --inmediata: the exceptional way, effective at once ---------------------------------
+
+
+def test_inmediata_is_effective_at_once_without_code_48_hours_or_email():
     async def scenario(s: Scene):
         ana, session = await s.furnished(ANA)
         luis, _ = await s.furnished(LUIS)
-        code, text = await cli(s, *args(f"{ANA.upper()}@Example.com"), "--confirmar")
+        code, text = await cli(s, *args(f"{ANA.upper()}@Example.com"), "--inmediata", "--confirmar")
         leave = (await owner("SELECT * FROM offboarding WHERE account_id = $1::uuid", ana))[0]
         closed = await s.reads(ana)  # before the worker takes the job: already closed
         await apply_job(s)
@@ -167,7 +248,7 @@ def test_confirmed_it_is_effective_at_once_like_the_panel_without_code_or_48_hou
     code, text, leave, closed, after, revoked, audit, me, ana_rows, luis_rows, purged = scene(
         scenario
     )
-    assert code == 0
+    assert code == 0 and "INMEDIATA" in text
     assert leave["reason"] == "email_request" and leave["scope"] == "ficha"
     assert leave["confirmed_at"] == NOW and leave["delete_at"] == NOW
     assert leave["restore_token_hash"] is None and leave["google_sub"] == ANA
@@ -186,6 +267,16 @@ def test_confirmed_it_is_effective_at_once_like_the_panel_without_code_or_48_hou
     assert line["action_id"] == str(leave["id"]) and line["action_type"] == "offboarding_ficha"
     assert line["written_by"] == "fichaitor"
     assert str(leave["id"]) in text and "refresh-" not in text
+    assert '"inmediata": true' in text
+
+
+def test_inmediata_sends_no_email():
+    async def scenario(s: Scene):
+        await s.furnished(ANA)
+        await cli(s, *args(f"{ANA}@example.com"), "--inmediata", "--confirmar")
+        return await mail_jobs()
+
+    assert scene(scenario) == []
 
 
 def test_with_several_profiles_the_profile_must_be_named_and_belong_to_the_account():
@@ -201,7 +292,9 @@ def test_with_several_profiles_the_profile_must_be_named_and_belong_to_the_accou
         foreign = await cli(s, *args(f"{ANA}@example.com", "ficha", "--location", luis_loc["id"]))
         wrong = await cli(s, *args(f"{ANA}@example.com", "ficha", "--location", "nope"))
         named = await cli(
-            s, *args(f"{ANA}@example.com", "ficha", "--location", ana_locs[1]["id"]), "--confirmar"
+            s,
+            *args(f"{ANA}@example.com", "ficha", "--location", ana_locs[1]["id"]),
+            "--confirmar",
         )
         return (
             missing,
@@ -224,7 +317,9 @@ def test_a_leave_scheduled_in_the_panel_is_replaced_by_the_one_by_email():
     async def scenario(s: Scene):
         ana, session = await s.furnished(ANA)
         await s.leave(session)
-        code, text = await cli(s, *args(f"{ANA}@example.com", "cuenta"), "--confirmar")
+        code, text = await cli(
+            s, *args(f"{ANA}@example.com", "cuenta"), "--inmediata", "--confirmar"
+        )
         leaves = await owner(
             "SELECT reason, restored_at, effective_at, scope, google_sub FROM offboarding"
             " WHERE account_id = $1::uuid ORDER BY confirmed_at, reason NULLS FIRST",
@@ -272,7 +367,7 @@ def test_a_profile_already_disconnected_is_refused_and_a_deleted_account_is_not_
         await s.effective(ANA)  # its leave of the profile is effective
         again = await cli(s, *args(f"{ANA}@example.com"), "--confirmar")
         await s.furnished(LUIS)
-        await cli(s, *args(f"{LUIS}@example.com", "cuenta"), "--confirmar")
+        await cli(s, *args(f"{LUIS}@example.com", "cuenta"), "--inmediata", "--confirmar")
         await apply_job(s)
         gone = await cli(s, *args(f"{LUIS}@example.com", "cuenta"), "--confirmar")
         return again, gone
@@ -369,3 +464,24 @@ def test_the_worker_never_makes_effective_a_short_leave_without_the_reason():
         return (await owner("SELECT effective_at FROM offboarding WHERE id = $1", leave_id))[0]
 
     assert scene(scenario)["effective_at"] is None
+
+
+# --- I20: the URL in the one-off container -----------------------------------------------
+
+
+def test_the_url_of_the_one_off_container_is_made_from_db_env():
+    owner_url = baja_manual.owner_url
+    assert owner_url({}) is None
+    assert owner_url({"POSTGRES_PASSWORD": "x"}) is None  # without the host of the Compose
+    assert owner_url({"FICHAITOR_OWNER_DATABASE_URL": "postgresql://a"}) == "postgresql://a"
+    assert (
+        owner_url(
+            {
+                "FICHAITOR_OWNER_DB_HOST": "fichaitor-db",
+                "POSTGRES_PASSWORD": "p@ss/wo:rd",
+                "POSTGRES_USER": "fichaitor",
+                "POSTGRES_DB": "fichaitor",
+            }
+        )
+        == "postgresql://fichaitor:p%40ss%2Fwo%3Ard@fichaitor-db:5432/fichaitor"
+    )

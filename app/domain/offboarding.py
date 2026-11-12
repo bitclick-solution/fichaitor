@@ -36,8 +36,9 @@ MIN_GRACE_HOURS = 48
 APPLY_MAX_ATTEMPTS = 5
 # offboarding.reason of a leave support processed for an email request
 # (scripts/baja_manual.py). NULL: asked for in the panel with a code. Only the owner of
-# the database can write it, and such a leave is effective at once: the person already
-# confirmed it by email from the address of the account.
+# the database can write it. Scheduled 48 hours with the restore link, like one of the
+# panel (B15 of docs/seguridad/revision-2026-11-12-c.md); effective at once only with
+# --inmediata, for exceptional cases.
 REASON_EMAIL_REQUEST = "email_request"
 
 CODE_DIGITS = 6

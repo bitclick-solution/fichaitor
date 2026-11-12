@@ -90,8 +90,9 @@ class MemoryWorkerStore:
         history = self.connections.get(google_sub, [])
         used = [i for i, c in enumerate(history) if c.connection_id == connection_id]
         if used:
+            # Only that one: the older ones stay (B14), as in the real store.
             self.revoked.setdefault(google_sub, []).append((history[used[-1]].connection_id, at))
-            self.connections[google_sub] = history[used[-1] + 1 :]
+            self.connections[google_sub] = [c for c in history if c.connection_id != connection_id]
         return not self.connections.get(google_sub)
 
     async def drop_replaced_connections(self, google_sub: str, connection_id: str) -> int:

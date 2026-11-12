@@ -114,8 +114,12 @@ prohibir_modos_falsos() {
 }
 
 # I10: los secretos de Telegram, con longitud mínima. El pimiento de los códigos de
-# vinculación no puede faltar (dos vacíos «coinciden»), y sin sondeo largo (el de
-# producción) el secreto del webhook tampoco: es lo único que protege la ruta.
+# vinculación no puede faltar (dos vacíos «coinciden»), y el secreto del webhook tampoco:
+# es lo único que protege la ruta.
+# I22 (docs/seguridad/revision-2026-11-12-c.md): en producción no hay sondeo largo. El
+# Compose fuerza FICHAITOR_TELEGRAM_POLLING=false en la conversación, así que el webhook
+# está siempre activo: un conversation.env que pida sondeo se rechaza (antes se saltaba la
+# medida del secreto) y el secreto se mide siempre.
 # Solo se miden: el valor nunca se imprime.
 comprobar_secretos_telegram() {
     local pimienta secreto sondeo
@@ -126,7 +130,8 @@ comprobar_secretos_telegram() {
         die "FICHAITOR_LINK_CODE_PEPPER no coincide entre api.env y conversation.env."
     sondeo="$(valor_env "${CONVERSATION_ENV}" FICHAITOR_TELEGRAM_POLLING)"
     case "${sondeo,,}" in
-        true | 1 | yes | on) return 0 ;;
+        "" | false | 0 | no | off) ;;
+        *) die "conversation.env pide FICHAITOR_TELEGRAM_POLLING=${sondeo}: en producción solo hay webhook. Quítalo o ponlo a false." ;;
     esac
     secreto="$(valor_env "${API_ENV}" FICHAITOR_TELEGRAM_WEBHOOK_SECRET)"
     ((${#secreto} >= 32)) ||

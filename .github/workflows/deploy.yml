@@ -181,6 +181,12 @@ jobs:
   desplegar:
     name: Desplegar en el servidor
     needs: [comprobar, imagenes]
+    # I19 (docs/seguridad/revision-2026-11-12-c.md): solo desde main o desde una etiqueta
+    # de versión. Para el despiste honrado: un workflow_dispatch desde otra rama ejecuta el
+    # deploy.yml DE ESA RAMA, que puede no tener esta línea. La barrera de verdad es la
+    # regla «Deployment branches and tags» del entorno production (main y v*), que GitHub
+    # aplica antes de entregar los secretos (docs/despliegue.md, paso 1).
+    if: github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     # El entorno permite exigir una aprobación antes de que este trabajo empiece.
