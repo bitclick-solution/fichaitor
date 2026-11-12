@@ -454,3 +454,8 @@ article.legal a { font-weight: 600; }
 .pr-respuesta { border: 2px solid var(--papel); padding: clamp(18px, 2.2vw, 28px); font-size: clamp(1.1rem, 1.5vw, 1.35rem); line-height: 1.4; font-weight: 500; white-space: pre-wrap; }
 #pr-respuesta-b .acc { display: flex; margin: 22px 0 16px; }
 #pr-respuesta-b[hidden] + .res-gancho { grid-column: 1 / -1; }
+
+/* Sustituyen a atributos style del HTML: la política de contenido no admite estilos en línea */
+.sprite { position: absolute; }
+.est.llena { --v: 100%; }
+footer.pie.s { min-height: 0; }

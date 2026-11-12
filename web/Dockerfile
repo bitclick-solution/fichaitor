@@ -35,6 +35,8 @@ FROM nginxinc/nginx-unprivileged:1.27-alpine
 # La configuración es una plantilla: la imagen sustituye ${API_UPSTREAM} al arrancar.
 ENV API_UPSTREAM=api:8000
 COPY web/nginx.conf /etc/nginx/templates/default.conf.template
+# Cabeceras de seguridad, incluidas en cada location (ver la nota del archivo).
+COPY web/nginx-seguridad.conf /etc/nginx/snippets/seguridad.conf
 COPY --from=site /src/web/site /usr/share/nginx/html
 COPY --from=app /src/web/app/dist /usr/share/nginx/html/app
 EXPOSE 8080

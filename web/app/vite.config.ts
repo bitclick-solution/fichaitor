@@ -7,9 +7,11 @@ export default defineConfig({
   plugins: [react()],
   server: {
     port: 5173,
+    // Solo accesible desde este equipo.
+    host: "127.0.0.1",
     proxy: { "/api": "http://localhost:8000" },
-    // La fuente y el logo viven fuera de esta carpeta (web/site, brand).
-    fs: { allow: ["../.."] },
+    // La fuente y el logo viven fuera de esta carpeta. Se permite solo eso, no todo el repositorio.
+    fs: { allow: [".", "../site/fonts", "../../brand/logo.svg"] },
   },
   build: { outDir: "dist", sourcemap: false },
 });

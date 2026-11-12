@@ -34,8 +34,12 @@ const AVISOS: Record<string, string> = {
 /** Lee ?google=, ?fichas= y ?restaurar= una vez y los quita de la barra de direcciones. */
 function leerVuelta(): { google: string | null; fichas: string | null; restaurar: string | null } {
   const q = new URLSearchParams(location.search);
-  const vuelta = { google: q.get("google"), fichas: q.get("fichas"), restaurar: q.get("restaurar") };
-  if (vuelta.google !== null || vuelta.fichas !== null || vuelta.restaurar !== null) {
+  // El enlace de restauración puede venir en el fragmento (#restaurar=...): el fragmento no se envía
+  // al servidor, así que no queda en ningún registro. Se acepta también en la consulta.
+  const fragmento = new URLSearchParams(location.hash.replace(/^#/, ""));
+  const vuelta = { google: q.get("google"), fichas: q.get("fichas"), restaurar: fragmento.get("restaurar") ?? q.get("restaurar") };
+  if (fragmento.has("restaurar")) history.replaceState(null, "", location.pathname + location.search);
+  if (vuelta.google !== null || vuelta.fichas !== null || q.has("restaurar")) {
     q.delete("google");
     q.delete("fichas");
     // El token de restauración no debe quedarse en la barra de direcciones ni en el historial.

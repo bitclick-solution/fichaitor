@@ -1,5 +1,4 @@
 // Cliente de la API. Contrato: docs/contrato-web-api.md.
-import { mockFetch } from "./mock";
 
 export type Impact = "alto" | "medio" | "bajo";
 
@@ -146,7 +145,7 @@ export class ApiError extends Error {
 }
 
 const GENERICO = "Algo ha fallado. Prueba de nuevo en un minuto.";
-const SIMULADO = import.meta.env.MODE === "mock";
+
 
 async function pedir<T>(method: "GET" | "POST", path: string, body?: unknown): Promise<T> {
   const headers: Record<string, string> = {};
@@ -158,7 +157,8 @@ async function pedir<T>(method: "GET" | "POST", path: string, body?: unknown): P
 
   let r: Response;
   try {
-    r = SIMULADO ? await mockFetch(method, path, body) : await fetch(path, init);
+    // Con import() condicionado a una constante, la compilación de producción no incluye el simulador.
+    r = import.meta.env.MODE === "mock" ? await (await import("./mock")).mockFetch(method, path, body) : await fetch(path, init);
   } catch {
     throw new ApiError(0, "No hay conexión con Fichaitor. Comprueba tu red y prueba de nuevo.");
   }
