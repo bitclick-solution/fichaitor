@@ -117,7 +117,7 @@ jobs:
           uvx pip-audit@2.10.1 --strict --require-hashes --disable-pip --requirement "${RUNNER_TEMP}/requirements.txt"
 
   # hashFiles() no está disponible en el "if" de un trabajo, así que un trabajo
-  # mínimo mira si la web tiene ya un package.json.
+  # mínimo mira si la aplicación web existe ya en el repositorio.
   detectar:
     name: Detectar web
     runs-on: ubuntu-24.04
@@ -129,43 +129,41 @@ jobs:
         with:
           persist-credentials: false
       - id: web
-        name: ¿Existe web/package.json?
+        name: ¿Existe web/app/package.json?
         run: |
-          if [[ -f web/package.json ]]; then
+          if [[ -f web/app/package.json ]]; then
             echo "existe=true" >>"${GITHUB_OUTPUT}"
           else
             echo "existe=false" >>"${GITHUB_OUTPUT}"
-            echo "web/package.json no existe todavía: el trabajo Web se omite."
+            echo "web/app/package.json no existe todavía: el trabajo Web se omite."
           fi
 
+  # La web tiene dos partes: el sitio público (web/build.py genera web/site desde
+  # brand/ y docs/legal/) y la aplicación de /app (web/app: React, Vite, TypeScript).
   web:
     name: Web
     needs: detectar
     if: needs.detectar.outputs.web == 'true'
     runs-on: ubuntu-24.04
     timeout-minutes: 15
-    defaults:
-      run:
-        working-directory: web
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
-          node-version: "24"
-      - name: Instalar dependencias
-        # Con package-lock.json la instalación es reproducible; sin él, npm install.
+          node-version: "22"
+      - name: Sitio público
+        # Sin --estricto: las marcas [PENDIENTE] o [REVISAR] de los textos legales no
+        # bloquean el trabajo diario. El modo estricto se aplica al desplegar.
         run: |
-          if [[ -f package-lock.json ]]; then
-            npm ci
-          else
-            npm install
-          fi
-      # --if-present: un script que aún no exista en package.json no rompe la CI.
-      - name: Comprobar tipos
-        run: npm run typecheck --if-present
-      - name: Lint
-        run: npm run lint --if-present
-      - name: Compilar
-        run: npm run build --if-present
+          python3 -m venv "${RUNNER_TEMP}/sitio"
+          "${RUNNER_TEMP}/sitio/bin/pip" install --quiet markdown==3.7
+          "${RUNNER_TEMP}/sitio/bin/python" web/build.py
+          node --check web/site/app.js
+      - name: Aplicación (/app)
+        # "build" comprueba los tipos (tsc --noEmit, TypeScript estricto) y compila.
+        working-directory: web/app
+        run: |
+          npm ci
+          npm run build
