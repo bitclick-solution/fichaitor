@@ -4,7 +4,8 @@ import { Cuenta, Seccion } from "./movimiento";
 
 // «Qué dicen de tu negocio»: lo primero que ve quien acaba de conectar su ficha.
 // GET /api/v1/me/sentiment. La nota la calcula el servidor y es comparable de un mes a otro.
-// El bloque solo desaparece si la ruta no existe o falla; con pocas reseñas o ninguna, se explica.
+// El bloque solo desaparece si la petición falla (por ejemplo, si la ruta no existe).
+// Con `error`, pocas reseñas o ninguna, se explica y se ofrece reintentar.
 
 const INTERVALO = 3000;
 const MAX_INTENTOS = 10;
@@ -33,6 +34,11 @@ type Fase = "cargando" | "listo" | "agotado" | "oculto";
 export function Sentimiento({ fichaId, version, onSinSesion }: { fichaId: string; version: number; onSinSesion: () => void }) {
   const [datos, setDatos] = useState<Sentiment | null>(null);
   const [fase, setFase] = useState<Fase>("cargando");
+  const [intento, setIntento] = useState(0);
+  const reintentar = () => {
+    setFase("cargando");
+    setIntento((n) => n + 1);
+  };
 
   useEffect(() => {
     let vivo = true;
@@ -50,7 +56,7 @@ export function Sentimiento({ fichaId, version, onSinSesion }: { fichaId: string
           return;
         }
         setDatos(s);
-        setFase(s.status === "error" ? "oculto" : "listo");
+        setFase("listo");
       } catch (e) {
         if (!vivo) return;
         if (e instanceof ApiError && e.status === 401) onSinSesion();
@@ -66,7 +72,7 @@ export function Sentimiento({ fichaId, version, onSinSesion }: { fichaId: string
       vivo = false;
       if (temporizador) clearTimeout(temporizador);
     };
-  }, [fichaId, version, onSinSesion]);
+  }, [fichaId, version, intento, onSinSesion]);
 
   // Al cambiar de ficha, se empieza de cero.
   useEffect(() => {
@@ -87,7 +93,27 @@ export function Sentimiento({ fichaId, version, onSinSesion }: { fichaId: string
         </p>
       )}
 
-      {fase === "agotado" && <p className="lead">Todavía estamos leyendo tus reseñas; vuelve en un minuto.</p>}
+      {fase === "agotado" && (
+        <>
+          <p className="lead">Todavía estamos leyendo tus reseñas; vuelve en un minuto.</p>
+          <div className="acciones">
+            <button className="btn sec" type="button" onClick={reintentar}>
+              Comprobar ahora
+            </button>
+          </div>
+        </>
+      )}
+
+      {fase === "listo" && datos?.status === "error" && (
+        <>
+          <p className="lead">No hemos podido analizar tus reseñas.</p>
+          <div className="acciones">
+            <button className="btn sec" type="button" onClick={reintentar}>
+              Reintentar
+            </button>
+          </div>
+        </>
+      )}
 
       {fase === "listo" && datos?.status === "insuficiente" && (
         <>
@@ -114,7 +140,7 @@ export function Sentimiento({ fichaId, version, onSinSesion }: { fichaId: string
                 <p className="sec">
                   A partir de {veces(datos.based_on)}
                   {datos.with_text !== null && datos.with_text !== datos.based_on ? `, ${datos.with_text} con texto` : ""}
-                  {datos.period && datos.period !== "todas" ? ` (${datos.period})` : ""}.
+                  {datos.period ? ` (${datos.period})` : ""}.
                 </p>
               )}
             </div>

@@ -19,17 +19,17 @@ Bitclick Solutions no ha designado Delegado de Protección de Datos porque no co
 
 ## 2. Qué datos tratamos y para qué
 
-Fichaitor está en pruebas. Hoy están activos la prueba con una captura, la lista de espera, la conexión con Google y los registros del servidor. Las demás filas describen funciones previstas (avisos por correo, Telegram y WhatsApp, planes de pago, analítica) y se aplicarán cuando cada una se active.
+Fichaitor está en pruebas. Hoy están activos la prueba con una captura, la lista de espera, la conexión con Google (con la respuesta a reseñas y el resumen de lo que dicen), y los registros del servidor. Las demás filas describen funciones previstas (avisos por correo, Telegram y WhatsApp, planes de pago, analítica) y se aplicarán cuando cada una se active.
 
 | Finalidad | Datos | Base jurídica | Conservación |
 |---|---|---|---|
 | Prueba con una captura de pantalla de tus reseñas | La captura que subes y lo que se ve en ella: el nombre de tu negocio y las reseñas, con el nombre y la foto de perfil públicos de quienes las escribieron, su puntuación y su texto | Interés legítimo — art. 6.1.f: enseñarte cómo funciona Fichaitor con tus propias reseñas, que ya son públicas, sin guardar la imagen ni los datos de sus autores | Fichaitor procesa la imagen en memoria y no la guarda. No devuelve ni guarda los nombres ni las fotos de los autores |
 | Lista de espera: avisarte cuando Fichaitor esté disponible | Tu WhatsApp o tu correo, el canal por el que llegaste, y la fecha y la versión del texto de consentimiento que aceptaste | Consentimiento — art. 6.1.a | 12 meses desde el alta o hasta el lanzamiento, lo que ocurra antes, o hasta que te des de baja |
 | Crear y gestionar tu cuenta | Nombre, correo, teléfono vinculado, canal elegido (web, correo, Telegram o WhatsApp), plan y preferencias | Ejecución del contrato — art. 6.1.b | Mientras dure la cuenta |
-| Prestar el servicio sobre tu ficha de Google | Los datos obtenidos de las API de Google que se detallan en el apartado 3 | Ejecución del contrato — art. 6.1.b | Mientras la cuenta de Google esté conectada; ver apartado 3 |
+| Prestar el servicio sobre tu ficha de Google | Los datos obtenidos de las API de Google que se detallan en el apartado 3 | Ejecución del contrato — art. 6.1.b | Mientras tu ficha esté conectada. Tras desconectarla, 30 días como máximo; el registro de respuestas, 12 meses. Ver apartado 3 |
 | Conversar contigo y proponerte acciones | Los mensajes, audios y fotos que envías al asistente, y las propuestas y confirmaciones | Ejecución del contrato — art. 6.1.b | Mientras dure la cuenta |
 | Cobro y facturación | Datos identificativos y de facturación. Los datos de la tarjeta los trata Stripe; Fichaitor no los ve ni los guarda | Ejecución del contrato — art. 6.1.b, y obligación legal — art. 6.1.c | Los plazos fiscales y mercantiles (hasta 6 años) |
-| Seguridad y registros del servidor | Dirección IP, fecha y hora, navegador | Interés legítimo en la seguridad del servicio — art. 6.1.f | 6 meses |
+| Seguridad y registros del servidor | Dirección IP, fecha y hora, navegador, y las sesiones iniciadas | Interés legítimo en la seguridad del servicio — art. 6.1.f | Registros, 6 meses. Sesiones caducadas o cerradas, 30 días |
 | Analítica y medición de campañas | Los indicados en la Política de Cookies (Google Analytics y píxel de TikTok) | Consentimiento — art. 6.1.a | Los indicados en la Política de Cookies |
 
 No tratamos categorías especiales de datos del artículo 9 del RGPD ni datos de menores. Fichaitor está dirigido a empresas y profesionales.
@@ -45,7 +45,7 @@ Un único permiso: `https://www.googleapis.com/auth/business.manage`, que permit
 ### Qué leemos
 
 - **Datos de la ficha:** nombre del negocio, dirección, teléfono, sitio web, categorías, atributos, horarios y horarios especiales.
-- **Reseñas:** texto, puntuación, fecha y respuestas publicadas. Fichaitor no guarda el nombre ni la foto de perfil de quien escribió la reseña.
+- **Reseñas:** texto, puntuación, fecha y respuestas publicadas. Fichaitor las guarda mientras tu ficha esté conectada, sin el nombre ni la foto de perfil de quien las escribió.
 - **Publicaciones y fotos** de la ficha.
 - **Métricas de rendimiento:** búsquedas, visualizaciones, llamadas, solicitudes de ruta y clics al sitio web.
 - **Avisos** de reseñas nuevas y de cambios en la ficha.
@@ -61,6 +61,8 @@ Solo para prestarte las funciones de Fichaitor que ves en el producto:
 - Mostrarte el estado y el rendimiento de tu ficha, y proponerte mejoras.
 
 ### Qué escribimos
+
+Cada respuesta a una reseña que confirmas queda en un registro, con su texto y la fecha, para que conste qué se publicó en tu nombre.
 
 Fichaitor solo cambia algo en tu ficha (un horario, una respuesta a una reseña, una publicación, una foto, un dato) después de que tú lo confirmes de forma expresa, o dentro de los límites del modo automático si lo has activado tú. Ningún modelo de inteligencia artificial escribe directamente en tu ficha.
 
@@ -80,7 +82,13 @@ El uso que Fichaitor hace de la información recibida de las API de Google, y su
 - **Desde Google:** en [myaccount.google.com/connections](https://myaccount.google.com/connections), elige Fichaitor y quita el acceso.
 - **Por correo:** escribe a soporte@fichaitor.es.
 
-Al desconectar, dejamos de acceder a tu ficha de inmediato y borramos los tokens. Los datos obtenidos de Google se borran en un plazo máximo de 30 días, salvo los que debamos conservar por obligación legal.
+Al desconectar tu ficha o borrar tu cuenta:
+
+- Revocamos el acceso en Google en ese momento y dejamos de leer tu ficha.
+- En un máximo de 30 días borramos todo lo obtenido de Google o derivado de ello: los tokens, los datos de la ficha, las reseñas, su clasificación, los resúmenes, el historial de notas y los borradores de respuesta.
+- El registro de las respuestas que confirmaste y se enviaron a Google se conserva 12 meses desde la baja y después se borra. Sirve para acreditar qué se publicó en tu nombre si hay una reclamación; la base es el interés legítimo en la defensa frente a reclamaciones — art. 6.1.f.
+
+`[REVISAR antes de publicar: los plazos de este apartado los aprobó el propietario el 12 de noviembre de 2026, pero el sistema todavía no los cumple. No existen aún «Desconectar Google» ni «Borrar mi cuenta», no se revoca el token y no hay tarea de borrado. No publicar hasta que el backend lo haya construido y verificado. Quien revise los textos debe confirmar la base jurídica del registro de respuestas.]`
 
 ## 4. Datos de terceros en tu ficha
 
@@ -89,6 +97,8 @@ Las reseñas pueden incluir datos personales de quienes las escriben: su texto p
 ## 5. Inteligencia artificial
 
 Fichaitor usa un modelo de lenguaje para redactar propuestas (por ejemplo, la respuesta a una reseña) y para entender tus mensajes. Para ello se envía al proveedor del modelo el contenido necesario: el texto de la reseña, datos de tu ficha y tu mensaje.
+
+Con tu ficha conectada, también lo usa para decirte qué opina la gente de tu negocio («Qué dicen de tu negocio»). Para ello envía al proveedor del modelo el texto y la puntuación de cada reseña, sin el nombre ni la foto de quien la escribió, y este la clasifica como positiva, neutra o negativa y por temas de una lista cerrada. Cada reseña se envía una sola vez, salvo que cambie su texto. Una segunda consulta recibe los recuentos por tema, la nota y unos pocos extractos para redactar el resumen y la sugerencia. La nota y los recuentos los calcula Fichaitor con reglas fijas, no el modelo. Se guardan la clasificación de cada reseña, el resumen resultante y una nota por mes, para mostrarte la evolución.
 
 También lo usa en la prueba con una captura de tus reseñas: para contar cuántas se ven y cuántas están sin contestar, y para redactar una propuesta de respuesta. Conviene que sepas esto antes de subirla: la captura muestra el nombre y la foto de perfil de quienes escribieron las reseñas, y **la imagen completa se envía a Google, a través de la API de Gemini**, que es el proveedor del modelo de inteligencia artificial. Fichaitor no guarda la captura: la procesa en memoria y la descarta. Tampoco devuelve ni guarda los nombres ni las fotos de los autores. La respuesta propuesta se redacta en una segunda consulta, que recibe solo la puntuación y el texto de una reseña, sin la imagen ni nombres.
 

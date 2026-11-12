@@ -13,6 +13,8 @@ Notas internas. No se publican. Recogen de dónde sale cada afirmación delicada
 | 2026-11-12 | Base jurídica de la prueba con una captura de reseñas: interés legítimo (art. 6.1.f) |
 | 2026-11-12 | Mecanismo de transferencia de Google: el del Anexo de Tratamiento de Datos de Cloud (clientes) |
 | 2026-11-12 | La clave de la API de Gemini se creó en Google AI Studio (confirmado a través de la sesión de backend). Valora pasarla a Google Cloud (Vertex AI) antes de abrir al público, para fijar región europea |
+| 2026-11-12 | Activas en local, según la sesión de backend: guardar las reseñas de la ficha conectada sin autor, responderlas con registro de cada respuesta confirmada, y el análisis de lo que dicen (Gemini clasifica cada reseña; la nota la calcula el código) |
+| 2026-11-12 | Plazos de conservación aprobados: revocar el acceso en Google al desconectar; borrar en 30 días como máximo todo lo derivado de Google; registro de respuestas publicadas, 12 meses desde la baja; sesiones caducadas, 30 días; lista de espera, tope de 12 meses |
 | 2026-11-12 | Correo: también IONOS. Hoy aloja el buzón `soporte@fichaitor.es`; enviará los avisos por correo cuando esa función se active |
 
 ## Fuentes consultadas
@@ -34,3 +36,20 @@ Notas internas. No se publican. Recogen de dónde sale cada afirmación delicada
 4. **Encargo de tratamiento con Google para Gemini.** Es un tratamiento nuevo respecto de la conexión con Google Business Profile.
 5. **Funciones previstas.** La política describe en futuro los avisos por correo, Telegram y WhatsApp, los pagos con Stripe, Google Analytics y el píxel de TikTok. Ninguno está activo. Antes de activar cada uno hay que actualizar la política, y para la analítica y el píxel hacen falta un banner de consentimiento y una política de cookies.
 6. **Referencia del propietario:** las condiciones de Opinas (`https://opinas.app/es/aviso-legal`) usan el mismo reparto que este borrador: responsable para la relación con el cliente y encargado para los datos de reseñas y perfiles conectados. Su política de privacidad no se ha podido consultar.
+
+## Bloqueo de publicación: baja y conservación (2026-11-12)
+
+La política promete que, al desconectar Google, se borran los tokens al momento y los datos en 30 días. Según la sesión de backend, a esta fecha el sistema no lo hace:
+
+- No hay forma de desconectar la ficha ni de borrar la cuenta, y no se revoca el token en Google.
+- No hay ninguna tarea de retención: tokens cifrados, reseñas, clasificaciones, análisis, historial de notas, sesiones caducadas y lista de espera se conservan sin límite.
+- El registro de respuestas publicadas es de solo inserción.
+- Las reseñas que Google deja de devolver se marcan como retiradas, no se borran.
+
+`docs/legal/privacidad.md` lleva una marca `[REVISAR]` en «Cómo revocar el acceso y borrar los datos». Con ella, la compilación en modo estricto falla y la web no se puede publicar. Se cierra cuando:
+
+1. El backend haya construido «desconectar y borrar» y la tarea de retención.
+2. Plazos: aprobados por el propietario el 2026-11-12 (ver «Decisiones del propietario») y ya escritos en la política. Falta que quien revise los textos confirme la base jurídica del registro de respuestas (propuesta: interés legítimo en la defensa frente a reclamaciones, art. 6.1.f).
+3. El apartado 3 y la tabla del apartado 2 de la política digan exactamente lo que hace el sistema.
+
+Las Condiciones de uso remiten a esos plazos («borramos esos datos en los plazos indicados en la Política de Privacidad»), así que quedan cubiertas por el mismo cierre.
