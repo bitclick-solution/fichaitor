@@ -9,7 +9,7 @@ ones the SQL of the PostgreSQL adapters enforces.
 import secrets
 from collections.abc import Sequence
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import date, datetime
 
 from app.domain.actions import (
     DONE,
@@ -24,6 +24,20 @@ from app.domain.actions import (
 )
 from app.domain.profile_summary import LOW_RATING_MAX, Review
 from app.domain.reviews import storable_reviews, storable_text
+from app.domain.sentiment import (
+    SOURCE_RULES,
+    STATUS_ERROR,
+    STATUS_OK,
+    TRIGGER_FIRST,
+    Analysis,
+    Figures,
+    LastAnalysis,
+    SentimentReview,
+    StoredClassification,
+    Usage,
+    first_history_month,
+    month_of,
+)
 
 
 @dataclass
@@ -83,6 +97,11 @@ class MemoryTables:
     actions: dict[str, ActionRow] = field(default_factory=dict)
     audit: list[AuditRow] = field(default_factory=list)  # append only
     reviews_synced_at: dict[tuple[str, str], datetime] = field(default_factory=dict)
+    # Sentiment: classification by our review id; analysis, history and usage by profile.
+    classifications: dict[str, StoredClassification] = field(default_factory=dict)
+    analyses: dict[tuple[str, str], Analysis] = field(default_factory=dict)
+    history: dict[tuple[str, str], dict[date, int]] = field(default_factory=dict)
+    usage: list[tuple[str, str, str, Usage]] = field(default_factory=list)  # append only
 
     # --- reviews ---------------------------------------------------------------
 
@@ -144,6 +163,50 @@ class MemoryTables:
             for row in self.reviews_of(google_sub, location)
             if row.sent_at is not None and row.sent_at > since and row.reply_text is not None
         }
+
+    # --- sentiment -------------------------------------------------------------
+
+    def sentiment_reviews(self, google_sub: str, location: str) -> list[SentimentReview]:
+        return [
+            SentimentReview(
+                row.id, row.rating, row.text, row.created_at, self.classifications.get(row.id)
+            )
+            for row in self.reviews_of(google_sub, location)
+        ]
+
+    def last_analysis(self, google_sub: str, location: str) -> LastAnalysis | None:
+        analysis = self.analyses.get((google_sub, location))
+        if analysis is None:
+            return None
+        figures = analysis.figures
+        return LastAnalysis(figures.status, analysis.generated_at, figures.based_on)
+
+    def save_analysis(
+        self, google_sub: str, location: str, analysis: Analysis, usage: Usage
+    ) -> None:
+        key = (google_sub, location)
+        self.analyses[key] = analysis
+        if analysis.figures.status == STATUS_OK:
+            month = month_of(analysis.generated_at)
+            self.history.setdefault(key, {})[month] = analysis.figures.score
+        self.usage.append((google_sub, location, analysis.trigger, usage))
+
+    def save_analysis_error(self, google_sub: str, location: str, at: datetime) -> None:
+        key = (google_sub, location)
+        if key not in self.analyses:
+            figures = Figures(STATUS_ERROR, 0, 0, True, None, None, None)
+            self.analyses[key] = Analysis(figures, None, None, SOURCE_RULES, TRIGGER_FIRST, at)
+
+    def sentiment_of(
+        self, google_sub: str, location: str, now: datetime
+    ) -> tuple[Analysis, list[tuple[date, int]]] | None:
+        """The analysis of a profile and its trend, oldest month first."""
+        analysis = self.analyses.get((google_sub, location))
+        if analysis is None:
+            return None
+        first = first_history_month(now)
+        months = self.history.get((google_sub, location), {})
+        return analysis, sorted((m, s) for m, s in months.items() if m >= first)
 
     # --- actions ---------------------------------------------------------------
 

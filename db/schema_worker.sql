@@ -1,5 +1,5 @@
 -- Fichaitor: esquema del worker (cola de jobs, resumen de fichas, reseñas, acciones
--- sobre Google y registro de auditoría).
+-- sobre Google, registro de auditoría y sentimiento del establecimiento).
 -- Idempotente. Se aplica DESPUÉS de schema.sql, con el rol propietario:
 --   docker compose exec -T db psql -q -U fichaitor -d fichaitor -v ON_ERROR_STOP=1 < db/schema_worker.sql
 -- Pendiente de fusionar en schema.sql por el responsable.
@@ -222,6 +222,104 @@ CREATE POLICY audit_log_api_insert ON audit_log FOR INSERT TO fichaitor_api
 DROP POLICY IF EXISTS audit_log_worker_insert ON audit_log;
 CREATE POLICY audit_log_worker_insert ON audit_log FOR INSERT TO fichaitor_worker
     WITH CHECK (event IN ('reply_sent', 'reply_failed'));
+
+-- ---------------------------------------------------------------------------
+-- Sentimiento del establecimiento (2026-11-12). Consulta docs/sentimiento.md.
+-- Necesita la tabla review de más arriba.
+
+-- Clasificación de cada reseña: se hace una sola vez y se guarda.
+-- source_hash: de las estrellas y el texto con los que se clasificó. Si cambian, la
+-- reseña se clasifica otra vez.
+-- sentiment NULL = se envió al modelo y su respuesta no valió; se reintenta en el
+-- siguiente análisis (method 'pending') hasta attempts = 3.
+-- topics: hasta 3 objetos {"topic", "polarity"} de la lista cerrada del dominio.
+-- No se guarda ningún texto de la reseña ni nada sobre quien la escribió.
+-- ON DELETE CASCADE: si alguna vez se borra una reseña, su clasificación no la retiene.
+CREATE TABLE IF NOT EXISTS review_sentiment (
+    review_id     text PRIMARY KEY REFERENCES review (id) ON DELETE CASCADE,
+    source_hash   text NOT NULL CHECK (length(source_hash) = 64),
+    sentiment     text CHECK (sentiment IN ('positive', 'neutral', 'negative')),
+    topics        jsonb NOT NULL DEFAULT '[]'::jsonb
+                  CHECK (jsonb_typeof(topics) = 'array' AND jsonb_array_length(topics) <= 3),
+    method        text NOT NULL
+                  CHECK (method IN ('model', 'stars', 'stars_fallback', 'pending')),
+    attempts      smallint NOT NULL DEFAULT 0 CHECK (attempts BETWEEN 0 AND 100),
+    classified_at timestamptz NOT NULL DEFAULT now(),
+    CHECK ((sentiment IS NULL) = (method = 'pending'))
+);
+
+-- Último análisis de cada ficha y conexión: lo que enseña el panel.
+-- status 'insuficiente' = la ficha no tiene reseñas; 'error' = el análisis falló y
+-- nunca hubo uno bueno (uno bueno no se sustituye por un error).
+-- score, overall, praised y complaints los calcula el código. summary y suggestion los
+-- redacta el modelo (summary_source 'model') o salen de reglas fijas ('rules').
+-- praised y complaints: listas de {"topic", "mentions"}; solo temas y recuentos.
+CREATE TABLE IF NOT EXISTS sentiment_analysis (
+    google_sub      text NOT NULL CHECK (length(google_sub) BETWEEN 1 AND 255),
+    location        text NOT NULL CHECK (length(location) BETWEEN 1 AND 200),
+    status          text NOT NULL CHECK (status IN ('ok', 'insuficiente', 'error')),
+    generated_at    timestamptz NOT NULL,
+    based_on        integer NOT NULL DEFAULT 0 CHECK (based_on >= 0),
+    with_text       integer NOT NULL DEFAULT 0 CHECK (with_text BETWEEN 0 AND based_on),
+    provisional     boolean NOT NULL DEFAULT true,
+    period          text CHECK (length(period) <= 60),
+    score           smallint CHECK (score BETWEEN 0 AND 100),
+    overall         text CHECK (overall IN ('positivo', 'mixto', 'negativo')),
+    summary         text CHECK (length(summary) <= 600),
+    suggestion      text CHECK (length(suggestion) <= 400),
+    summary_source  text NOT NULL DEFAULT 'rules' CHECK (summary_source IN ('model', 'rules')),
+    praised         jsonb NOT NULL DEFAULT '[]'::jsonb CHECK (jsonb_typeof(praised) = 'array'),
+    complaints      jsonb NOT NULL DEFAULT '[]'::jsonb CHECK (jsonb_typeof(complaints) = 'array'),
+    trigger         text NOT NULL DEFAULT 'first' CHECK (trigger ~ '^[a-z_]{1,40}$'),
+    formula_version smallint NOT NULL DEFAULT 1,
+    PRIMARY KEY (google_sub, location),
+    CHECK ((status = 'ok') = (score IS NOT NULL)),
+    CHECK ((score IS NULL) = (overall IS NULL))
+);
+
+-- Historia: una foto de la nota por ficha y mes. El mes en curso se actualiza con cada
+-- análisis; los meses pasados no se tocan. month es siempre el día 1 (UTC).
+CREATE TABLE IF NOT EXISTS sentiment_history (
+    google_sub text NOT NULL CHECK (length(google_sub) BETWEEN 1 AND 255),
+    location   text NOT NULL CHECK (length(location) BETWEEN 1 AND 200),
+    month      date NOT NULL CHECK (extract(day FROM month) = 1),
+    score      smallint NOT NULL CHECK (score BETWEEN 0 AND 100),
+    based_on   integer NOT NULL CHECK (based_on >= 0),
+    updated_at timestamptz NOT NULL DEFAULT now(),
+    PRIMARY KEY (google_sub, location, month)
+);
+
+-- Uso del modelo: una fila por análisis. Solo contadores, nunca textos.
+-- input_tokens y output_tokens son NULL si la respuesta del modelo no los traía.
+CREATE TABLE IF NOT EXISTS sentiment_usage (
+    id             bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+    at             timestamptz NOT NULL DEFAULT now(),
+    google_sub     text NOT NULL CHECK (length(google_sub) BETWEEN 1 AND 255),
+    location       text NOT NULL CHECK (length(location) BETWEEN 1 AND 200),
+    trigger        text NOT NULL CHECK (trigger ~ '^[a-z_]{1,40}$'),
+    classify_calls integer NOT NULL DEFAULT 0 CHECK (classify_calls >= 0),
+    summary_calls  integer NOT NULL DEFAULT 0 CHECK (summary_calls >= 0),
+    failed_calls   integer NOT NULL DEFAULT 0 CHECK (failed_calls >= 0),
+    reviews_sent   integer NOT NULL DEFAULT 0 CHECK (reviews_sent >= 0),
+    input_tokens   integer CHECK (input_tokens >= 0),
+    output_tokens  integer CHECK (output_tokens >= 0)
+);
+
+CREATE INDEX IF NOT EXISTS sentiment_usage_at ON sentiment_usage (at);
+
+-- Privilegios mínimos. Se retira todo y se concede lo justo en cada aplicación.
+REVOKE ALL ON review_sentiment, sentiment_analysis, sentiment_history, sentiment_usage
+    FROM PUBLIC, fichaitor_api, fichaitor_worker;
+
+-- Worker: escribe clasificaciones, análisis e historia. No borra. Del uso solo añade.
+GRANT SELECT, INSERT, UPDATE ON review_sentiment, sentiment_analysis, sentiment_history
+    TO fichaitor_worker;
+GRANT INSERT (google_sub, location, trigger, classify_calls, summary_calls, failed_calls,
+              reviews_sent, input_tokens, output_tokens)
+    ON sentiment_usage TO fichaitor_worker;
+
+-- API: solo lee el análisis y la historia. La clasificación por reseña y el uso, no.
+GRANT SELECT ON sentiment_analysis, sentiment_history TO fichaitor_api;
 
 -- ---------------------------------------------------------------------------
 -- Solo desarrollo local y pruebas: copiar a db/dev-init.sql.

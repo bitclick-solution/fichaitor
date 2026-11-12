@@ -20,6 +20,7 @@ from app.ports.store import (
     SelectedProfile,
     StoredAction,
     StoredReview,
+    StoredSentiment,
     StoredSummary,
     WaitlistSignup,
 )
@@ -287,3 +288,9 @@ class MemoryStore:
             action.confirmed_at,
             action.finished_at,
         )
+
+    async def sentiment(self, account_id: str, now: datetime) -> StoredSentiment | None:
+        self._check()
+        key = self._selected_key(account_id)
+        found = self.tables.sentiment_of(*key, now) if key is not None else None
+        return StoredSentiment(found[0], tuple(found[1])) if found is not None else None

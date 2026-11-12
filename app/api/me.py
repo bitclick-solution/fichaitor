@@ -3,7 +3,8 @@
 Every read and write goes through the account of the session; a location id from
 the request is only ever looked up among that account's profiles.
 
-Neither the summary nor the diagnosis talks to Google: both read what the worker stored.
+Neither the summary, the diagnosis nor the sentiment talks to Google or to a model:
+they read what the worker stored.
 """
 
 import logging
@@ -19,6 +20,7 @@ from app.api.diagnosis_out import (
     ProfileDiagnosisResponse,
     to_profile_response,
 )
+from app.api.sentiment_out import SentimentResponse, empty_response, to_sentiment_response
 from app.api.session import (
     SESSION_COOKIE,
     account_guard,
@@ -29,6 +31,8 @@ from app.api.session import (
 from app.api.summary_out import SummaryResponse, to_summary_response
 from app.application.profile_sync import ProfileSync
 from app.domain.calendar import Holiday
+from app.domain.profile_summary import STATUS_OK
+from app.domain.sentiment import STATUS_ERROR, SentimentPolicy
 from app.domain.session import hash_token
 from app.ports.store import Account, Store
 
@@ -59,9 +63,11 @@ def build_router(
     holidays: Sequence[Holiday],
     cookie_secure: bool,
     clock: Callable[[], float],
+    sentiment_policy: SentimentPolicy | None = None,
 ) -> APIRouter:
     router = APIRouter()
     current_account = account_guard(store, clock)
+    sentiment_policy = sentiment_policy or SentimentPolicy()
 
     async def me_of(account: Account) -> MeResponse:
         locations = await store.list_locations(account.id)
@@ -126,6 +132,25 @@ def build_router(
         if view is None:
             raise HTTPException(409, "Primero elige con qué ficha quieres trabajar.")
         return to_summary_response(view)
+
+    @router.get("/api/v1/me/sentiment", response_model=SentimentResponse)
+    async def my_sentiment(
+        account: Account = Depends(current_account),  # noqa: B008
+    ) -> SentimentResponse:
+        # Read from what the worker stored, by the account of the session only. No
+        # model is called here: no cost and so no rate limit.
+        view = await sync.view(account.id)
+        if view is None:
+            raise HTTPException(409, "Primero elige con qué ficha quieres trabajar.")
+        stored = await store.sentiment(account.id, utc(clock()))
+        if stored is None or stored.analysis.figures.status == STATUS_ERROR:
+            if view.summary is not None and view.summary.status != STATUS_OK:
+                # The profile itself could not be read: there is nothing to analyse.
+                return empty_response(STATUS_ERROR)
+            # The analysis is chained to a sync: a profile synced before this existed,
+            # or whose analysis failed, gets one asked for (once per window).
+            await sync.request_for_account(account.id)
+        return to_sentiment_response(stored, sentiment_policy)
 
     @router.post(
         "/api/v1/auth/logout", status_code=204, dependencies=[Depends(require_csrf_header)]

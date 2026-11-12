@@ -1,6 +1,6 @@
 """In-memory worker store for tests."""
 
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, replace
 from datetime import datetime
 
@@ -15,6 +15,8 @@ from app.domain.profile_summary import (
     ProfileSummary,
     Review,
 )
+from app.domain.sentiment import Analysis, SentimentReview, StoredClassification, Usage
+from app.ports.sentiment_store import SentimentContext
 from app.ports.worker_store import ClaimedAction, StoredConnection
 
 
@@ -35,6 +37,33 @@ class MemoryWorkerStore:
         self.tables = tables if tables is not None else MemoryTables()
         self.connections: dict[str, list[StoredConnection]] = {}
         self.summaries: dict[tuple[str, str], StoredSummary] = {}
+        self.categories: dict[tuple[str, str], str] = {}  # set by tests and the demo
+
+    # --- sentiment -------------------------------------------------------------
+
+    async def sentiment_context(self, google_sub: str, location: str) -> SentimentContext:
+        stored = self.summaries.get((google_sub, location))
+        facts = stored.summary.facts if stored and stored.summary else None
+        category = self.categories.get((google_sub, location)) or (facts.category if facts else "")
+        return SentimentContext(self.tables.last_analysis(google_sub, location), category)
+
+    async def sentiment_reviews(self, google_sub: str, location: str) -> list[SentimentReview]:
+        return self.tables.sentiment_reviews(google_sub, location)
+
+    async def save_classifications(
+        self, classified: Mapping[str, StoredClassification], at: datetime
+    ) -> None:
+        self.tables.classifications.update(classified)
+
+    async def save_analysis(
+        self, google_sub: str, location: str, analysis: Analysis, usage: Usage
+    ) -> None:
+        self.tables.save_analysis(google_sub, location, analysis, usage)
+
+    async def save_analysis_error(self, google_sub: str, location: str, at: datetime) -> None:
+        self.tables.save_analysis_error(google_sub, location, at)
+
+    # --- connections, summaries, reviews and actions ---------------------------
 
     def add_connection(self, google_sub: str, connection: StoredConnection) -> None:
         self.connections.setdefault(google_sub, []).append(connection)

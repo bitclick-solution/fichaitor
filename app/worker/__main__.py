@@ -11,22 +11,41 @@ from pydantic import ValidationError
 from app.adapters.google_profile.fake import FakeGoogleProfile
 from app.adapters.google_profile.real import RealGoogleProfile
 from app.adapters.job_queue.postgres import PostgresJobQueue
+from app.adapters.sentiment_model.build import build_sentiment_model
 from app.adapters.worker_store.postgres import PostgresWorkerStore
+from app.domain.sentiment import SentimentPolicy
 from app.ports.google_profile import GoogleProfile
+from app.ports.job_queue import JobEnqueuer
+from app.ports.sentiment_model import SentimentModel
 from app.ports.worker_store import WorkerStore
-from app.worker import log, reply_review, sync_profile
+from app.screenshot_config import ScreenshotSettings
+from app.sentiment_config import SentimentSettings
+from app.worker import analyze_sentiment, log, reply_review, sync_profile
 from app.worker.config import ConfigError, WorkerSettings
 from app.worker.loop import Worker
 from app.worker.registry import HandlerRegistry
 
 
 def build_registry(
-    settings: WorkerSettings, store: WorkerStore, google: GoogleProfile
+    settings: WorkerSettings,
+    store: WorkerStore,
+    google: GoogleProfile,
+    jobs: JobEnqueuer | None = None,
+    sentiment_model: SentimentModel | None = None,
+    sentiment_policy: SentimentPolicy | None = None,
 ) -> HandlerRegistry:
+    """jobs: where a finished sync enqueues the sentiment analysis. Without it, no
+    analysis is chained (the job kind is still registered)."""
+    policy = sentiment_policy or SentimentPolicy()
+    trigger = analyze_sentiment.SentimentTrigger(store, jobs, policy) if jobs is not None else None
     registry = HandlerRegistry()
     registry.register(
         sync_profile.KIND,
-        sync_profile.SyncProfile(store, google, settings.token_private_key),
+        sync_profile.SyncProfile(store, google, settings.token_private_key, sentiment=trigger),
+    )
+    registry.register(
+        analyze_sentiment.KIND,
+        analyze_sentiment.AnalyzeSentiment(store, sentiment_model, policy),
     )
     registry.register(
         reply_review.KIND,
@@ -57,6 +76,7 @@ def install_stop_signals(stop: asyncio.Event) -> None:
 async def run(settings: WorkerSettings) -> None:
     pool = await asyncpg.create_pool(settings.worker_database_url, min_size=1, max_size=3)
     real = None
+    sentiment_model = None
     try:
         if settings.fake_google:
             google: GoogleProfile = FakeGoogleProfile()
@@ -65,9 +85,24 @@ async def run(settings: WorkerSettings) -> None:
             google = real = RealGoogleProfile(
                 settings.google_client_id, settings.google_client_secret
             )
+        sentiment_settings = SentimentSettings()
+        model_settings = ScreenshotSettings()
+        sentiment_model = build_sentiment_model(model_settings, sentiment_settings.timeout_seconds)
+        if sentiment_model is None:
+            log.event("sentiment_model_missing", logging.WARNING)
+        elif model_settings.fake_screenshot:
+            log.event("fake_sentiment_model_enabled", logging.WARNING)
+        queue = PostgresJobQueue(pool)
         worker = Worker(
-            PostgresJobQueue(pool),
-            build_registry(settings, PostgresWorkerStore(pool), google),
+            queue,
+            build_registry(
+                settings,
+                PostgresWorkerStore(pool),
+                google,
+                jobs=queue,
+                sentiment_model=sentiment_model,
+                sentiment_policy=sentiment_settings.policy(),
+            ),
             worker_id=settings.worker_id,
             poll_interval=settings.worker_poll_interval_seconds,
             job_timeout=settings.worker_job_timeout_seconds,
@@ -79,6 +114,8 @@ async def run(settings: WorkerSettings) -> None:
     finally:
         if real is not None:
             await real.close()
+        if hasattr(sentiment_model, "close"):
+            await sentiment_model.close()
         await pool.close()
 
 

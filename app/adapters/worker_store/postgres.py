@@ -1,12 +1,14 @@
 """Worker's view of the database: Google connections (read), profile summaries,
-reviews, and the actions it carries out with their audit trail.
+reviews, the actions it carries out with their audit trail, and the sentiment analysis
+(the classification of each review, the analysis of each profile, its monthly history
+and the usage of the model).
 
 The worker role cannot create an action or change what one says (its text, its review,
 its account): it only records progress and outcome. It can only add to the audit log.
 """
 
 import json
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from datetime import datetime
 
 import asyncpg
@@ -28,6 +30,23 @@ from app.domain.profile_summary import (
     facts_to_json,
 )
 from app.domain.reviews import storable_reviews, storable_text
+from app.domain.sentiment import (
+    STATUS_ERROR as SENTIMENT_ERROR,
+)
+from app.domain.sentiment import (
+    STATUS_OK as SENTIMENT_OK,
+)
+from app.domain.sentiment import (
+    Analysis,
+    LastAnalysis,
+    SentimentReview,
+    StoredClassification,
+    Usage,
+    month_of,
+    topics_from_json,
+    topics_to_json,
+)
+from app.ports.sentiment_store import SentimentContext
 from app.ports.worker_store import ClaimedAction, ConnectedLocation, StoredConnection
 
 _AUDIT_FROM_ACTION = """
@@ -361,3 +380,188 @@ class PostgresWorkerStore:
             EVENT_FAILED,
         )
         return int(status.rsplit(" ", 1)[-1])
+
+    # --- sentiment ----------------------------------------------------------------
+
+    async def sentiment_context(self, google_sub: str, location: str) -> SentimentContext:
+        row = await self._pool.fetchrow(
+            """
+            SELECT s.status, s.generated_at, s.based_on,
+                   (SELECT p.facts->>'category' FROM profile_summary p
+                    WHERE p.google_sub = $1 AND p.location = $2) AS category
+            FROM (SELECT 1) AS one
+            LEFT JOIN sentiment_analysis s ON s.google_sub = $1 AND s.location = $2
+            """,
+            google_sub,
+            location,
+        )
+        last = None
+        if row["status"] is not None:
+            last = LastAnalysis(row["status"], row["generated_at"], row["based_on"])
+        return SentimentContext(last, row["category"] or "")
+
+    async def sentiment_reviews(self, google_sub: str, location: str) -> list[SentimentReview]:
+        rows = await self._pool.fetch(
+            """
+            SELECT r.id, r.rating, r.comment, r.created_at,
+                   c.source_hash, c.sentiment, c.topics::text AS topics, c.method, c.attempts
+            FROM review r LEFT JOIN review_sentiment c ON c.review_id = r.id
+            WHERE r.google_sub = $1 AND r.location = $2 AND r.removed_at IS NULL
+            ORDER BY r.id
+            """,
+            google_sub,
+            location,
+        )
+        reviews = []
+        for row in rows:
+            stored = None
+            if row["source_hash"] is not None:
+                stored = StoredClassification(
+                    row["source_hash"],
+                    row["sentiment"],
+                    topics_from_json(json.loads(row["topics"])),
+                    row["method"],
+                    row["attempts"],
+                )
+            reviews.append(
+                SentimentReview(row["id"], row["rating"], row["comment"], row["created_at"], stored)
+            )
+        return reviews
+
+    async def save_classifications(
+        self, classified: Mapping[str, StoredClassification], at: datetime
+    ) -> None:
+        ids = sorted(classified)
+        if not ids:
+            return
+        rows = [classified[review_id] for review_id in ids]
+        # Only for reviews that still exist: the join drops any other id.
+        await self._pool.execute(
+            """
+            INSERT INTO review_sentiment
+                (review_id, source_hash, sentiment, topics, method, attempts, classified_at)
+            SELECT r.id, c.source_hash, c.sentiment, c.topics::jsonb, c.method, c.attempts, $7
+            FROM unnest($1::text[], $2::text[], $3::text[], $4::text[], $5::text[],
+                        $6::smallint[])
+                 AS c (review_id, source_hash, sentiment, topics, method, attempts)
+            JOIN review r ON r.id = c.review_id
+            ORDER BY r.id
+            ON CONFLICT (review_id) DO UPDATE SET
+                source_hash = EXCLUDED.source_hash,
+                sentiment = EXCLUDED.sentiment,
+                topics = EXCLUDED.topics,
+                method = EXCLUDED.method,
+                attempts = EXCLUDED.attempts,
+                classified_at = EXCLUDED.classified_at
+            """,
+            ids,
+            [c.source_hash for c in rows],
+            [c.sentiment for c in rows],
+            [json.dumps(topics_to_json(c.topics), ensure_ascii=False) for c in rows],
+            [c.method for c in rows],
+            [c.attempts for c in rows],
+            at,
+        )
+
+    async def save_analysis(
+        self, google_sub: str, location: str, analysis: Analysis, usage: Usage
+    ) -> None:
+        figures = analysis.figures
+
+        def counts(topics) -> str:
+            listed = [{"topic": t.topic, "mentions": t.mentions} for t in topics]
+            return json.dumps(listed, ensure_ascii=False)
+
+        async with self._pool.acquire() as conn, conn.transaction():
+            await conn.execute(
+                """
+                INSERT INTO sentiment_analysis
+                    (google_sub, location, status, generated_at, based_on, with_text,
+                     provisional, period, score, overall, summary, suggestion,
+                     summary_source, praised, complaints, trigger)
+                VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13,
+                        $14::jsonb, $15::jsonb, $16)
+                ON CONFLICT (google_sub, location) DO UPDATE SET
+                    status = EXCLUDED.status,
+                    generated_at = EXCLUDED.generated_at,
+                    based_on = EXCLUDED.based_on,
+                    with_text = EXCLUDED.with_text,
+                    provisional = EXCLUDED.provisional,
+                    period = EXCLUDED.period,
+                    score = EXCLUDED.score,
+                    overall = EXCLUDED.overall,
+                    summary = EXCLUDED.summary,
+                    suggestion = EXCLUDED.suggestion,
+                    summary_source = EXCLUDED.summary_source,
+                    praised = EXCLUDED.praised,
+                    complaints = EXCLUDED.complaints,
+                    trigger = EXCLUDED.trigger
+                """,
+                google_sub,
+                location,
+                figures.status,
+                analysis.generated_at,
+                figures.based_on,
+                figures.with_text,
+                figures.provisional,
+                figures.period,
+                figures.score,
+                figures.overall,
+                analysis.summary,
+                analysis.suggestion,
+                analysis.summary_source,
+                counts(figures.praised),
+                counts(figures.complaints),
+                analysis.trigger,
+            )
+            if figures.status == SENTIMENT_OK:
+                # One snapshot per month: the current month follows the latest analysis.
+                await conn.execute(
+                    """
+                    INSERT INTO sentiment_history
+                        (google_sub, location, month, score, based_on, updated_at)
+                    VALUES ($1, $2, $3, $4, $5, $6)
+                    ON CONFLICT (google_sub, location, month) DO UPDATE SET
+                        score = EXCLUDED.score,
+                        based_on = EXCLUDED.based_on,
+                        updated_at = EXCLUDED.updated_at
+                    """,
+                    google_sub,
+                    location,
+                    month_of(analysis.generated_at),
+                    figures.score,
+                    figures.based_on,
+                    analysis.generated_at,
+                )
+            # Counters only: no text of a review or of the summary.
+            await conn.execute(
+                """
+                INSERT INTO sentiment_usage
+                    (google_sub, location, trigger, classify_calls, summary_calls,
+                     failed_calls, reviews_sent, input_tokens, output_tokens)
+                VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+                """,
+                google_sub,
+                location,
+                analysis.trigger,
+                usage.classify_calls,
+                usage.summary_calls,
+                usage.failed_calls,
+                usage.reviews_sent,
+                usage.input_tokens,
+                usage.output_tokens,
+            )
+
+    async def save_analysis_error(self, google_sub: str, location: str, at: datetime) -> None:
+        # Only where there is nothing: a good analysis is never replaced by an error.
+        await self._pool.execute(
+            """
+            INSERT INTO sentiment_analysis (google_sub, location, status, generated_at)
+            VALUES ($1, $2, $3, $4)
+            ON CONFLICT (google_sub, location) DO NOTHING
+            """,
+            google_sub,
+            location,
+            SENTIMENT_ERROR,
+            at,
+        )

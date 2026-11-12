@@ -265,6 +265,19 @@ class CapturedJobs:
         return True
 
 
+class NoFunnelStore(PostgresStore):
+    """The real store, without the funnel: an event row has no mark that tells a test
+    from a real visit ('connected' carries no source nor place), so it could never be
+    cleaned up afterwards. Everything else is written to the database as usual."""
+
+    def __init__(self, dsn: str) -> None:
+        super().__init__(dsn)
+        self.events: list[str] = []
+
+    async def record_event(self, kind, source=None, place_id=None, score=None) -> None:
+        self.events.append(kind)
+
+
 @pytest.mark.skipif(not WORKER_URL, reason="sin usuario de worker de pruebas")
 def test_whole_journey_api_writes_the_job_the_worker_handles_and_the_api_reads_its_summary():
     public, private = generate_keypair()
@@ -279,7 +292,8 @@ def test_whole_journey_api_writes_the_job_the_worker_handles_and_the_api_reads_i
         token_public_key=public,
         cookie_secure=False,
     )
-    app = create_app(settings, FakePlaces(), PostgresStore(API_URL), google, jobs=jobs)
+    store = NoFunnelStore(API_URL)
+    app = create_app(settings, FakePlaces(), store, google, jobs=jobs)
 
     async def run_worker(payload: dict) -> None:
         pool = await asyncpg.create_pool(WORKER_URL, min_size=1, max_size=1)
@@ -329,6 +343,9 @@ def test_whole_journey_api_writes_the_job_the_worker_handles_and_the_api_reads_i
     assert body["google_changed_fields"] == ["specialHours", "campoNuevo"]
     assert body["google_changed_labels"] == ["Horarios especiales", "campoNuevo"]
     assert body["stale"] is False
+    # The connection was counted by the store of the test: no funnel row reached the
+    # database, where it could not be told apart from a real one nor removed.
+    assert store.events == ["connected"]
 
 
 # --- facts of the profile (what the diagnosis is computed from) ---------------------

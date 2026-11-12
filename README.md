@@ -135,6 +135,17 @@ Para ver el recorrido de reseñas sin Google, añade `FICHAITOR_FAKE_SCREENSHOT=
 
 > **Precaución:** La escritura no se ha probado contra Google real. Una respuesta a una reseña es pública y avisa a quien la escribió. Antes de usarla con una ficha real, haz la prueba pendiente de `docs/fase0/matriz-api.md`: reenviar el mismo texto sobre una reseña ya respondida.
 
+Séptimo bloque: el **sentimiento del establecimiento** (`GET /api/v1/me/sentiment`), un indicador propio del panel: cómo ve la gente el negocio, con una nota de 0 a 100 y su historia mensual.
+
+- **El modelo clasifica cada reseña una sola vez** (positiva, neutra o negativa, y hasta 3 temas de una lista cerrada). Las reseñas sin texto se clasifican por sus estrellas, sin modelo. Al modelo va solo el texto y las estrellas, nunca un autor.
+- **La nota, los recuentos por tema y la decisión de recalcular los hace el código.** Con las mismas reseñas, la nota es la misma.
+- **El resumen y la sugerencia los redacta el modelo y los valida el código.** Si citan una cifra que no está en los datos, se descartan y se usan textos construidos por reglas fijas.
+- **El primer análisis sale nada más conectar**: se encadena a la primera sincronización. Después, como máximo uno al día: con una reseña de 1 o 2 estrellas, con 3 reseñas nuevas o a los 30 días.
+- **Con una reseña ya hay nota.** Con menos de 5 reseñas con texto, el análisis se marca como provisional.
+- Lo calcula el worker (job `analyze_sentiment`); la API solo lo lee. El detalle, el coste estimado y lo que se guarda están en [docs/sentimiento.md](docs/sentimiento.md).
+
+> **Precaución:** El análisis no se ha probado contra Gemini real. El coste de `docs/sentimiento.md` es una estimación: corrígela con las primeras cifras de la tabla `sentiment_usage`.
+
 Falta en estos bloques: borrar la cuenta desde el panel, la limpieza periódica de sesiones caducadas y las pruebas automáticas contra Google real.
 
 ### Ejecutarlo
@@ -171,6 +182,7 @@ uv run ruff check .
 | [docs/04-ux-conversacional.md](docs/04-ux-conversacional.md) | Tono, patrones de mensaje, botones y pantallas del panel |
 | [docs/05-roadmap.md](docs/05-roadmap.md) | Fases, qué hay que investigar, qué hay que construir y criterios de salida |
 | [docs/06-estandares.md](docs/06-estandares.md) | Stack, separación de responsabilidades, Docker y estrategia de pruebas |
+| [docs/sentimiento.md](docs/sentimiento.md) | Sentimiento del establecimiento: fórmula de la nota, temas, disparadores, coste y qué se guarda |
 
 ## Decisiones tomadas
 

@@ -2,10 +2,11 @@
 
 El worker ejecuta el trabajo asíncrono de Fichaitor. Toma jobs de una cola en PostgreSQL y los ejecuta. Es el único proceso que tiene la clave privada de los tokens y las credenciales de Google.
 
-Tiene dos jobs:
+Tiene tres jobs:
 
 - `sync_profile` lee una ficha en Google y guarda tres cosas: el resumen del panel (reseñas sin responder, horarios especiales y cambios hechos por Google); desde el 2026-11-11, los hechos de la ficha con los que la API calcula el diagnóstico (`GET /api/v1/me/diagnosis`); y desde el 2026-11-12, las reseñas de la ficha.
 - `reply_review` es **el ejecutor**: envía a Google la respuesta a una reseña que el dueño ha confirmado. Es el único código del producto que escribe en Google. Consulta [El job `reply_review`](#el-job-reply_review).
+- `analyze_sentiment` calcula el sentimiento del establecimiento a partir de las reseñas guardadas. Lo encola el propio worker al terminar una sincronización. Es el único job que llama al modelo. Consulta [El job `analyze_sentiment`](#el-job-analyze_sentiment).
 
 ## Cómo funciona
 
@@ -128,6 +129,36 @@ Cada sincronización deja en `review` las reseñas que Google devuelve para esa 
 - `profile_summary.reviews_synced_at` guarda cuándo se guardaron las reseñas por última vez. Con `NULL`, la API responde `pendiente` en `GET /api/v1/me/reviews` y pide una sincronización.
 
 > **Nota:** Una ficha sincronizada antes del 2026-11-12 no tiene reseñas guardadas. La API pide la sincronización la primera vez que alguien abre la lista de reseñas. Hace falta que el worker en marcha tenga ya este código.
+
+## El job `analyze_sentiment`
+
+Carga: `{"google_sub": "...", "location": "locations/123"}`, la misma que `sync_profile`.
+
+Nadie lo encola desde la API. Al terminar `sync_profile`, cuando las reseñas ya están guardadas, el worker decide si toca un análisis y, si toca, encola este job con ejecución inmediata. Así, tras la primera sincronización de una ficha, el análisis existe unos segundos después del resumen.
+
+Qué hace, en orden:
+
+1. Vuelve a decidir si toca. Si no, termina sin hacer nada: ejecutarlo dos veces no cuesta nada.
+2. Clasifica por sus estrellas las reseñas nuevas sin texto. Sin modelo.
+3. Envía al modelo, por lotes, las reseñas con texto nuevas, cambiadas o pendientes: estrellas y texto, nada más. Guarda cada clasificación válida; la que no vale queda pendiente.
+4. Calcula en código la nota, la valoración y los recuentos por tema.
+5. Si hay suficientes reseñas con texto, pide al modelo el resumen y la sugerencia, y los valida. Si no pasan, usa los textos por reglas.
+6. Guarda el análisis, la nota del mes y el uso del modelo.
+
+Reglas:
+
+- **El primer análisis no tiene tope.** Después, como máximo uno cada 24 horas por ficha: con una reseña nueva de 1 o 2 estrellas, con 3 reseñas nuevas, o a los 30 días si hay al menos una nueva.
+- **Un fallo del modelo no hace fallar el job.** El lote queda pendiente para el siguiente análisis y la nota se calcula con las estrellas.
+- **Un fallo de la decisión o del encolado no hace fallar la sincronización.** Se registra `sentiment_not_enqueued` y la siguiente sincronización lo vuelve a intentar.
+- **Tres intentos** (`max_attempts`), para fallos de la base de datos. Si se agotan y la ficha no tenía análisis, queda `error`; si lo tenía, se conserva.
+- **El texto de una reseña es un dato.** Nada de lo que diga cambia lo que hace el job.
+- **Sin textos en los logs.** `sentiment_analyzed` lleva contadores: reseñas, llamadas, tokens y nota.
+
+El modelo sale de las mismas variables que la captura y los borradores: `FICHAITOR_GEMINI_API_KEY` y `FICHAITOR_GEMINI_MODEL`, o `FICHAITOR_FAKE_SCREENSHOT=true`. Sin ninguna, el worker registra `sentiment_model_missing` al arrancar y el análisis cuenta todas las reseñas por sus estrellas.
+
+La fórmula, los temas, los disparadores, el coste y lo que se guarda están en [sentimiento.md](sentimiento.md).
+
+> **Nota:** Una ficha sincronizada antes del 2026-11-12 no tiene análisis. La API pide una sincronización la primera vez que alguien abre el panel. Hace falta que el worker en marcha tenga ya este código.
 
 ## El job `reply_review`
 
@@ -260,6 +291,19 @@ No hay columna para el autor.
 
 Último borrador que el modelo redactó para cada reseña (`review_id`, `source_hash`, `draft`, `created_at`). La escribe la API, que es quien llama al modelo; el worker no tiene acceso. `source_hash` cambia si cambian las estrellas, el texto de la reseña o la versión del prompt.
 
+### `review_sentiment`, `sentiment_analysis`, `sentiment_history` y `sentiment_usage`
+
+Las cuatro tablas del sentimiento del establecimiento. Las escribe el worker.
+
+| Tabla | Una fila por | Contenido |
+|---|---|---|
+| `review_sentiment` | Reseña | Clasificación: huella de las estrellas y el texto, sentimiento, hasta 3 temas con polaridad, método (`model`, `stars`, `stars_fallback` o `pending`) e intentos. Ningún texto |
+| `sentiment_analysis` | Ficha y conexión | Último análisis: estado (`ok`, `insuficiente` o `error`), fecha, nota, valoración, temas con recuentos, resumen, sugerencia y disparador |
+| `sentiment_history` | Ficha, conexión y mes | Nota del mes. El mes en curso se actualiza con cada análisis |
+| `sentiment_usage` | Análisis | Contadores de llamadas, reseñas enviadas y tokens. Solo se añaden filas |
+
+El detalle está en [sentimiento.md](sentimiento.md#qué-se-guarda).
+
 ### `action`
 
 Acciones sobre Google confirmadas por el dueño. Hoy solo hay un tipo, `reply_review`.
@@ -297,8 +341,8 @@ La tabla tiene seguridad a nivel de fila: la API solo puede insertar `reply_conf
 
 | Rol | Puede | No puede |
 |---|---|---|
-| `fichaitor_api` | Insertar en `job` (solo `kind`, `payload`, `run_at`, `idempotency_key`, `max_attempts`); leer `profile_summary` y `review`; leer y escribir `review_draft`; insertar y leer `action` (al insertar, solo cuenta, ficha, reseña, tipo, texto y fecha de confirmación); insertar en `audit_log` el evento `reply_confirmed` | Leer, cambiar o borrar jobs; fijar estado o intentos; escribir resúmenes o reseñas; cambiar o borrar una acción, o crearla con estado o resultado; leer, cambiar o borrar la auditoría |
-| `fichaitor_worker` | Leer, insertar y actualizar `job`, `profile_summary` y `review`; leer de `google_connection` las columnas que usa; leer `action` y actualizar su estado, intentos, fechas y resultado; insertar en `audit_log` los eventos `reply_sent` y `reply_failed` | Leer `waitlist_entry`, `funnel_event` o el email de las conexiones; escribir en `google_connection`; borrar nada; **crear una acción o cambiar su texto, su reseña o su cuenta**; leer `review_draft`; leer, cambiar o borrar la auditoría |
+| `fichaitor_api` | Insertar en `job` (solo `kind`, `payload`, `run_at`, `idempotency_key`, `max_attempts`); leer `profile_summary` y `review`; leer y escribir `review_draft`; insertar y leer `action` (al insertar, solo cuenta, ficha, reseña, tipo, texto y fecha de confirmación); insertar en `audit_log` el evento `reply_confirmed`; leer `sentiment_analysis` y `sentiment_history` | Leer `review_sentiment` o `sentiment_usage`, o escribir en las tablas del sentimiento; leer, cambiar o borrar jobs; fijar estado o intentos; escribir resúmenes o reseñas; cambiar o borrar una acción, o crearla con estado o resultado; leer, cambiar o borrar la auditoría |
+| `fichaitor_worker` | Leer, insertar y actualizar `job`, `profile_summary` y `review`; leer de `google_connection` las columnas que usa; leer `action` y actualizar su estado, intentos, fechas y resultado; insertar en `audit_log` los eventos `reply_sent` y `reply_failed`; leer, insertar y actualizar `review_sentiment`, `sentiment_analysis` y `sentiment_history`; añadir filas a `sentiment_usage` | Leer o cambiar `sentiment_usage`; leer `waitlist_entry`, `funnel_event` o el email de las conexiones; escribir en `google_connection`; borrar nada; **crear una acción o cambiar su texto, su reseña o su cuenta**; leer `review_draft`; leer, cambiar o borrar la auditoría |
 
 ## Variables de entorno
 
@@ -315,6 +359,9 @@ Todas llevan el prefijo `FICHAITOR_`. El worker las valida al arrancar y, si fal
 | `FICHAITOR_WORKER_JOB_TIMEOUT_SECONDS` | No | `120` | Tiempo máximo de un job. Debe ser menor que el siguiente |
 | `FICHAITOR_WORKER_LOCK_TIMEOUT_SECONDS` | No | `300` | Antigüedad del bloqueo a partir de la cual un job se da por abandonado |
 | `FICHAITOR_WORKER_ID` | No | `<host>-<pid>` | Nombre del worker en `locked_by` y en los logs |
+| `FICHAITOR_GEMINI_API_KEY` y `FICHAITOR_GEMINI_MODEL` | No | — y `gemini-3.6-flash` | Modelo del sentimiento del establecimiento. Las mismas variables que usa la API |
+| `FICHAITOR_FAKE_SCREENSHOT` | No | `false` | Modelo de ejemplo para el sentimiento, sin clave y sin coste |
+| `FICHAITOR_SENTIMENT_*` | No | Consulta [sentimiento.md](sentimiento.md#variables-de-entorno) | Umbrales, disparadores y límites de coste del sentimiento |
 
 > **Precaución:** `FICHAITOR_TOKEN_PRIVATE_KEY` solo debe estar en el entorno del worker. No la pongas en el entorno de la API. La API cifra con la clave pública y no puede leer un token.
 
@@ -377,10 +424,10 @@ SELECT * FROM profile_summary;
 ## Pruebas
 
 ```bash
-uv run pytest -q tests/test_worker_*.py tests/test_reviews_*.py
+uv run pytest -q tests/test_worker_*.py tests/test_reviews_*.py tests/test_sentiment_*.py
 ```
 
-Las pruebas de integración (`tests/test_worker_postgres.py` y `tests/test_reviews_postgres.py`) se saltan si faltan estas variables:
+Las pruebas de integración (`tests/test_worker_postgres.py`, `tests/test_reviews_postgres.py` y `tests/test_sentiment_postgres.py`) se saltan si faltan estas variables:
 
 ```bash
 export FICHAITOR_TEST_OWNER_URL=postgresql://fichaitor:dev@127.0.0.1:5433/fichaitor
@@ -388,7 +435,7 @@ export FICHAITOR_TEST_DATABASE_URL=postgresql://fichaitor_api_dev:dev@127.0.0.1:
 export FICHAITOR_TEST_WORKER_URL=postgresql://fichaitor_worker_dev:dev@127.0.0.1:5433/fichaitor
 ```
 
-Crean y borran solo filas marcadas con el prefijo `pytest-`. Los jobs de las pruebas llevan un tipo propio (`pytest-…`), así que un worker en marcha sobre la misma base no los toma. Ninguna prueba llama a Google: la escritura del adaptador real se prueba con transporte HTTP simulado (`tests/test_reviews_google.py`).
+Crean y borran solo filas marcadas con el prefijo `pytest-`. Los jobs de las pruebas llevan un tipo propio (`pytest-…`), así que un worker en marcha sobre la misma base no los toma. Ninguna prueba llama a Google ni a Gemini: la escritura del adaptador real se prueba con transporte HTTP simulado (`tests/test_reviews_google.py`), igual que el modelo del sentimiento (`tests/test_sentiment_gemini.py`).
 
 ## Servicio en Docker Compose
 

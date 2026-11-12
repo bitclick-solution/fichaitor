@@ -1,5 +1,6 @@
 """Job sync_profile: read a Business Profile from Google and store its summary,
-the facts the diagnosis is computed from and its reviews.
+the facts the diagnosis is computed from and its reviews. When it ends, it enqueues
+the sentiment analysis if one is due (see app/worker/analyze_sentiment.py).
 
 Of each review it stores Google's id, the stars, the original text, the date and the
 owner's reply if there is one. Never the name or the photo of whoever wrote it. A
@@ -27,6 +28,7 @@ from app.domain.reviews import REPLY_GRACE, with_sent_replies
 from app.ports.google_profile import GoogleProfile, GoogleRejected, ReconnectRequired
 from app.ports.worker_store import WorkerStore
 from app.worker import log
+from app.worker.analyze_sentiment import SentimentTrigger
 
 KIND = "sync_profile"
 
@@ -49,11 +51,14 @@ class SyncProfile:
         google: GoogleProfile,
         private_key: str,
         clock: Callable[[], datetime] = lambda: datetime.now(UTC),
+        sentiment: SentimentTrigger | None = None,
     ) -> None:
         self._store = store
         self._google = google
         self._private_key = private_key
         self._clock = clock
+        # Asked once the reviews are stored; None: no sentiment analysis is chained.
+        self._sentiment = sentiment
 
     async def __call__(self, job: Job) -> None:
         google_sub, location = _target(job)
@@ -117,6 +122,10 @@ class SyncProfile:
         summary = summarize(reviews, details.hours, changed, now.date(), facts)
         await self._store.save_summary(google_sub, location, summary, now)
         await self._store.save_reviews(google_sub, location, reviews.reviews, now)
+        if self._sentiment is not None:
+            # The sentiment analysis is a job of its own, enqueued right here when one
+            # is due: the first one is ready seconds after the first sync. Never raises.
+            await self._sentiment.after_sync(google_sub, location, now)
 
     async def on_exhausted(self, job: Job) -> None:
         """Out of attempts: say so in the summary, keeping the last good figures."""

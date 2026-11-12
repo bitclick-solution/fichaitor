@@ -4,7 +4,8 @@ The API role can only INSERT contacts, events and Google connections. On account
 profiles and sessions it can read, insert and update a few columns; it never deletes.
 Every statement on profiles is filtered by account_id: the isolation between accounts.
 Of the worker's tables it can only INSERT jobs and SELECT profile summaries
-(figures and facts) and reviews. It keeps the drafts of replies. It creates actions,
+(figures and facts), reviews, and the sentiment analysis with its monthly history
+(never the classification of each review). It keeps the drafts of replies. It creates actions,
 which it can read but never change, and it can only add to the audit log.
 """
 
@@ -18,6 +19,7 @@ from app.adapters.job_queue.postgres import PostgresJobQueue
 from app.domain.actions import EVENT_CONFIRMED, REPLY_REVIEW
 from app.domain.jobs import DEFAULT_MAX_ATTEMPTS
 from app.domain.profile_summary import ProfileFacts, facts_from_json
+from app.domain.sentiment import Analysis, Figures, TopicCount, first_history_month
 from app.ports.google_oauth import ProfileLocation
 from app.ports.store import (
     Account,
@@ -29,6 +31,7 @@ from app.ports.store import (
     SelectedProfile,
     StoredAction,
     StoredReview,
+    StoredSentiment,
     StoredSummary,
     WaitlistSignup,
 )
@@ -434,6 +437,77 @@ class PostgresStore:
             row["confirmed_at"],
             row["finished_at"],
         )
+
+    async def sentiment(self, account_id: str, now: datetime) -> StoredSentiment | None:
+        # Same join as the summary: the analysis is reached through the account's own
+        # google_sub and its own selected profile. Nothing from the request takes part.
+        pool = self._require_pool()
+        row = await pool.fetchrow(
+            """
+            SELECT s.google_sub, s.location, s.status, s.generated_at, s.based_on,
+                   s.with_text, s.provisional, s.period, s.score, s.overall, s.summary,
+                   s.suggestion, s.summary_source, s.praised::text AS praised,
+                   s.complaints::text AS complaints, s.trigger
+            FROM account a
+            JOIN location l
+              ON l.id = a.selected_location_id AND l.account_id = a.id AND l.removed_at IS NULL
+            JOIN sentiment_analysis s
+              ON s.google_sub = a.google_sub AND s.location = l.gbp_location
+            WHERE a.id = $1::uuid
+            """,
+            account_id,
+        )
+        if row is None:
+            return None
+        history = await pool.fetch(
+            """
+            SELECT h.month, h.score
+            FROM account a
+            JOIN location l
+              ON l.id = a.selected_location_id AND l.account_id = a.id AND l.removed_at IS NULL
+            JOIN sentiment_history h
+              ON h.google_sub = a.google_sub AND h.location = l.gbp_location
+            WHERE a.id = $1::uuid AND h.month >= $2
+            ORDER BY h.month
+            """,
+            account_id,
+            first_history_month(now),
+        )
+        figures = Figures(
+            status=row["status"],
+            based_on=row["based_on"],
+            with_text=row["with_text"],
+            provisional=row["provisional"],
+            period=row["period"],
+            score=row["score"],
+            overall=row["overall"],
+            praised=_topic_counts(row["praised"]),
+            complaints=_topic_counts(row["complaints"]),
+        )
+        analysis = Analysis(
+            figures,
+            row["summary"],
+            row["suggestion"],
+            row["summary_source"],
+            row["trigger"],
+            row["generated_at"],
+        )
+        return StoredSentiment(analysis, tuple((h["month"], h["score"]) for h in history))
+
+
+def _topic_counts(raw: str | None) -> tuple[TopicCount, ...]:
+    """Stored counts per topic. Anything unexpected is left out."""
+    try:
+        items = json.loads(raw) if raw else []
+    except ValueError:
+        return ()
+    return tuple(
+        TopicCount(item["topic"], item["mentions"])
+        for item in (items if isinstance(items, list) else [])
+        if isinstance(item, dict)
+        and isinstance(item.get("topic"), str)
+        and isinstance(item.get("mentions"), int)
+    )
 
 
 def _review(row: asyncpg.Record, draft: ReviewDraft | None = None) -> StoredReview:

@@ -613,15 +613,133 @@ Errores:
 - El borrador usa el mismo modelo que la demostración por captura. Con `FICHAITOR_FAKE_SCREENSHOT=true` devuelve respuestas de ejemplo, sin clave y sin coste. Sin esa variable y sin `FICHAITOR_GEMINI_API_KEY`, el borrador responde 503 y el resto funciona igual.
 - Con base de datos, la API encola y el worker ejecuta: hacen falta los dos servicios en marcha y el worker con `FICHAITOR_FAKE_GOOGLE=true`. Sin base de datos, la API lo resuelve en memoria y la acción sale `hecha` en la misma respuesta del 202.
 
+## Sentimiento del establecimiento (2026-11-12)
+
+Cómo ve la gente el negocio, a partir de las reseñas de la ficha elegida: una nota de 0 a 100 con su historia, los temas que más se elogian y los que más quejas reciben, un resumen y una sugerencia. Es un indicador propio del panel, aparte del diagnóstico y del resumen.
+
+La API no llama a Google ni al modelo en esta ruta: lee el análisis que el worker guardó. Por eso responde rápido y no tiene límite de uso. La fórmula, los temas y los disparadores están en [sentimiento.md](sentimiento.md).
+
+### `GET /api/v1/me/sentiment`
+
+Con sesión. Devuelve el análisis de la ficha elegida de esa cuenta. No lleva parámetros: nada de la petición elige la ficha.
+
+Respuesta 200:
+
+```json
+{
+  "status": "ok",
+  "based_on": 13,
+  "with_text": 9,
+  "period": "últimos 12 meses",
+  "overall": "positivo",
+  "score": 86,
+  "previous_score": 82,
+  "delta": 4,
+  "history": [{ "month": "2026-10", "score": 82 }, { "month": "2026-11", "score": 86 }],
+  "summary": "A tus clientes les gusta sobre todo el trato del personal. La espera es la queja que más se repite.",
+  "praised": [{ "topic": "Trato del personal", "mentions": 7 }],
+  "complaints": [{ "topic": "Tiempo de espera", "mentions": 2 }],
+  "suggestion": "Avisa a cada cliente del tiempo de espera previsto en cuanto llegue.",
+  "generated_at": "2026-11-12T10:00:00Z",
+  "next_update": "Se actualiza con 3 reseñas nuevas, con una de 1 o 2 estrellas o a los 30 días.",
+  "provisional": false
+}
+```
+
+| Campo | Tipo | Qué es |
+|---|---|---|
+| `status` | texto | `ok`, `pendiente`, `insuficiente` o `error`. Consulta [Estados del sentimiento](#estados-del-sentimiento) |
+| `based_on` | entero o `null` | Reseñas en las que se basa la nota. Con `insuficiente` vale `0` |
+| `with_text` | entero o `null` | De esas, cuántas tienen texto. Las demás solo tienen estrellas |
+| `period` | texto o `null` | Periodo del que salen los temas: `"últimos 12 meses"` o, si en ese periodo hay pocas reseñas con texto, `"todas las reseñas"`. Muéstralo tal cual |
+| `overall` | texto o `null` | `positivo`, `mixto` o `negativo`, según la nota |
+| `score` | entero o `null` | Nota de 0 a 100. La calcula el código, no el modelo |
+| `previous_score` | entero o `null` | Nota del mes anterior con análisis. `null` si no hay ninguno en los últimos 12 meses |
+| `delta` | entero o `null` | `score - previous_score`, en puntos. Puede ser negativo o `0`. `null` si no hay mes anterior |
+| `history` | lista | Una nota por mes, de más antiguo a más reciente, con `month` en formato `"AAAA-MM"`. Como máximo los últimos 12 meses, el actual incluido. Solo aparecen los meses en los que hubo análisis. Vacía con `pendiente`, `insuficiente` y `error` |
+| `summary` | texto o `null` | Dos frases como máximo. Texto sin formato, listo para mostrar |
+| `praised` | lista | Hasta 5 temas elogiados, de más a menos menciones: `topic` (etiqueta en español de una lista cerrada) y `mentions` (número de reseñas que lo mencionan; nunca supera `based_on`). Puede ir vacía |
+| `complaints` | lista | Lo mismo para los temas con quejas. Puede ir vacía |
+| `suggestion` | texto o `null` | Una acción concreta para el dueño. Texto sin formato |
+| `generated_at` | fecha y hora UTC, o `null` | Cuándo se hizo el análisis |
+| `next_update` | texto o `null` | Frase en español lista para mostrar: cuándo se vuelve a calcular |
+| `provisional` | booleano | `true` cuando hay menos de 5 reseñas con texto: la nota existe, pero se apoya en poco. Consulta [Análisis provisional](#análisis-provisional) |
+
+`status`, `based_on`, `overall`, `score`, `summary`, `praised`, `complaints`, `suggestion`, `generated_at` y `period` no cambian de nombre ni de tipo. `with_text`, `previous_score`, `delta`, `history`, `next_update` y `provisional` son añadidos del 2026-11-12.
+
+#### Estados del sentimiento
+
+| `status` | Qué significa | Qué trae | Qué hace la web |
+|---|---|---|---|
+| `ok` | Hay análisis. Basta con una reseña | Todos los campos. `praised`, `complaints`, `previous_score` y `delta` pueden ir vacíos o a `null` | Muestra el bloque. Si `provisional` es `true`, indícalo |
+| `pendiente` | Todavía no hay análisis: el worker no ha terminado la primera sincronización o el análisis que va detrás | Todo a `null`, listas vacías y `provisional: false` | Muestra "Analizando tus reseñas" y sondea |
+| `insuficiente` | La ficha no tiene ninguna reseña | `based_on: 0`, `with_text: 0`, `summary` y `suggestion` con un mensaje útil, `generated_at`, `next_update` y `provisional: true`. Sin nota: `score`, `overall` y `period` a `null`, y `history` vacía | Muestra `summary` y `suggestion`. No pintes nota ni tendencia |
+| `error` | No se ha podido leer la ficha (el resumen está en `error` o `needs_reconnect`) o el análisis falló y nunca hubo uno bueno | Todo a `null` y listas vacías | Muestra "No hemos podido analizar tus reseñas" con un botón para reintentar. Si el resumen pide reconectar, basta con ese aviso |
+
+Un análisis bueno no se sustituye por un error: si un recálculo falla, la ruta sigue devolviendo el último `ok`.
+
+#### Análisis provisional
+
+Con al menos una reseña ya hay nota. Las reseñas sin texto cuentan por sus estrellas: 4 y 5 positiva, 3 neutra, 1 y 2 negativa.
+
+Con `provisional: true`:
+
+- `score`, `overall` e `history` se calculan igual.
+- `praised` y `complaints` traen lo que haya. Pueden ir vacías.
+- `summary` es un texto fijo y honesto sobre la base, por ejemplo: "Basado en 3 valoraciones; aún hay pocas con texto para ver de qué habla la gente."
+- `suggestion` propone conseguir más reseñas con el enlace de la ficha.
+
+#### Sondeo
+
+- **Pide `GET /api/v1/me/sentiment` al entrar al panel**, también justo después de conectar con Google y elegir ficha, a la vez que el resumen. El primer análisis se lanza en cuanto termina la primera sincronización, sin esperas: lo normal es que llegue unos segundos después del resumen.
+- Con `pendiente`, vuelve a pedirlo **cada 3 segundos, 10 veces como máximo**, igual que el resumen.
+- Si tras 10 intentos sigue en `pendiente`, deja de preguntar y muestra "Estamos analizando tus reseñas. Vuelve en unos minutos", con un botón para reintentar.
+- Con `ok`, `insuficiente` y `error` no sondees. El análisis cambia, como mucho, una vez al día.
+- Pedir esta ruta mientras no hay análisis pide la sincronización con las mismas reglas que el resumen ([Cuándo se sincroniza](#cuándo-se-sincroniza)). Pedir las tres rutas a la vez no lanza tres.
+
+> **Nota:** Una ficha sincronizada antes del 2026-11-12 no tiene análisis. La primera petición a esta ruta pide una sincronización y responde `pendiente` hasta que el worker termina.
+
+#### Cuándo se vuelve a calcular
+
+El primer análisis no tiene tope. Después, como máximo uno cada 24 horas, con lo primero que ocurra:
+
+- Una reseña nueva de 1 o 2 estrellas.
+- 3 reseñas nuevas desde el último análisis.
+- 30 días desde el último análisis, si hay al menos una reseña nueva.
+
+Se comprueba al terminar cada sincronización de la ficha. `next_update` lo dice en una frase; si cambian los umbrales, cambia la frase. No la escribas a mano en la web.
+
+Errores:
+
+| Código | Cuándo |
+|---|---|
+| 401 | Sin sesión |
+| 409 | Aún no se ha elegido ficha, o Google ha dejado de listar la elegida. Lleva a la lista de fichas |
+
+Cada cuenta ve solo el sentimiento de su ficha elegida. Dos cuentas que administran la misma ficha de Google tienen análisis separados.
+
+### Lo que la web NO debe hacer con el sentimiento
+
+- No calcules la nota, los recuentos ni `delta` por tu cuenta. Muestra los que llegan.
+- No pintes como HTML `summary`, `suggestion`, `topic`, `period` ni `next_update`.
+- No guardes la respuesta en `localStorage` ni similares. Tenla en memoria mientras la pantalla está abierta.
+- No esperes textos de reseñas ni autores en esta ruta: no los trae.
+
+### Sin Google real ni modelo
+
+- Con `FICHAITOR_FAKE_GOOGLE=true` y `FICHAITOR_FAKE_SCREENSHOT=true`, el recorrido completo funciona con la ficha de demostración (13 reseñas, 10 con texto): clasificación, nota, temas, resumen e historia. Nada sale hacia Google ni hacia el modelo.
+- Sin `FICHAITOR_FAKE_SCREENSHOT` y sin `FICHAITOR_GEMINI_API_KEY`, el análisis se hace igual, solo con las estrellas: hay nota, pero `praised` y `complaints` van vacíos y los textos salen de reglas fijas.
+- Con base de datos, el análisis lo hace el worker: hacen falta los dos servicios en marcha, y el worker con esas mismas variables. Sin base de datos, la API lo resuelve en memoria al elegir la ficha.
+
 ## Pantallas mínimas para tener algo visible
 
 1. **Inicio** (`/`): diagnóstico público, resultado, lista de espera y botón "Conectar con Google".
-2. **App** (`/app`): lee `?google=`; sin sesión, invita a conectar; con sesión y sin ficha elegida, lista de fichas; con ficha elegida, panel con el diagnóstico y el resumen de esa ficha (los dos salen de la ficha conectada) y botón de salir. Desde el 2026-11-12, también la lista de reseñas, con el borrador y la publicación de la respuesta.
+2. **App** (`/app`): lee `?google=`; sin sesión, invita a conectar; con sesión y sin ficha elegida, lista de fichas; con ficha elegida, panel con el diagnóstico y el resumen de esa ficha (los dos salen de la ficha conectada) y botón de salir. Desde el 2026-11-12, también la lista de reseñas, con el borrador y la publicación de la respuesta, y el bloque de sentimiento del establecimiento.
 3. **Privacidad** (`/privacidad/`) y **condiciones** (`/condiciones-de-uso/`).
 
 ## Siguiente versión del contrato
 
-El resumen de la ficha y las reseñas con su respuesta ([Reseñas y respuestas](#reseñas-y-respuestas-2026-11-12)) ya existen. Lo siguiente son las fechas clave. Se añadirán aquí antes de implementarse.
+El resumen de la ficha, las reseñas con su respuesta ([Reseñas y respuestas](#reseñas-y-respuestas-2026-11-12)) y el sentimiento del establecimiento ([Sentimiento del establecimiento](#sentimiento-del-establecimiento-2026-11-12)) ya existen. Lo siguiente son las fechas clave. Se añadirán aquí antes de implementarse.
 
 ## Demostración por captura de reseñas (2026-11-11)
 

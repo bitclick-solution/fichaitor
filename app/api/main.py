@@ -17,8 +17,10 @@ from app.adapters.job_queue.memory import MemoryJobQueue
 from app.adapters.places.fake import FakePlaces
 from app.adapters.places.google import GooglePlaces
 from app.adapters.screenshot_reader.prompt import PROMPT_VERSION
+from app.adapters.sentiment_model.build import build_sentiment_model
 from app.adapters.store.memory import MemoryStore
 from app.adapters.store.postgres import PostgresStore
+from app.adapters.worker_store.memory import MemoryWorkerStore
 from app.api.diagnosis_out import DiagnosisResponse, to_response
 from app.api.google_oauth import build_router as build_google_router
 from app.api.me import build_router as build_me_router
@@ -32,12 +34,16 @@ from app.application.rate_limit import SlidingWindowLimiter
 from app.application.review_replies import ReviewReplies
 from app.config import Settings
 from app.domain.calendar import NATIONAL, Holiday
+from app.domain.jobs import Job
 from app.ports.google_oauth import GoogleOAuth
 from app.ports.job_queue import JobEnqueuer
 from app.ports.places import PlacesGateway, PlacesUnavailable
 from app.ports.reply_writer import ReplyWriter
 from app.ports.store import Store
 from app.screenshot_config import ScreenshotSettings
+from app.sentiment_config import SentimentSettings
+from app.worker.analyze_sentiment import KIND as SENTIMENT_KIND
+from app.worker.analyze_sentiment import AnalyzeSentiment
 
 log = logging.getLogger("fichaitor.api")
 
@@ -57,7 +63,17 @@ def _client_ip(request: Request, trust_proxy: bool) -> str:
 
 class DemoProfileQueue(DemoSyncQueue):
     """The demo queue, which also stores the facts of the demo profile, as the worker
-    does after a sync: without them the panel would have a summary and no diagnosis."""
+    does after a sync: without them the panel would have a summary and no diagnosis.
+    Then it runs the sentiment analysis in this process, as the worker would."""
+
+    def __init__(
+        self,
+        store: MemoryStore,
+        clock: Callable[[], float],
+        analyze: AnalyzeSentiment | None = None,
+    ) -> None:
+        super().__init__(store, clock)
+        self._analyze = analyze
 
     async def enqueue(self, kind: str, payload: dict, **options) -> bool:
         created = await super().enqueue(kind, payload, **options)
@@ -66,7 +82,26 @@ class DemoProfileQueue(DemoSyncQueue):
         if created and summary is not None and summary.facts is None:
             now = datetime.fromtimestamp(self._clock(), UTC)
             self._store.put_summary(*key, replace(summary, facts=demo_facts(now)))
+        if created and summary is not None and self._analyze is not None:
+            try:
+                await self._analyze(Job("demo", SENTIMENT_KIND, dict(payload)))
+            except Exception as exc:  # the demo must not break the route that enqueued
+                log.warning("análisis de sentimiento de ejemplo fallido: %s", type(exc).__name__)
         return created
+
+
+class _DemoBar:
+    """The in-memory worker store, for a demo profile whose category is "Bar"."""
+
+    def __init__(self, store: MemoryWorkerStore) -> None:
+        self._store = store
+
+    def __getattr__(self, name: str):
+        return getattr(self._store, name)
+
+    async def sentiment_context(self, google_sub: str, location: str):
+        self._store.categories.setdefault((google_sub, location), demo_facts().category)
+        return await self._store.sentiment_context(google_sub, location)
 
 
 def national_holidays() -> tuple[Holiday, ...]:
@@ -93,9 +128,12 @@ def create_app(
     holidays: Sequence[Holiday] | None = None,
     reply_writer: ReplyWriter | None = None,
     screenshot_settings: ScreenshotSettings | None = None,
+    sentiment_settings: SentimentSettings | None = None,
 ) -> FastAPI:
     settings = settings or Settings()
     screenshot_settings = screenshot_settings or ScreenshotSettings()
+    sentiment_settings = sentiment_settings or SentimentSettings()
+    sentiment_policy = sentiment_settings.policy()
     if holidays is None:
         holidays = national_holidays()
     if google is None:
@@ -136,7 +174,19 @@ def create_app(
         if isinstance(store, PostgresStore):
             jobs = store  # enqueues on the API's own pool; the worker process does the job
         elif isinstance(store, MemoryStore) and settings.fake_google:
-            jobs = DemoProfileQueue(store, clock)  # no database, no worker: demo data
+            # No database, no worker: demo data, and the sentiment analysis of the demo
+            # profile (a bar) run right here on the tables the store reads.
+            demo_worker = MemoryWorkerStore(tables=store.tables)
+            jobs = DemoProfileQueue(
+                store,
+                clock,
+                AnalyzeSentiment(
+                    _DemoBar(demo_worker),
+                    build_sentiment_model(screenshot_settings, sentiment_settings.timeout_seconds),
+                    sentiment_policy,
+                    lambda: datetime.fromtimestamp(clock(), UTC),
+                ),
+            )
         else:
             jobs = MemoryJobQueue()
     if isinstance(store, MemoryStore) and store.jobs is None:
@@ -231,6 +281,7 @@ def create_app(
             holidays=holidays,
             cookie_secure=settings.cookie_secure,
             clock=clock,
+            sentiment_policy=sentiment_policy,
         )
     )
 

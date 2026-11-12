@@ -1,9 +1,10 @@
 from collections.abc import Sequence
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import date, datetime
 from typing import Protocol
 
 from app.domain.profile_summary import ProfileFacts
+from app.domain.sentiment import Analysis
 from app.ports.google_oauth import ProfileLocation
 
 
@@ -114,6 +115,15 @@ class StoredAction:
     finished_at: datetime | None
 
 
+@dataclass(frozen=True)
+class StoredSentiment:
+    """The sentiment analysis of a profile as the API reads it, with its trend.
+    The classification of each review is never read by the API."""
+
+    analysis: Analysis
+    history: tuple[tuple[date, int], ...] = ()  # (first day of the month, score), oldest first
+
+
 class ReplyInProgress(Exception):
     """That review already has a reply on its way to Google."""
 
@@ -213,4 +223,14 @@ class Store(Protocol):
 
     async def get_action(self, account_id: str, action_id: str) -> StoredAction | None:
         """An action of that account. None if it is unknown or of another account."""
+        ...
+
+    async def sentiment(self, account_id: str, now: datetime) -> StoredSentiment | None:
+        """The sentiment analysis of the selected profile of that account, and of no
+        other, with the scores of the last twelve months. None if there is none yet or
+        no profile is selected.
+
+        Looked up like the summary: by the Google identity of that very account and its
+        own selected profile.
+        """
         ...
