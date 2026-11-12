@@ -19,17 +19,17 @@ Bitclick Solutions no ha designado Delegado de Protección de Datos porque no co
 
 ## 2. Qué datos tratamos y para qué
 
-Fichaitor está en pruebas. Hoy están activos la prueba con una captura, la lista de espera, la conexión con Google (con la respuesta a reseñas y el resumen de lo que dicen), y los registros del servidor. Las demás filas describen funciones previstas (avisos por correo, Telegram y WhatsApp, planes de pago, analítica) y se aplicarán cuando cada una se active.
+Fichaitor está en pruebas. Hoy están activos la prueba con una captura, la lista de espera, la conexión con Google (con la respuesta a reseñas y el resumen de lo que dicen), la baja con su correo de aviso, y los registros del servidor. Las demás filas describen funciones previstas (avisos por correo, Telegram y WhatsApp, planes de pago, analítica) y se aplicarán cuando cada una se active.
 
 | Finalidad | Datos | Base jurídica | Conservación |
 |---|---|---|---|
 | Prueba con una captura de pantalla de tus reseñas | La captura que subes y lo que se ve en ella: el nombre de tu negocio y las reseñas, con el nombre y la foto de perfil públicos de quienes las escribieron, su puntuación y su texto | Interés legítimo — art. 6.1.f: enseñarte cómo funciona Fichaitor con tus propias reseñas, que ya son públicas, sin guardar la imagen ni los datos de sus autores | Fichaitor procesa la imagen en memoria y no la guarda. No devuelve ni guarda los nombres ni las fotos de los autores |
 | Lista de espera: avisarte cuando Fichaitor esté disponible | Tu WhatsApp o tu correo, el canal por el que llegaste, y la fecha y la versión del texto de consentimiento que aceptaste | Consentimiento — art. 6.1.a | 12 meses desde el alta o hasta el lanzamiento, lo que ocurra antes, o hasta que te des de baja |
 | Crear y gestionar tu cuenta | Nombre, correo, teléfono vinculado, canal elegido (web, correo, Telegram o WhatsApp), plan y preferencias | Ejecución del contrato — art. 6.1.b | Mientras dure la cuenta |
-| Prestar el servicio sobre tu ficha de Google | Los datos obtenidos de las API de Google que se detallan en el apartado 3 | Ejecución del contrato — art. 6.1.b | Mientras tu ficha esté conectada. Tras desconectarla: 48 horas para restaurarla y, después, 30 días como máximo para el borrado; el registro de respuestas, 12 meses. Ver apartado 3 |
-| Conversar contigo y proponerte acciones | Los mensajes, audios y fotos que envías al asistente, y las propuestas y confirmaciones | Ejecución del contrato — art. 6.1.b | 90 días desde cada mensaje; después se borra |
+| Prestar el servicio sobre tu ficha de Google | Los datos obtenidos de las API de Google que se detallan en el apartado 3 | Ejecución del contrato — art. 6.1.b | Mientras tu ficha esté conectada. Tras desconectarla: 48 horas para restaurarla y, desde que la baja es efectiva, 30 días como máximo para el borrado; el registro de respuestas, 12 meses. Ver apartado 3 |
+| Conversar contigo y proponerte acciones | Los mensajes, audios y fotos que envías al asistente, y las propuestas y confirmaciones | Ejecución del contrato — art. 6.1.b | 90 días desde cada mensaje; después se borra `[REVISAR: los canales de mensajería aún no tienen baja ni borrado automático]` |
 | Cobro y facturación | Datos identificativos y de facturación. Los datos de la tarjeta los trata Stripe; Fichaitor no los ve ni los guarda | Ejecución del contrato — art. 6.1.b, y obligación legal — art. 6.1.c | Los plazos fiscales y mercantiles (hasta 6 años) |
-| Seguridad y registros del servidor | Dirección IP, fecha y hora, navegador, y las sesiones iniciadas | Interés legítimo en la seguridad del servicio — art. 6.1.f | Registros, 6 meses. Sesiones caducadas o cerradas, 30 días |
+| Seguridad y registros del servidor | Dirección IP, fecha y hora, navegador, y las sesiones iniciadas | Interés legítimo en la seguridad del servicio — art. 6.1.f | Registros, 6 meses `[REVISAR: el borrado de los registros a los 6 meses aún no está automatizado]`. Sesiones caducadas o cerradas, 30 días |
 | Analítica y medición de campañas | Los indicados en la Política de Cookies (Google Analytics y píxel de TikTok) | Consentimiento — art. 6.1.a | Los indicados en la Política de Cookies |
 
 No tratamos categorías especiales de datos del artículo 9 del RGPD ni datos de menores. Fichaitor está dirigido a empresas y profesionales.
@@ -78,20 +78,21 @@ El uso que Fichaitor hace de la información recibida de las API de Google, y su
 
 ### Cómo revocar el acceso y borrar los datos
 
-- **Desde Fichaitor:** en Ajustes, al final de tu panel, pulsa «Desconectar Google» o «Borrar mi cuenta». Para confirmarlo te enviamos un código de un solo uso al correo de tu cuenta: una sesión abierta en otro ordenador no basta.
-- **Desde Google:** en [myaccount.google.com/connections](https://myaccount.google.com/connections), elige Fichaitor y quita el acceso.
-- **Por correo:** escribe a soporte@fichaitor.es.
+- **Desde Fichaitor:** en Ajustes, al final de tu panel, pulsa «Desconectar Google» o «Borrar mi cuenta». Para confirmarlo te enviamos un código de un solo uso al correo de tu cuenta, válido 10 minutos: una sesión abierta en otro ordenador no basta.
+- **Desde Google:** en [myaccount.google.com/connections](https://myaccount.google.com/connections), elige Fichaitor y quita el acceso. Fichaitor deja de poder leer tu ficha en ese momento. `[REVISAR: hoy, retirar el acceso desde Google no pone en marcha el borrado. Hasta que lo haga, hay que decir que para borrar los datos se use «Desconectar Google» o el correo de soporte.]`
+- **Por correo:** escribe a soporte@fichaitor.es. `[REVISAR: aún no hay herramienta para atender estas bajas; definir el procedimiento interno antes de publicar.]`
 
-Al desconectar tu ficha o borrar tu cuenta:
+Al confirmar la baja desde Fichaitor:
 
-- Dejamos de leer tu ficha y de enviarte avisos en ese momento, y te lo comunicamos por correo.
-- Durante las 48 horas siguientes puedes restaurarla, desde tu panel o desde el enlace de ese correo. Si no has sido tú, basta un clic.
-- Pasadas las 48 horas, retiramos el acceso en Google y borramos, en un máximo de 30 días, todo lo obtenido de Google o derivado de ello: los tokens, los datos de la ficha, las reseñas, su clasificación, los resúmenes, el historial de notas y los borradores de respuesta.
-- El registro de las respuestas que confirmaste y se enviaron a Google se conserva 12 meses desde la baja y después se borra. Sirve para acreditar qué se publicó en tu nombre si hay una reclamación; la base es el interés legítimo en la defensa frente a reclamaciones — art. 6.1.f.
+- Dejamos de leer tu ficha y de enviarte avisos en ese momento, y te enviamos un correo con la fecha en que la baja será efectiva y un enlace para restaurarla.
+- Si borras la cuenta, además cerramos tu sesión en todos los dispositivos.
+- Durante las 48 horas siguientes puedes restaurarla, desde tu panel o desde el enlace del correo. Si no has sido tú, basta un clic. No se ha borrado nada.
 
-Si retiras el acceso directamente desde tu cuenta de Google, Fichaitor deja de poder leer tu ficha al momento y aplica los mismos plazos de borrado.
+Pasadas las 48 horas, la baja es efectiva:
 
-`[REVISAR antes de publicar: el propietario aprobó el 12 de noviembre de 2026 los plazos y el procedimiento de este apartado (código de un solo uso, aviso por correo, 48 horas para restaurar), pero el sistema todavía no lo cumple. No existen aún «Desconectar Google» ni «Borrar mi cuenta» en el servidor, no se revoca el token, no hay tarea de borrado y Fichaitor todavía no envía correos. No publicar hasta que el backend lo haya construido y verificado. Quien revise los textos debe confirmar la base jurídica del registro de respuestas y qué ocurre si el dueño retira el acceso desde Google sin pasar por Fichaitor.]`
+- Retiramos el acceso de Fichaitor a tu cuenta de Google.
+- En un máximo de 30 días desde que la baja es efectiva borramos todo lo obtenido de Google o derivado de ello: los tokens, los datos de la ficha, las reseñas, su clasificación, los resúmenes, el historial de notas y los borradores de respuesta.
+- El registro de las respuestas que confirmaste y se enviaron a Google se conserva 12 meses desde la baja y después se borra. Sirve para acreditar qué se publicó en tu nombre si hay una reclamación; la base es el interés legítimo en la defensa frente a reclamaciones — art. 6.1.f. `[REVISAR: base jurídica del registro de respuestas, a confirmar por quien revise los textos.]`
 
 ## 4. Datos de terceros en tu ficha
 
@@ -121,7 +122,7 @@ No vendemos ni cedemos datos a terceros, salvo obligación legal. Acceden a ello
 
 | Proveedor | Para qué | Qué datos ve | Dónde trata |
 |---|---|---|---|
-| IONOS Cloud S.L.U., Madre de Dios nº 21, 26004 Logroño (La Rioja), España | Alojamiento del servicio y de la base de datos, y buzón de correo de soporte | Todos los datos del servicio, los registros técnicos y los mensajes que envíes a soporte@fichaitor.es | España / Unión Europea |
+| IONOS Cloud S.L.U., Madre de Dios nº 21, 26004 Logroño (La Rioja), España | Alojamiento del servicio y de la base de datos, buzón de soporte y envío de los correos de Fichaitor (por ahora, los códigos y avisos de baja) | Todos los datos del servicio, los registros técnicos, los mensajes que envíes a soporte@fichaitor.es y los correos que te enviamos | España / Unión Europea |
 | Google Ireland Ltd. | API de Google Business Profile y de Google Places | Las consultas y los cambios que Fichaitor hace en tu ficha en tu nombre | Unión Europea y Estados Unidos |
 | Google (la entidad del grupo Google con la que está contratado el servicio), API de Gemini | Modelo de inteligencia artificial: lectura de la captura de reseñas, redacción de propuestas y comprensión de mensajes | Lo indicado en el apartado 5 | Unión Europea y terceros países, incluido Estados Unidos |
 
@@ -130,7 +131,6 @@ Los siguientes proveedores todavía no tratan ningún dato: lo harán cuando se 
 | Proveedor | Para qué | Qué datos verá | Dónde trata |
 |---|---|---|---|
 | WhatsApp Ireland Ltd. / Meta Platforms Ireland Ltd. | Envío y recepción de mensajes por WhatsApp (plan Pro WhatsApp) | Tu número de teléfono y el contenido de los mensajes | Unión Europea y Estados Unidos |
-| IONOS Cloud S.L.U. | Envío de avisos por correo | Tu dirección de correo y el contenido del mensaje | España / Unión Europea |
 | Stripe Payments Europe Ltd. | Cobro de los planes de pago | Datos de facturación y de pago | Unión Europea y Estados Unidos |
 | Google Ireland Ltd. | Google Analytics, solo si aceptas la categoría analítica | Identificador de cookie, páginas vistas y datos de navegación | Unión Europea y Estados Unidos |
 | TikTok Technology Ltd. | Píxel de TikTok, solo si aceptas la categoría de publicidad | Identificador de cookie y eventos de navegación | Unión Europea y terceros países |
@@ -164,7 +164,7 @@ De ti: de los formularios de este sitio, de tus mensajes al asistente y de la re
 
 ## 10. Seguridad
 
-Aplicamos las medidas técnicas y organizativas del artículo 32 del RGPD según el estado de la técnica y el riesgo del tratamiento: cifrado en tránsito, cifrado de los tokens de Google en reposo, control de acceso con credenciales individuales, separación de los datos de cada cliente, registro de accesos, copias de seguridad y revisión periódica de las medidas.
+Aplicamos las medidas técnicas y organizativas del artículo 32 del RGPD según el estado de la técnica y el riesgo del tratamiento: cifrado en tránsito, cifrado de los tokens de Google en reposo, control de acceso con credenciales individuales, separación de los datos de cada cliente, registro de accesos, copias de seguridad y revisión periódica de las medidas. `[REVISAR: indicar cuánto se conservan las copias de seguridad y que los datos borrados desaparecen de ellas al caducar.]`
 
 ## 11. Cambios en esta política
 

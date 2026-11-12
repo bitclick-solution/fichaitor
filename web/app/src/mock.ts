@@ -101,7 +101,11 @@ const json = (status: number, cuerpo: unknown) =>
 let llamadasResumen = 0;
 let llamadasDiagnostico = 0;
 
-const yo = (e: Estado) => ({ email: "dueno@example.com", locations: fichas(), selected_location_id: e.elegida, pending_deletion: e.baja ?? null });
+const yo = (e: Estado) => {
+  // Con la baja de la ficha efectiva, el backend responde sin fichas y con connected: false.
+  const desconectada = escenario() === "desconectada";
+  return { email: "dueno@example.com", locations: desconectada ? [] : fichas(), selected_location_id: desconectada ? null : e.elegida, pending_deletion: e.baja ?? null, connected: !desconectada };
+};
 
 export async function mockFetch(method: string, path: string, body: unknown): Promise<Response> {
   await new Promise((r) => setTimeout(r, 350));
@@ -109,6 +113,8 @@ export async function mockFetch(method: string, path: string, body: unknown): Pr
 
   // Restauración por el enlace del correo, sin sesión. Token válido en el simulador: «bueno»
   if (method === "POST" && path === "/api/v1/public/offboarding/restore") {
+    // «falla»: el servidor no responde; el enlace sigue valiendo y se ofrece reintentar.
+    if ((body as { token?: string }).token === "falla") return json(503, { detail: "El servicio no responde ahora mismo." });
     if ((body as { token?: string }).token !== "bueno") return json(410, { detail: "Ese enlace ya no sirve: se ha usado o ha caducado." });
     e.baja = null;
     e.sesion = true;
@@ -148,6 +154,7 @@ export async function mockFetch(method: string, path: string, body: unknown): Pr
   }
 
   // ── Baja con código de un solo uso (propuesta de contrato). Código válido en el simulador: 123456
+  if (method === "GET" && path === "/api/v1/me/offboarding/code") return json(200, { status: escenario() === "sin-correo" ? "fallido" : "enviado" });
   if (method === "POST" && path === "/api/v1/me/offboarding/code") {
     await new Promise((ok) => setTimeout(ok, 500));
     return json(202, { sent_to: "d***o@example.com", expires_in: 600 });

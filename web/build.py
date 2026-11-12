@@ -39,8 +39,28 @@ ICONS = [
     "apple-touch-icon.png",
     "icon-192.png",
     "icon-512.png",
+    "icon-maskable-512.png",
     "og-fichaitor.png",
 ]
+
+CABEZA_LEGAL = '''<meta name="description" content="{descripcion}">
+<meta property="og:title" content="{title} — Fichaitor">
+<meta property="og:description" content="{descripcion}">
+<meta property="og:url" content="https://fichaitor.es/{slug}/">
+<meta property="og:image" content="https://fichaitor.es/og-fichaitor.png">
+<meta property="og:locale" content="es_ES">
+<link rel="canonical" href="https://fichaitor.es/{slug}/">'''
+
+# Página no encontrada: la sirve nginx para cualquier ruta que no exista (error_page 404).
+# Rutas absolutas en todo, porque se muestra en cualquier dirección.
+NO_ENCONTRADA = '''<section class="no-hay">
+  <h1 class="cartel">Aquí no hay nada<span class="pt">.</span></h1>
+  <p class="lead">O el enlace está mal, o esta página ya no existe. Tu ficha sigue donde estaba.</p>
+  <div class="acc">
+    <a class="btn" href="/">Volver al inicio <span class="fl" aria-hidden="true">→</span></a>
+    <a class="btn sec" href="/app/">Entrar en el panel</a>
+  </div>
+</section>'''
 
 TEMPLATE = """<!doctype html>
 <html lang="es">
@@ -48,13 +68,7 @@ TEMPLATE = """<!doctype html>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>{title} — Fichaitor</title>
-<meta name="description" content="{descripcion}">
-<meta property="og:title" content="{title} — Fichaitor">
-<meta property="og:description" content="{descripcion}">
-<meta property="og:url" content="https://fichaitor.es/{slug}/">
-<meta property="og:image" content="https://fichaitor.es/og-fichaitor.png">
-<meta property="og:locale" content="es_ES">
-<link rel="canonical" href="https://fichaitor.es/{slug}/">
+{cabeza}
 <link rel="icon" href="/favicon.ico" sizes="48x48">
 <link rel="icon" href="/logo.svg" type="image/svg+xml">
 <link rel="apple-touch-icon" href="/apple-touch-icon.png">
@@ -72,9 +86,7 @@ TEMPLATE = """<!doctype html>
 </header>
 <main>
 <div class="caja">
-<article class="legal">
-{body}
-</article>
+{contenido}
 </div>
 </main>
 <footer class="pie">
@@ -122,11 +134,22 @@ def main() -> None:
         out = SITE / slug / "index.html"
         out.parent.mkdir(parents=True, exist_ok=True)
         out.write_text(
-            TEMPLATE.format(title=title, slug=slug, body=body, palabra=marca, descripcion=descripcion),
+            TEMPLATE.format(
+                title=title,
+                cabeza=CABEZA_LEGAL.format(title=title, slug=slug, descripcion=descripcion),
+                contenido=f'<article class="legal">\n{body}\n</article>',
+                palabra=marca,
+            ),
             encoding="utf-8",
             newline="\n",
         )
         print(f"ok  {out.relative_to(ROOT)}")
+    (SITE / "404.html").write_text(
+        TEMPLATE.format(title="Página no encontrada", cabeza='<meta name="robots" content="noindex">', contenido=NO_ENCONTRADA, palabra=marca),
+        encoding="utf-8",
+        newline="\n",
+    )
+    print("ok  web/site/404.html")
     for name in ICONS:
         shutil.copyfile(ROOT / "brand" / name, SITE / name)
     if pending:

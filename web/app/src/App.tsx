@@ -4,6 +4,7 @@ import { api, ApiError, OAUTH_START, type BajaPendiente, type Diagnosis, type Lo
 import { Ajustes, AvisoBaja, cuando } from "./Ajustes";
 import { Canales } from "./Canales";
 import { Indice } from "./Indice";
+import { Instalar } from "./Instalar";
 import { Tour } from "./Tour";
 import { Cuenta, Seccion, SelloEstrellas } from "./movimiento";
 import { Resumen } from "./Resumen";
@@ -19,10 +20,14 @@ type Vista =
   | { tipo: "panel"; me: Me; ficha: Location }
   // Baja programada: solo el aviso con la fecha y «Restaurar». No se piden datos (la API responde 409).
   | { tipo: "baja"; baja: BajaPendiente }
+  // La baja de la ficha ya es efectiva y la cuenta sigue: solo un estado vacío, sin pedir datos.
+  | { tipo: "desconectada"; me: Me }
   // Tras confirmar el borrado de la cuenta: las sesiones ya están cerradas.
   | { tipo: "despedida"; borrado: string }
   // Llegada desde el enlace del correo: /app?restaurar=<token>, sin sesión.
-  | { tipo: "restaurar"; estado: "enviando" | "ok" | "error"; mensaje?: string }
+  // «caducado»: el servidor dice que el enlace ya no vale (410). «fallo»: cualquier otro error; el enlace
+  // puede seguir valiendo y se ofrece reintentar.
+  | { tipo: "restaurar"; estado: "enviando" | "ok" | "caducado" | "fallo"; mensaje?: string | undefined }
   | { tipo: "error"; mensaje: string };
 
 /** Mensajes para la vuelta de Google: /app?google=... (contrato web-API). */
@@ -54,6 +59,7 @@ function leerVuelta(): { google: string | null; fichas: string | null; restaurar
 
 function vistaDe(me: Me, fichasPendientes: boolean): Vista {
   if (me.pending_deletion) return { tipo: "baja", baja: me.pending_deletion };
+  if (me.connected === false) return { tipo: "desconectada", me };
   if (me.locations.length === 0) return fichasPendientes ? { tipo: "pendiente" } : { tipo: "sin-fichas", email: me.email };
   const ficha = me.locations.find((l) => l.id === me.selected_location_id);
   return ficha ? { tipo: "panel", me, ficha } : { tipo: "elegir", me };
@@ -63,6 +69,8 @@ export function App() {
   const [vista, setVista] = useState<Vista>({ tipo: "cargando" });
   const vuelta = useRef<ReturnType<typeof leerVuelta> | null>(null);
   const restaurando = useRef(false);
+  // El token, solo en memoria mientras haga falta para reintentar: ni en la URL ni en localStorage.
+  const tokenRestaurar = useRef<string | null>(null);
 
   const cargar = useCallback(async () => {
     setVista({ tipo: "cargando" });
@@ -75,6 +83,24 @@ export function App() {
     }
   }, []);
 
+  const restaurar = useCallback(() => {
+    const token = tokenRestaurar.current;
+    if (!token) return;
+    setVista({ tipo: "restaurar", estado: "enviando" });
+    api
+      .restaurarConToken(token)
+      .then(() => {
+        tokenRestaurar.current = null;
+        setVista({ tipo: "restaurar", estado: "ok" });
+      })
+      .catch((e: unknown) => {
+        if (e instanceof ApiError && e.status === 410) {
+          tokenRestaurar.current = null;
+          setVista({ tipo: "restaurar", estado: "caducado" });
+        } else setVista({ tipo: "restaurar", estado: "fallo", mensaje: e instanceof Error ? e.message : undefined });
+      });
+  }, []);
+
   useEffect(() => {
     if (vuelta.current === null) vuelta.current = leerVuelta();
     // Si ya se está atendiendo un enlace de restauración, este efecto no hace nada más:
@@ -85,19 +111,14 @@ export function App() {
       // El token se usa una sola vez.
       restaurando.current = true;
       vuelta.current.restaurar = null;
-      setVista({ tipo: "restaurar", estado: "enviando" });
-      api
-        .restaurarConToken(token)
-        .then(() => setVista({ tipo: "restaurar", estado: "ok" }))
-        .catch((e: unknown) =>
-          setVista({ tipo: "restaurar", estado: "error", mensaje: e instanceof Error ? e.message : "Ese enlace ya no sirve." }),
-        );
+      tokenRestaurar.current = token;
+      restaurar();
       return;
     }
     const aviso = vuelta.current.google ? AVISOS[vuelta.current.google] : undefined;
     if (aviso) setVista({ tipo: "conectar", aviso });
     else void cargar();
-  }, [cargar]);
+  }, [cargar, restaurar]);
 
   const salir = useCallback(async () => {
     try {
@@ -141,6 +162,29 @@ export function App() {
             onSinSesion={() => setVista({ tipo: "conectar" })}
           />
         )}
+        {vista.tipo === "desconectada" && (
+          <section className="pantalla">
+            <h1 className="cartel">
+              Tu ficha está desconectada<Punto />
+            </h1>
+            <p className="lead">
+              Hemos revocado el acceso a tu cuenta de Google y lo obtenido de ella se borra en un máximo de 30 días. Si quieres volver a usar
+              Fichaitor, conecta de nuevo con Google.
+            </p>
+            <div className="acciones">
+              <a className="btn" href={OAUTH_START}>
+                Conectar con Google <Flecha />
+              </a>
+            </div>
+            <Ajustes
+              email={vista.me.email}
+              soloCuenta
+              onSinSesion={() => setVista({ tipo: "conectar" })}
+              onCambio={() => void cargar()}
+              onDespedida={(borrado) => setVista({ tipo: "despedida", borrado })}
+            />
+          </section>
+        )}
         {vista.tipo === "baja" && (
           <section className="pantalla">
             <AvisoBaja baja={vista.baja} onSinSesion={() => setVista({ tipo: "conectar" })} onCambio={() => void cargar()} />
@@ -175,12 +219,25 @@ export function App() {
             </div>
           </section>
         )}
-        {vista.tipo === "restaurar" && vista.estado === "error" && (
+        {vista.tipo === "restaurar" && vista.estado === "fallo" && (
+          <section className="pantalla">
+            <h1 className="cartel">
+              No hemos podido restaurarla<Punto />
+            </h1>
+            <p className="lead">{vista.mensaje ?? "Algo ha fallado por el camino."} El enlace sigue valiendo: prueba de nuevo.</p>
+            <div className="acciones">
+              <button className="btn" type="button" onClick={restaurar}>
+                Reintentar <Flecha />
+              </button>
+            </div>
+          </section>
+        )}
+        {vista.tipo === "restaurar" && vista.estado === "caducado" && (
           <section className="pantalla">
             <h1 className="cartel">
               Ese enlace ya no sirve<Punto />
             </h1>
-            <p className="lead">{vista.mensaje}</p>
+            <p className="lead">O ya se usó, o la baja ya no se puede deshacer.</p>
             <p>Si la baja sigue programada, puedes restaurarla desde tu panel. Si tienes dudas, escribe a soporte@fichaitor.es.</p>
             <div className="acciones">
               <button className="btn" type="button" onClick={() => void cargar()}>
@@ -561,7 +618,9 @@ function Panel({
 
       <Canales onSinSesion={onSinSesion} />
 
-      <Ajustes email={email} onSinSesion={onSinSesion} onCambio={onRecargar} onDespedida={onDespedida} />
+      <Instalar />
+
+      <Ajustes email={email} variasFichas={variasFichas} onSinSesion={onSinSesion} onCambio={onRecargar} onDespedida={onDespedida} />
 
       <Tour />
     </section>

@@ -255,7 +255,8 @@ html.lenis, html.lenis body { height: auto; }
 
 /* ───── Ajustes y baja ───── */
 .ajustes { padding-top: clamp(20px, 4vh, 36px); border-top: 2px solid var(--tinta); }
-.ajustes-lista { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); border: 2px solid var(--tinta); }
+/* Una columna por tarjeta, sean 2 (Ajustes) o 3 (Avisos) */
+.ajustes-lista { display: grid; grid-auto-flow: column; grid-auto-columns: minmax(0, 1fr); border: 2px solid var(--tinta); }
 .ajustes-lista > div { display: grid; gap: 10px; align-content: start; justify-items: start; padding: clamp(18px, 2.4vw, 28px); }
 .ajustes-lista > div + div { border-left: 2px solid var(--tinta); }
 .ajustes-lista .btn { margin-top: 6px; }
@@ -263,7 +264,7 @@ html.lenis, html.lenis body { height: auto; }
 .btn.peligro:hover { box-shadow: 0 0 0 var(--rojo-tinta); }
 .btn.peligro-lleno { background: var(--rojo-tinta); border-color: var(--rojo-tinta); color: var(--papel); box-shadow: 6px 6px 0 var(--tinta); }
 @media (max-width: 760px) {
-  .ajustes-lista { grid-template-columns: 1fr; }
+  .ajustes-lista { grid-auto-flow: row; grid-template-columns: 1fr; }
   .ajustes-lista > div + div { border-left: 0; border-top: 2px solid var(--tinta); }
 }
 
@@ -318,3 +319,6 @@ html.lenis, html.lenis body { height: auto; }
   .tour-foco { transition: none; }
   .tour-tarjeta { animation: none; }
 }
+
+/* «En tu móvil»: solo en móviles sin la app instalada */
+.movil { padding-top: clamp(20px, 4vh, 36px); border-top: 2px solid var(--tinta); }

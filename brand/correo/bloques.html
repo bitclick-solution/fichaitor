@@ -1,0 +1,33 @@
+<!--
+  Bloques del cuerpo de los correos. Cada bloque va entre una línea «== nombre ==» y la siguiente.
+  Se rellenan con string.Template (${variable}) y se concatenan en ${contenido} de base.html.
+  Todas las variables llegan ya escapadas con html.escape (que por defecto escapa también las comillas).
+  Guía: brand/correo/LEEME.md
+-->
+
+== parrafo ==
+<p style="margin:0 0 16px 0;font-family:Arial,Helvetica,sans-serif;font-size:16px;line-height:1.5;color:#0b0b0b;">${texto}</p>
+
+== codigo ==
+<table role="presentation" cellspacing="0" cellpadding="0" border="0" style="margin:8px 0 20px 0;">
+  <tr>
+    <td style="border:2px solid #0b0b0b;padding:14px 22px;font-family:'Archivo Black','Arial Black',Arial,Helvetica,sans-serif;font-size:34px;font-weight:900;letter-spacing:8px;color:#0b0b0b;">${codigo}</td>
+  </tr>
+</table>
+
+== boton ==
+<table role="presentation" cellspacing="0" cellpadding="0" border="0" style="margin:8px 0 20px 0;">
+  <tr>
+    <td style="background-color:#0b0b0b;border:2px solid #0b0b0b;">
+      <a href="${enlace}" style="display:inline-block;padding:16px 26px;font-family:Arial,Helvetica,sans-serif;font-size:17px;font-weight:bold;color:#f4efe6;text-decoration:none;">${etiqueta} &rarr;</a>
+    </td>
+  </tr>
+</table>
+<p style="margin:0 0 16px 0;font-family:Arial,Helvetica,sans-serif;font-size:13px;line-height:1.5;color:#55504a;">Si el botón no funciona, copia esta dirección en el navegador:<br><a href="${enlace}" style="color:#c4200f;word-break:break-all;">${enlace}</a></p>
+
+== aviso ==
+<table role="presentation" width="100%" cellspacing="0" cellpadding="0" border="0" style="margin:8px 0 16px 0;">
+  <tr>
+    <td style="border-left:4px solid #ff3b30;padding:4px 0 4px 14px;font-family:Arial,Helvetica,sans-serif;font-size:15px;line-height:1.5;font-weight:bold;color:#0b0b0b;">${texto}</td>
+  </tr>
+</table>

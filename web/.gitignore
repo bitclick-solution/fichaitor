@@ -3,6 +3,7 @@ app/dist/
 
 # Generados por web/build.py a partir de web/src, docs/legal y brand
 site/index.html
+site/404.html
 site/privacidad/
 site/condiciones-de-uso/
 site/logo.svg
@@ -11,4 +12,5 @@ site/favicon-32.png
 site/apple-touch-icon.png
 site/icon-192.png
 site/icon-512.png
+site/icon-maskable-512.png
 site/og-fichaitor.png

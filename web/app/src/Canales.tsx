@@ -155,6 +155,8 @@ function ModalVincular({
   const [estado, setEstado] = useState<Estado>({ n: "pidiendo" });
   const [quedan, setQuedan] = useState(0);
   const vivo = useRef(true);
+  // Los canales que ya había al abrir: fijos, para que un repintado del panel no reinicie el sondeo.
+  const previos = useRef(antes);
 
   const pedirCodigo = async () => {
     setEstado({ n: "pidiendo" });
@@ -197,9 +199,10 @@ function ModalVincular({
       if (parado || document.hidden || Date.now() >= caduca) return;
       try {
         const ahora = await api.canales();
-        if (!parado && ahora.some((c) => c.channel === canal && !antes.includes(c.id))) setEstado({ n: "hecho" });
-      } catch {
-        /* se reintenta en la siguiente vuelta */
+        if (!parado && ahora.some((c) => c.channel === canal && !previos.current.includes(c.id))) setEstado({ n: "hecho" });
+      } catch (e) {
+        if (!parado && e instanceof ApiError && e.status === 401) onSinSesion();
+        /* cualquier otro fallo: se reintenta en la siguiente vuelta */
       }
     };
     const comprobar = setInterval(() => void mirar(), 3000);
@@ -214,7 +217,8 @@ function ModalVincular({
       clearInterval(comprobar);
       document.removeEventListener("visibilitychange", alVolver);
     };
-  }, [estado, canal, antes]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [estado, canal]);
 
   const nombre = NOMBRE[canal];
   const titulo = estado.n === "hecho" ? `${nombre} conectado` : `Conectar ${nombre}`;

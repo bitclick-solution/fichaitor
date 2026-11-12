@@ -355,7 +355,7 @@ Decidido por el propietario el 2026-11-12.
 Reglas de los correos automáticos:
 
 - **Asunto:** qué pasa y qué hay que hacer, sin exclamaciones. «Tu código para desconectar Fichaitor», «Tu ficha se borrará el sábado 14».
-- **Cuerpo:** texto plano o HTML mínimo, tinta sobre papel, una sola acción. El código o el botón, arriba.
+- **Cuerpo:** HTML mínimo con su versión de texto plano, tinta sobre papel, una sola acción. El código o el botón, arriba. Plantillas y textos en `brand/correo/`.
 - **Lo que no llevan:** imágenes de seguimiento, publicidad ni más de un enlace de acción.
 - **Seguridad:** todo correo sobre una baja dice qué se pidió, cuándo, y cómo pararlo si no has sido tú.
 - Nunca se usa `avisos@` como dirección de contacto: no se lee.

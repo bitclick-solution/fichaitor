@@ -6,7 +6,7 @@ import { EVENTO_RECORRIDO } from "./Tour";
 
 // Ajustes del panel: desconectar Google y borrar la cuenta.
 //
-// PROPUESTA de interfaz y de contrato (2026-11-12), pendiente de que el backend la construya.
+// Contrato: docs/contrato-web-api.md (baja con código). Textos de «Lo que la web debe mostrar».
 // Reglas pedidas por el propietario:
 //  - La baja exige un código de un solo uso enviado al correo de la cuenta. Una sesión abierta
 //    en un ordenador ajeno no basta para borrar nada.
@@ -20,40 +20,60 @@ export function cuando(iso: string): string {
   return Number.isNaN(d.getTime()) ? "" : fechaHora.format(d);
 }
 
-const TEXTOS: Record<AlcanceBaja, { boton: string; titulo: string; que: string[]; confirmar: string; hecho: string }> = {
-  ficha: {
-    boton: "Desconectar Google",
-    titulo: "Desconectar tu ficha de Google",
-    que: [
-      "Fichaitor deja de leer tu ficha y de avisarte desde este momento.",
-      "Durante 48 horas puedes restaurarla, desde aquí o desde el correo que te enviamos.",
-      "Pasado ese plazo, se retira el acceso en Google y se borran tus reseñas guardadas, los resúmenes y el historial.",
-      "Lo que ya está publicado en tu ficha no cambia: sigue en Google.",
-    ],
-    confirmar: "Desconectar",
-    hecho: "Ficha desconectada",
-  },
-  cuenta: {
-    boton: "Borrar mi cuenta",
+type Textos = { titulo: string; tarjeta: string; que: string[]; confirmar: string; hecho: string };
+
+const BORRADO_30 =
+  "En un máximo de 30 días borraremos todo lo obtenido de Google: los datos de la ficha, las reseñas, su clasificación, los resúmenes, el historial de notas y los borradores de respuesta.";
+const REGISTRO_12 = "El registro de las respuestas que publicaste se conserva 12 meses.";
+const CAMBIAR_DE_IDEA = "Tienes 48 horas para cambiar de idea. Te enviaremos un correo con un enlace para restaurarla.";
+
+/** Textos de la baja. La desconexión afecta a todas las fichas de la cuenta de Google, no solo a la que se ve. */
+function textos(alcance: AlcanceBaja, variasFichas: boolean): Textos {
+  if (alcance === "ficha") {
+    const fichas = variasFichas ? "tus fichas de esta cuenta de Google" : "tu ficha";
+    return {
+      titulo: variasFichas ? "Desconectar tus fichas de Google" : "Desconectar tu ficha de Google",
+      tarjeta: `Dejamos de leer ${fichas}. Tienes 48 horas para cambiar de idea.`,
+      que: [
+        `Dejaremos de leer ${fichas} y de avisarte desde este momento.`,
+        "A las 48 horas revocaremos el acceso a tu cuenta de Google.",
+        BORRADO_30,
+        REGISTRO_12,
+        "Tu cuenta sigue existiendo y podrás volver a conectar.",
+        CAMBIAR_DE_IDEA,
+      ],
+      confirmar: "Desconectar",
+      hecho: "Desconexión en marcha",
+    };
+  }
+  return {
     titulo: "Borrar tu cuenta de Fichaitor",
+    tarjeta: "Tu cuenta queda borrada a las 48 horas. Hasta entonces puedes restaurarla.",
     que: [
-      "Se desconectan todas tus fichas y se cierra tu sesión en todos los dispositivos.",
-      "Durante 48 horas puedes restaurar la cuenta desde el correo que te enviamos.",
-      "Pasado ese plazo, se borran la cuenta y todos sus datos. No se puede deshacer.",
-      "Lo que ya está publicado en tus fichas no cambia: sigue en Google.",
+      "Dejaremos de leer tus fichas y de avisarte desde este momento.",
+      "Cerraremos tu sesión en todos tus dispositivos.",
+      "A las 48 horas revocaremos el acceso a tu cuenta de Google y tu cuenta quedará borrada.",
+      BORRADO_30,
+      REGISTRO_12,
+      CAMBIAR_DE_IDEA,
     ],
     confirmar: "Borrar mi cuenta",
-    hecho: "Cuenta en proceso de baja",
-  },
-};
+    hecho: "Baja en marcha",
+  };
+}
 
 export function Ajustes({
   email,
   onSinSesion,
   onCambio,
   onDespedida,
+  soloCuenta = false,
+  variasFichas = false,
 }: {
   email: string;
+  variasFichas?: boolean;
+  /** Sin ficha conectada solo queda borrar la cuenta. */
+  soloCuenta?: boolean;
   onSinSesion: () => void;
   onCambio: () => void;
   /** Al borrar la cuenta se cierran todas las sesiones: se va a la despedida, no al panel. */
@@ -65,22 +85,30 @@ export function Ajustes({
     <Seccion id="ajustes" className="ajustes">
       <h2 className="rotulo">Ajustes</h2>
       <p className="sec">
-        Has entrado como <strong>{email}</strong>.{" "}
-        <button className="enlace" type="button" onClick={() => dispatchEvent(new Event(EVENTO_RECORRIDO))}>
-          Ver el recorrido del panel
-        </button>
+        Has entrado como <strong>{email}</strong>.
+        {/* El recorrido solo existe dentro del panel; sin ficha conectada no hay nada que recorrer. */}
+        {!soloCuenta && (
+          <>
+            {" "}
+            <button className="enlace" type="button" onClick={() => dispatchEvent(new Event(EVENTO_RECORRIDO))}>
+              Ver el recorrido del panel
+            </button>
+          </>
+        )}
       </p>
       <div className="ajustes-lista">
-        <div>
-          <h3 className="rotulo">Desconectar Google</h3>
-          <p className="sec">Fichaitor deja de leer esta ficha. Tienes 48 horas para arrepentirte.</p>
-          <button className="btn sec" type="button" onClick={() => setAbierto("ficha")}>
-            Desconectar Google
-          </button>
-        </div>
+        {!soloCuenta && (
+          <div>
+            <h3 className="rotulo">Desconectar Google</h3>
+            <p className="sec">{textos("ficha", variasFichas).tarjeta}</p>
+            <button className="btn sec" type="button" onClick={() => setAbierto("ficha")}>
+              Desconectar Google
+            </button>
+          </div>
+        )}
         <div>
           <h3 className="rotulo">Borrar mi cuenta</h3>
-          <p className="sec">Se borran la cuenta y todos sus datos, pasadas 48 horas.</p>
+          <p className="sec">{textos("cuenta", variasFichas).tarjeta}</p>
           <button className="btn sec peligro" type="button" onClick={() => setAbierto("cuenta")}>
             Borrar mi cuenta
           </button>
@@ -90,6 +118,7 @@ export function Ajustes({
       {abierto && (
         <ModalBaja
           alcance={abierto}
+          variasFichas={variasFichas}
           onCerrar={() => setAbierto(null)}
           onSinSesion={onSinSesion}
           onDespedida={onDespedida}
@@ -116,6 +145,8 @@ export function AvisoBaja({ baja, onSinSesion, onCambio }: { baja: BajaPendiente
       onCambio();
     } catch (e) {
       if (e instanceof ApiError && e.status === 401) onSinSesion();
+      // 409: no había ninguna baja programada (por ejemplo, se restauró desde el correo).
+      else if (e instanceof ApiError && e.status === 409) onCambio();
       else setError(e instanceof Error ? e.message : "No hemos podido restaurarla.");
       setEnviando(false);
     }
@@ -124,9 +155,10 @@ export function AvisoBaja({ baja, onSinSesion, onCambio }: { baja: BajaPendiente
   return (
     <div className="aviso-baja" role="alert">
       <div>
-        <p className="rotulo">{baja.scope === "cuenta" ? "Tu cuenta está en proceso de baja" : "Esta ficha está desconectada"}</p>
+        <p className="rotulo">{baja.scope === "cuenta" ? "Tu cuenta está en proceso de baja" : "Desconexión de Google en marcha"}</p>
         <p>
-          Se borrará el {cuando(baja.delete_at)}. Hasta entonces puedes restaurarla y todo sigue como estaba.
+          {baja.scope === "cuenta" ? "Tu cuenta se borrará el " : "Revocaremos el acceso a tu cuenta de Google el "}
+          {cuando(baja.delete_at)}. Hasta entonces puedes restaurarla y todo sigue como estaba.
         </p>
         {error && <p className="error-linea">{error}</p>}
       </div>
@@ -138,31 +170,68 @@ export function AvisoBaja({ baja, onSinSesion, onCambio }: { baja: BajaPendiente
 }
 
 type Paso = { n: "explicar" } | { n: "codigo"; destino: string } | { n: "hecho"; borrado: string };
+type Envio = "pendiente" | "enviado" | "fallido" | "ninguno" | "tarda";
 
 function ModalBaja({
   alcance,
+  variasFichas,
   onCerrar,
   onHecho,
   onDespedida,
   onSinSesion,
 }: {
   alcance: AlcanceBaja;
+  variasFichas: boolean;
   onCerrar: () => void;
   onHecho: () => void;
   onDespedida: (borrado: string) => void;
   onSinSesion: () => void;
 }) {
-  const t = TEXTOS[alcance];
+  const t = textos(alcance, variasFichas);
   const [paso, setPaso] = useState<Paso>({ n: "explicar" });
   const [codigo, setCodigo] = useState("");
   const [enviando, setEnviando] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const campo = useRef<HTMLInputElement>(null);
+  // El POST responde antes de que salga el correo: se consulta su estado (cada 3 s, 30 s como máximo).
+  const [envio, setEnvio] = useState<Envio>("pendiente");
+  const [vuelta, setVuelta] = useState(0);
 
   const fallo = (e: unknown, porDefecto: string) => {
     if (e instanceof ApiError && e.status === 401) onSinSesion();
+    // 409: ya hay una baja programada. Se cierra y el panel muestra el aviso para restaurarla.
+    else if (e instanceof ApiError && e.status === 409) onHecho();
     else setError(e instanceof Error ? e.message : porDefecto);
   };
+
+  useEffect(() => {
+    if (paso.n !== "codigo") return;
+    let vivo = true;
+    let intentos = 0;
+    let reloj: ReturnType<typeof setTimeout> | undefined;
+    const mirar = async () => {
+      try {
+        const { status } = await api.estadoCodigoBaja();
+        if (!vivo) return;
+        if (status !== "pendiente") setEnvio(status);
+        else if (++intentos < 10) reloj = setTimeout(() => void mirar(), 3000);
+        // 30 s sin salir: no se sabe si llegará. Se deja de esperar y se ofrece pedir otro.
+        else setEnvio("tarda");
+      } catch (e) {
+        if (!vivo) return;
+        if (e instanceof ApiError && e.status === 401) onSinSesion();
+        // Sin respuesta no se sabe si ha salido: no se afirma que se haya enviado.
+        else setEnvio("tarda");
+      }
+    };
+    setEnvio("pendiente");
+    void mirar();
+    return () => {
+      vivo = false;
+      if (reloj) clearTimeout(reloj);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [paso.n, vuelta]);
 
   const pedirCodigo = async () => {
     setEnviando(true);
@@ -171,6 +240,7 @@ function ModalBaja({
       const r = await api.pedirCodigoBaja(alcance);
       setCodigo("");
       setPaso({ n: "codigo", destino: r.sent_to });
+      setVuelta((n) => n + 1);
       setTimeout(() => campo.current?.focus(), 0);
     } catch (e) {
       fallo(e, "No hemos podido enviarte el código.");
@@ -188,6 +258,8 @@ function ModalBaja({
       if (alcance === "cuenta") onDespedida(r.delete_at);
       else setPaso({ n: "hecho", borrado: r.delete_at });
     } catch (e) {
+      // 410 o 429: ese código ya no vale. Se borra el campo para pedir otro.
+      if (e instanceof ApiError && (e.status === 410 || e.status === 429)) setCodigo("");
       fallo(e, "No hemos podido confirmar la baja.");
     } finally {
       setEnviando(false);
@@ -229,9 +301,27 @@ function ModalBaja({
             if (completo && !enviando) void confirmar();
           }}
         >
-          <p>
-            Hemos enviado un código de 6 cifras a <strong>{paso.destino}</strong>. Caduca en 10 minutos y solo sirve para esta acción.
-          </p>
+          {envio === "pendiente" && (
+            <p className="cargando" role="status" aria-live="polite">
+              <span className="ojo" aria-hidden="true" />
+              Enviando el código a <strong>{paso.destino}</strong>…
+            </p>
+          )}
+          {envio === "enviado" && (
+            <p>
+              Hemos enviado un código de 6 cifras a <strong>{paso.destino}</strong>. Caduca en 10 minutos y solo sirve para esta acción.
+            </p>
+          )}
+          {envio === "tarda" && (
+            <p role="status">
+              Está tardando más de lo normal. Mira tu correo dentro de un momento, también en correo no deseado, o pide otro código.
+            </p>
+          )}
+          {(envio === "fallido" || envio === "ninguno") && (
+            <p className="aviso" role="alert">
+              {envio === "fallido" ? "No hemos podido enviarte el código." : "Ese código ya no está vigente."} Pide otro o escríbenos a soporte@fichaitor.es.
+            </p>
+          )}
           <label className="rotulo" htmlFor="codigo-baja">
             Código
           </label>
@@ -274,7 +364,7 @@ function ModalBaja({
 
       {paso.n === "hecho" && (
         <>
-          <p className="lead">Se borrará el {cuando(paso.borrado)}.</p>
+          <p className="lead">Revocaremos el acceso a tu cuenta de Google el {cuando(paso.borrado)}.</p>
           <p>Te hemos enviado un correo con el aviso y un enlace para restaurarla. Si no has sido tú, úsalo: basta un clic.</p>
           <div className="acciones">
             <button className="btn" type="button" onClick={onHecho}>

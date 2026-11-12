@@ -18,6 +18,7 @@ Notas internas. No se publican. Recogen de dónde sale cada afirmación delicada
 | 2026-11-12 | Baja: «Desconectar Google» y «Borrar mi cuenta» piden un código de un solo uso enviado al correo de la cuenta, avisan por correo y dejan 48 horas para restaurar; pasado ese plazo, se elimina. Motivo: que una sesión abierta en un ordenador ajeno no baste para borrar nada |
 | 2026-11-12 | Correos automáticos: remitente `avisos@fichaitor.es` (IONOS), nombre «Fichaitor», respuestas a `soporte@fichaitor.es`. Confirmado a través de la sesión de backend. En la política sigue como función prevista hasta que la baja esté construida |
 | 2026-11-12 | Mensajes del chat de Telegram y WhatsApp (propuestas enviadas y respuestas del dueño): 90 días. Aprobado por el propietario en la sesión de backend. Función prevista: el canal aún no está en producción |
+| 2026-11-12 | Según backend (commit 746d028), la baja está construida: código por correo, 48 horas para restaurar, revocación del acceso en Google al hacerse efectiva, borrado en 30 días desde entonces, registro de respuestas 12 meses, sesiones 30 días, lista de espera 12 meses. El correo sale de avisos@fichaitor.es por IONOS. Quedan marcas [REVISAR] en lo que aún no hace: borrar al retirar el acceso desde Google, bajas por correo, baja de los canales, registros a 6 meses, copias de seguridad y la base jurídica del registro de respuestas |
 | 2026-11-12 | Correo: también IONOS. Hoy aloja el buzón `soporte@fichaitor.es`; enviará los avisos por correo cuando esa función se active |
 
 ## Fuentes consultadas

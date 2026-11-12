@@ -459,3 +459,8 @@ article.legal a { font-weight: 600; }
 .sprite { position: absolute; }
 .est.llena { --v: 100%; }
 footer.pie.s { min-height: 0; }
+
+/* ───── Página no encontrada (404.html) ───── */
+.no-hay { padding: clamp(64px, 16vh, 160px) 0 clamp(80px, 16vh, 160px); }
+.no-hay h1 { font-size: var(--cartel-l); margin-bottom: clamp(20px, 4vh, 32px); }
+.no-hay .acc { display: flex; flex-wrap: wrap; gap: 20px; margin-top: clamp(32px, 5vh, 48px); }
