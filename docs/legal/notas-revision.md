@@ -17,6 +17,7 @@ Notas internas. No se publican. Recogen de dónde sale cada afirmación delicada
 | 2026-11-12 | Plazos de conservación aprobados: revocar el acceso en Google al desconectar; borrar en 30 días como máximo todo lo derivado de Google; registro de respuestas publicadas, 12 meses desde la baja; sesiones caducadas, 30 días; lista de espera, tope de 12 meses |
 | 2026-11-12 | Baja: «Desconectar Google» y «Borrar mi cuenta» piden un código de un solo uso enviado al correo de la cuenta, avisan por correo y dejan 48 horas para restaurar; pasado ese plazo, se elimina. Motivo: que una sesión abierta en un ordenador ajeno no baste para borrar nada |
 | 2026-11-12 | Correos automáticos: remitente `avisos@fichaitor.es` (IONOS), nombre «Fichaitor», respuestas a `soporte@fichaitor.es`. Confirmado a través de la sesión de backend. En la política sigue como función prevista hasta que la baja esté construida |
+| 2026-11-12 | Mensajes del chat de Telegram y WhatsApp (propuestas enviadas y respuestas del dueño): 90 días. Aprobado por el propietario en la sesión de backend. Función prevista: el canal aún no está en producción |
 | 2026-11-12 | Correo: también IONOS. Hoy aloja el buzón `soporte@fichaitor.es`; enviará los avisos por correo cuando esa función se active |
 
 ## Fuentes consultadas
