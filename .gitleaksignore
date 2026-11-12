@@ -1,0 +1,6 @@
+# Falsos positivos de la regla generic-api-key. No son secretos:
+# - docs/canales.md: marcador de posición "<token de BotFather>" en un ejemplo de .env.
+# - tests/test_conversation_service.py: claves del catálogo de textos ("hours.clarify_1").
+09a7a5492200f42f6b43fa98172bedb044a0d03e:docs/canales.md:generic-api-key:221
+09a7a5492200f42f6b43fa98172bedb044a0d03e:tests/test_conversation_service.py:generic-api-key:810
+09a7a5492200f42f6b43fa98172bedb044a0d03e:tests/test_conversation_service.py:generic-api-key:812

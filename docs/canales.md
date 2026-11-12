@@ -335,7 +335,7 @@ channel = TelegramChannel(settings.telegram_bot_token.get_secret_value(), http_c
 service = ConversationService(
     PostgresConversationStore(pool),
     {"telegram": channel},
-    ReviewReplyActions(store),          # paso 7
+    ReviewReplyActions(store),  # paso 7
     settings.service_config(),
     clock=lambda: datetime.now(UTC),
 )
@@ -383,7 +383,7 @@ class ReviewReplyActions:
 
     async def create(self, request: ActionRequest) -> ActionReceipt:
         if request.type != "reply_review":
-            raise ActionRejected(REJECT_UNAVAILABLE)   # set_special_hours: sin ejecutor aún
+            raise ActionRejected(REJECT_UNAVAILABLE)  # set_special_hours: sin ejecutor aún
         try:
             text = check_owner_reply(request.payload["text"])
         except InvalidReplyText:
