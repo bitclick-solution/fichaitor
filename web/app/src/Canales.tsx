@@ -5,9 +5,10 @@ import { Modal } from "./Ajustes";
 import { Seccion } from "./movimiento";
 
 // «Avisos»: los canales por los que Fichaitor escribe al dueño (Telegram y, más adelante, WhatsApp).
-// Contrato: el previsto en docs/canales.md, «Paso 3. Rutas de la API». La vinculación es la misma en
-// los dos canales: un código de 6 cifras de un solo uso, válido 10 minutos, que el dueño envía desde
-// su propio chat. Enviarlo desde su teléfono demuestra que es suyo.
+// Contrato: docs/contrato-web-api.md, «Canales de mensajería». La vinculación es la misma en los dos
+// canales: un código de un solo uso, válido 10 minutos, que el dueño canjea desde su propio chat.
+// El enlace (`telegram_url`) lleva un testigo largo, no las 6 cifras: se usa tal cual para el botón y el
+// QR, y las cifras solo se muestran para teclearlas. Nada de esto se guarda en el navegador.
 
 const NOMBRE: Record<Canal["channel"], string> = { telegram: "Telegram", whatsapp: "WhatsApp", email: "Correo" };
 const fecha = new Intl.DateTimeFormat("es-ES", { day: "numeric", month: "long", year: "numeric" });
@@ -22,6 +23,8 @@ export function Canales({ onSinSesion }: { onSinSesion: () => void }) {
   const [error, setError] = useState<string | null>(null);
   const [vinculando, setVinculando] = useState<"telegram" | "whatsapp" | null>(null);
   const [quitando, setQuitando] = useState<string | null>(null);
+  // Desconectar pide confirmación: desde ese momento el bot deja de escribir a ese chat.
+  const [confirmando, setConfirmando] = useState<Canal | null>(null);
 
   const cargar = async () => {
     try {
@@ -44,12 +47,18 @@ export function Canales({ onSinSesion }: { onSinSesion: () => void }) {
     setQuitando(c.id);
     try {
       await api.desvincularCanal(c.id);
+      setConfirmando(null);
       await cargar();
     } catch (e) {
       if (e instanceof ApiError && e.status === 401) onSinSesion();
       // 404: ya no estaba conectado (o se quitó desde otro sitio). Basta con refrescar la lista.
-      else if (e instanceof ApiError && e.status === 404) await cargar();
-      else setError(e instanceof Error ? e.message : "No hemos podido desconectarlo.");
+      else if (e instanceof ApiError && e.status === 404) {
+        setConfirmando(null);
+        await cargar();
+      } else {
+        setConfirmando(null);
+        setError(e instanceof Error ? e.message : "No hemos podido desconectarlo.");
+      }
     } finally {
       setQuitando(null);
     }
@@ -80,8 +89,8 @@ export function Canales({ onSinSesion }: { onSinSesion: () => void }) {
                   {c.address} · conectado el {hace(c.linked_at)}
                 </p>
               </div>
-              <button className="enlace" type="button" disabled={quitando === c.id} onClick={() => void quitar(c)}>
-                {quitando === c.id ? "Desconectando…" : "Desconectar"}
+              <button className="enlace" type="button" onClick={() => setConfirmando(c)}>
+                Desconectar
               </button>
             </li>
           ))}
@@ -104,6 +113,22 @@ export function Canales({ onSinSesion }: { onSinSesion: () => void }) {
           </button>
         </div>
       </div>
+
+      {confirmando && (
+        <Modal titulo={`Desconectar ${NOMBRE[confirmando.channel]}`} onCerrar={() => setConfirmando(null)} bloqueado={quitando !== null}>
+          <p>
+            Dejarás de recibir avisos en este chat (<strong>{confirmando.address}</strong>). Puedes volver a conectarlo cuando quieras.
+          </p>
+          <div className="acciones">
+            <button className="btn" type="button" disabled={quitando !== null} onClick={() => void quitar(confirmando)}>
+              {quitando ? "Desconectando…" : "Desconectar"}
+            </button>
+            <button className="btn sec" type="button" disabled={quitando !== null} onClick={() => setConfirmando(null)}>
+              Cancelar
+            </button>
+          </div>
+        </Modal>
+      )}
 
       {vinculando && (
         <ModalVincular

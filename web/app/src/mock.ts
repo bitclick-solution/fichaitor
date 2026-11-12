@@ -138,7 +138,8 @@ export async function mockFetch(method: string, path: string, body: unknown): Pr
     return json(200, {
       code: "482913",
       expires_at: new Date(Date.now() + 10 * 60 * 1000).toISOString(),
-      telegram_url: "https://t.me/FichaitorBot?start=482913",
+      // Como el backend: el enlace lleva un testigo de 43 caracteres, nunca las 6 cifras.
+      telegram_url: "https://t.me/FichaitorBot?start=Qm3v0X5k1y2Zt8pW-aR4sLd9_fHj6cNe7uBoVgIiT0Q",
       whatsapp_url: null,
     });
   }

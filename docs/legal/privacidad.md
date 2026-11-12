@@ -19,7 +19,7 @@ Bitclick Solutions no ha designado Delegado de Protección de Datos porque no co
 
 ## 2. Qué datos tratamos y para qué
 
-Fichaitor está en pruebas. Hoy están activos la prueba con una captura, la lista de espera, la conexión con Google (con la respuesta a reseñas y el resumen de lo que dicen), la baja con su correo de aviso, y los registros del servidor. Las demás filas describen funciones previstas (avisos por correo, Telegram y WhatsApp, planes de pago, analítica) y se aplicarán cuando cada una se active.
+Fichaitor está en pruebas. Hoy están activos la prueba con una captura, la lista de espera, la conexión con Google (con la respuesta a reseñas y el resumen de lo que dicen), la baja con su correo de aviso, los avisos por Telegram, y los registros del servidor. Las demás filas describen funciones previstas (avisos por correo y WhatsApp, planes de pago, analítica) y se aplicarán cuando cada una se active.
 
 | Finalidad | Datos | Base jurídica | Conservación |
 |---|---|---|---|
@@ -27,7 +27,7 @@ Fichaitor está en pruebas. Hoy están activos la prueba con una captura, la lis
 | Lista de espera: avisarte cuando Fichaitor esté disponible | Tu WhatsApp o tu correo; si probaste el diagnóstico antes de apuntarte, el negocio que buscaste (el texto que escribiste y el identificador de la ficha en Google) y la nota que obtuvo; el canal por el que llegaste, y la fecha y la versión del texto de consentimiento que aceptaste. Antes del primer aviso te pediremos que confirmes que el contacto es tuyo. Guardamos el negocio y la nota para que el aviso se refiera a tu ficha, por ejemplo para decirte qué mejorar primero. Con ellos solo contamos, en totales sin nombres, qué tipos de negocio esperan Fichaitor. No los usamos para nada más ni los cruzamos con otros datos, y se borran junto con el contacto | Consentimiento — art. 6.1.a | 12 meses desde el alta o hasta el lanzamiento, lo que ocurra antes, o hasta que te des de baja |
 | Crear y gestionar tu cuenta | Nombre, correo, teléfono vinculado, canal elegido (web, correo, Telegram o WhatsApp), plan y preferencias | Ejecución del contrato — art. 6.1.b | Mientras dure la cuenta |
 | Prestar el servicio sobre tu ficha de Google | Los datos obtenidos de las API de Google que se detallan en el apartado 3 | Ejecución del contrato — art. 6.1.b | Mientras tu ficha esté conectada. Tras desconectarla: 48 horas para restaurarla y, desde que la baja es efectiva, 30 días como máximo para el borrado; el registro de respuestas, 12 meses. Ver apartado 3 |
-| Conversar contigo y proponerte acciones | Los mensajes, audios y fotos que envías al asistente, y las propuestas y confirmaciones | Ejecución del contrato — art. 6.1.b | 90 días desde cada mensaje; después se borra `[REVISAR: los canales de mensajería aún no tienen baja ni borrado automático]` |
+| Conversar contigo y proponerte acciones (hoy, por Telegram) | El chat que vinculas (su identificador; en tu panel solo ves los últimos dígitos), los mensajes que intercambias con Fichaitor, incluidos el texto de las reseñas que te enviamos y los borradores de respuesta, y las propuestas que apruebas o descartas | Ejecución del contrato — art. 6.1.b | Los mensajes y las propuestas terminadas, 90 días; el chat, mientras esté vinculado y 90 días después de desvincularlo. Con la baja efectiva se borran los mensajes y las propuestas y, si la baja es de la cuenta, también los chats vinculados |
 | Cobro y facturación | Datos identificativos y de facturación. Los datos de la tarjeta los trata Stripe; Fichaitor no los ve ni los guarda | Ejecución del contrato — art. 6.1.b, y obligación legal — art. 6.1.c | Los plazos fiscales y mercantiles (hasta 6 años) |
 | Seguridad y registros del servidor | Dirección IP, fecha y hora, navegador, y las sesiones iniciadas | Interés legítimo en la seguridad del servicio — art. 6.1.f | Registros, 6 meses `[REVISAR: el borrado de los registros a los 6 meses aún no está automatizado]`. Sesiones caducadas o cerradas, 30 días |
 | Analítica y medición de campañas | Los indicados en la Política de Cookies (Google Analytics y píxel de TikTok) | Consentimiento — art. 6.1.a | Los indicados en la Política de Cookies |
@@ -87,7 +87,7 @@ El uso que Fichaitor hace de la información recibida de las API de Google, y su
 Al confirmar la baja desde Fichaitor:
 
 - Dejamos de leer tu ficha y de enviarte avisos en ese momento, y te enviamos un correo con la fecha en que la baja será efectiva y un enlace para restaurarla.
-- Si borras la cuenta, además cerramos tu sesión en todos los dispositivos.
+- Si borras la cuenta, además cerramos tu sesión en todos los dispositivos y desvinculamos tus chats de Telegram.
 - Durante las 48 horas siguientes puedes restaurarla, desde tu panel o desde el enlace del correo. Si no has sido tú, basta un clic. No se ha borrado nada.
 
 Pasadas las 48 horas, la baja es efectiva:
@@ -98,7 +98,7 @@ Pasadas las 48 horas, la baja es efectiva:
 
 ## 4. Datos de terceros en tu ficha
 
-Las reseñas pueden incluir datos personales de quienes las escriben: su texto puede identificarlos, aunque Fichaitor no guarde su nombre ni su foto. Respecto de esos datos, tú eres el responsable del tratamiento como titular del negocio y Fichaitor actúa como encargado: los trata solo siguiendo tus instrucciones y para prestarte el servicio, conforme al artículo 28 del RGPD y a las Condiciones de uso.
+Las reseñas pueden incluir datos personales de quienes las escriben: su texto puede identificarlos, aunque Fichaitor no guarde su nombre ni su foto. Respecto de esos datos, tú eres el responsable del tratamiento como titular del negocio y Fichaitor actúa como encargado: los trata solo siguiendo tus instrucciones y para prestarte el servicio, conforme al artículo 28 del RGPD y a las Condiciones de uso. Si conectas Telegram, te enviamos ahí el texto de las reseñas porque así lo indicas tú al vincular el chat.
 
 ## 5. Inteligencia artificial
 
@@ -137,7 +137,7 @@ Los siguientes proveedores todavía no tratan ningún dato: lo harán cuando se 
 | Google Ireland Ltd. | Google Analytics, solo si aceptas la categoría analítica | Identificador de cookie, páginas vistas y datos de navegación | Unión Europea y Estados Unidos |
 | TikTok Technology Ltd. | Píxel de TikTok, solo si aceptas la categoría de publicidad | Identificador de cookie y eventos de navegación | Unión Europea y terceros países |
 
-Si eliges Telegram como canal, los mensajes pasan por Telegram, que trata tus datos como responsable independiente según su propia política de privacidad.
+Si eliges Telegram como canal, los mensajes entre Fichaitor y tú, incluido el texto de las reseñas y los borradores de respuesta, pasan por Telegram (Telegram FZ-LLC y Telegram Messenger Inc.). Telegram los trata como responsable independiente, según su propia política de privacidad, y fuera del Espacio Económico Europeo. Puedes desconectar el chat cuando quieras desde «Avisos», en tu panel. `[REVISAR: transferencia internacional al usar Telegram (entidades fuera del EEE que no actúan como encargado de Fichaitor), entidades exactas y si basta con informar de ello; necesita revisión profesional.]`
 
 ## 7. Transferencias internacionales
 
