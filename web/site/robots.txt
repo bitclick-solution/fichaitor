@@ -1,0 +1,7 @@
+# Fichaitor — https://fichaitor.es
+# /app no se bloquea a propósito: lleva la etiqueta noindex, y si se bloqueara aquí,
+# los buscadores no podrían leerla y podrían indexar la dirección sin contenido.
+User-agent: *
+Disallow: /api/
+
+Sitemap: https://fichaitor.es/sitemap.xml

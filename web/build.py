@@ -21,8 +21,16 @@ ROOT = Path(__file__).resolve().parent.parent
 SITE = ROOT / "web" / "site"
 
 PAGES = {
-    "privacidad": ("privacidad.md", "Política de Privacidad"),
-    "condiciones-de-uso": ("condiciones-de-uso.md", "Condiciones de uso"),
+    "privacidad": (
+        "privacidad.md",
+        "Política de Privacidad",
+        "Qué datos trata Fichaitor, para qué, con qué proveedores y cómo ejercer tus derechos o desconectar tu ficha de Google.",
+    ),
+    "condiciones-de-uso": (
+        "condiciones-de-uso.md",
+        "Condiciones de uso",
+        "Condiciones del servicio Fichaitor para empresas y autónomos: planes, renovación, baja, responsabilidades y uso aceptable.",
+    ),
 }
 ICONS = [
     "logo.svg",
@@ -31,6 +39,7 @@ ICONS = [
     "apple-touch-icon.png",
     "icon-192.png",
     "icon-512.png",
+    "og-fichaitor.png",
 ]
 
 TEMPLATE = """<!doctype html>
@@ -39,6 +48,12 @@ TEMPLATE = """<!doctype html>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>{title} — Fichaitor</title>
+<meta name="description" content="{descripcion}">
+<meta property="og:title" content="{title} — Fichaitor">
+<meta property="og:description" content="{descripcion}">
+<meta property="og:url" content="https://fichaitor.es/{slug}/">
+<meta property="og:image" content="https://fichaitor.es/og-fichaitor.png">
+<meta property="og:locale" content="es_ES">
 <link rel="canonical" href="https://fichaitor.es/{slug}/">
 <link rel="icon" href="/favicon.ico" sizes="48x48">
 <link rel="icon" href="/logo.svg" type="image/svg+xml">
@@ -98,7 +113,7 @@ def main() -> None:
     (SITE / "index.html").write_text(portada, encoding="utf-8", newline="\n")
     print("ok  web/site/index.html")
     pending = []
-    for slug, (source, title) in PAGES.items():
+    for slug, (source, title, descripcion) in PAGES.items():
         text = (ROOT / "docs" / "legal" / source).read_text(encoding="utf-8")
         text = re.sub(r"^> \*\*BORRADOR.*?\n\n", "", text, count=1, flags=re.M | re.S)
         if "[PENDIENTE" in text or "[REVISAR" in text:
@@ -107,7 +122,7 @@ def main() -> None:
         out = SITE / slug / "index.html"
         out.parent.mkdir(parents=True, exist_ok=True)
         out.write_text(
-            TEMPLATE.format(title=title, slug=slug, body=body, palabra=marca),
+            TEMPLATE.format(title=title, slug=slug, body=body, palabra=marca, descripcion=descripcion),
             encoding="utf-8",
             newline="\n",
         )
