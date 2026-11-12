@@ -737,7 +737,7 @@ Errores, todos con `detail` en español listo para mostrar, salvo el 422 de un c
 
 ### `GET /api/v1/me/actions/{id}`
 
-Estado de una acción de esa cuenta. Respuesta 200:
+Estado de una acción de esa cuenta. Desde las fechas clave hay dos tipos: `reply_review` y `set_special_hours` (un cambio de horario de un día; entonces `review_id` es `null` y `message` habla del horario). Respuesta 200:
 
 ```json
 {
@@ -1016,6 +1016,102 @@ Pide confirmación antes ("Dejarás de recibir avisos en este chat").
 ### Sin Telegram real
 
 En desarrollo, sin token del bot, `POST /api/v1/channels/link-code` y las dos rutas de canales funcionan igual: el código se genera y se guarda, pero nadie lo canjea. Para probarlo de punta a punta hace falta un bot de pruebas y el proceso de la conversación (`docs/canales.md`, "Probarlo en local con el bot real").
+
+## Fechas clave (2026-11-12)
+
+Con antelación, Fichaitor pregunta al dueño si abre un festivo (o Nochebuena y Nochevieja) y con qué horario. La misma pregunta llega por Telegram y aparece en el panel; se responde en uno de los dos sitios y el otro la ve resuelta. Cuando el dueño confirma, el worker aplica el horario especial de ese día en Google y no toca los demás días. Cómo se eligen las fechas: `docs/calendario.md`.
+
+Las tres rutas trabajan sobre la ficha elegida de la cuenta de la sesión. Las de escritura llevan la cabecera `X-Requested-With: fichaitor` (403 sin ella). Todas responden 401 sin sesión, 409 durante una baja programada y 409 si no hay ficha elegida. Todo `detail` de error es un texto en español listo para mostrar.
+
+### `GET /api/v1/me/key-dates`
+
+Las fechas pendientes de respuesta, la más próxima primero. Lista vacía si no hay ninguna. Con `?filter=all`, también las ya respondidas, descartadas o caducadas desde hoy en adelante (para el historial de la tarjeta).
+
+```json
+{
+  "dates": [
+    {
+      "id": "prop_8f2c1a9b0d3e4f56",
+      "date": "2026-12-08",
+      "name": "Inmaculada Concepción",
+      "regular_hours": [
+        { "open": "09:00", "close": "14:00" },
+        { "open": "17:00", "close": "20:00" }
+      ],
+      "date_text": "martes 8 de diciembre",
+      "kind": "holiday",
+      "status": "pendiente",
+      "answerable": true,
+      "expires_at": "2026-12-07T23:00:00Z",
+      "answer": null,
+      "action": null
+    }
+  ]
+}
+```
+
+| Campo | Qué es |
+|---|---|
+| `id`, `date`, `name` | La forma acordada de la tarjeta. `name` va listo para mostrar: el nombre del festivo, "Nochebuena" o "Nochevieja" |
+| `regular_hours` | El horario normal de ese día de la semana, tal como lo tenía la ficha en Google en la última sincronización. Para la opción «Horario normal». `null` si la ficha no tiene horario normal (o aún no se ha leído); `[]` si ese día de la semana la ficha cierra. Una franja que acaba al día siguiente sale con el cierre menor que la apertura (`{"open": "20:00", "close": "02:00"}`) |
+| `date_text` | La fecha en palabras, como la escribe el agente |
+| `kind` | `holiday` (festivo) o `season` (Nochebuena, Nochevieja) |
+| `status` | `pendiente`, `en_curso` (confirmada y enviándose), `aplicada`, `fallida`, `descartada` o `caducada` |
+| `answerable` | Si todavía se puede responder. En `filter=pending` siempre es `true` |
+| `expires_at` | Cuándo deja de recordarse por Telegram (00:00 del día, hora peninsular). El mismo día todavía se puede responder desde el panel |
+| `answer` | Lo que se confirmó: `{"kind": "closed" \| "regular" \| "custom", "ranges": [...], "text": "de 10:00 a 14:00"}`, o `null` |
+| `action` | El envío a Google: `{"id", "status", "message", "error", "confirmed_at", "finished_at"}`, con los mismos `status` que `GET /api/v1/me/actions/{id}`, o `null`. `message` va listo para mostrar |
+
+Los campos a partir de `date_text` son añadidos a la forma acordada; la tarjeta puede ignorarlos.
+
+### `POST /api/v1/me/key-dates/{id}/answer`
+
+La pulsación de «Confirmar» en el panel. **Es la confirmación del dueño**: registra la confirmación y crea la acción que el worker envía a Google. No hay un segundo paso.
+
+```json
+{ "kind": "closed" }
+{ "kind": "regular" }
+{ "kind": "custom", "ranges": [{ "open": "10:00", "close": "14:00" }, { "open": "17:00", "close": "20:00" }] }
+```
+
+- `regular` copia en ese día el horario normal que la ficha tenga en Google **en el momento de enviarlo** (no el de `regular_hours`, que puede ser de hace unas horas).
+- `custom` lleva una o dos franjas. El servidor comprueba el formato (`H:MM` o `HH:MM`), que cada franja abra antes de cerrar, que estén en orden y sin solaparse, y que haya como mucho dos. `24:00` vale como cierre.
+- **Franjas que cruzan la medianoche** (`20:00` a `02:00`): se rechazan con 422. Un horario especial que acaba al día siguiente ocupa dos fechas en Google y aquí solo se cambia una; el dueño lo pone en Google o elige `regular` (que sí copia una franja normal que acabe de madrugada).
+
+Respuesta 202: el elemento con `status: "en_curso"`, `answer` y `action` (`status: "pendiente"`). El resultado se consulta con `GET /api/v1/me/key-dates?filter=all` o `GET /api/v1/me/actions/{action.id}`, y llega también por Telegram si hay un chat vinculado.
+
+| Código | Cuándo |
+|---|---|
+| 202 | Confirmada |
+| 404 | El id no existe, es de otra cuenta o de otra ficha |
+| 409 | Ya no está pendiente: respondida (también por Telegram), descartada o su día ha pasado. También si ya hay un cambio de horario enviándose para ese día, durante una baja programada y sin ficha elegida |
+| 422 | Franjas no válidas, o `ranges` con `closed` o `regular` |
+| 503 | No se pudo guardar. Se puede repetir |
+
+### `POST /api/v1/me/key-dates/{id}/dismiss`
+
+El dueño no quiere cambiar nada ese día. Respuesta 204, sin cuerpo. La ficha muestra su horario normal. 404 y 409 como en `answer`.
+
+### Qué ve el dueño después
+
+| `action.status` | `action.message` |
+|---|---|
+| `pendiente` | "Tu cambio de horario está en cola para enviarse a Google." |
+| `en_curso` | "Estamos enviando tu cambio de horario a Google." |
+| `hecha` | "Enviado a Google. Puede tardar unos minutos en verse en tu ficha." |
+| `fallida` | Según `action.error`: `reconnect` (volver a conectar), `rejected` (Google no aceptó el horario), `date_passed` (el día pasó antes de poder enviarlo), `no_regular_hours` (se eligió «Horario normal» y la ficha no tiene), `suspended` (baja programada), `unavailable` (Google no respondió tras los reintentos), `internal` |
+
+"Enviado a Google", nunca "publicado": Google revisa los cambios y puede tardar en mostrarlos.
+
+### Lo que la web NO debe hacer con las fechas clave
+
+- Enviar el horario a Google por su cuenta ni mostrarlo como aplicado antes de `hecha`.
+- Ofrecer más de dos franjas o franjas que crucen la medianoche (el servidor las rechaza igualmente).
+- Reintentar `answer` tras un 409: la fecha ya está resuelta; vuelve a cargar la lista.
+
+### Sin Google real
+
+Con `FICHAITOR_FAKE_GOOGLE=true`, el worker "aplica" el horario en una ficha en memoria. Sin base de datos (`MemoryStore`) la lista sale vacía: las propuestas las crea el proceso de la conversación.
 
 ## Pantallas mínimas para tener algo visible
 

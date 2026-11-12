@@ -221,8 +221,17 @@ GRANT INSERT (code_hash, token_hash, account_id, created_at, expires_at)
     ON link_code TO fichaitor_api;
 GRANT SELECT (account_id, used_at) ON link_code TO fichaitor_api;
 GRANT UPDATE (used_at) ON link_code TO fichaitor_api;
--- Propuestas: solo las lee (bandeja del panel).
+-- Propuestas: las lee (bandeja del panel) y, desde las fechas clave (2026-11-12),
+-- responde o descarta las de su cuenta como lo haría el chat: estado, testigo y
+-- confirmación registrada. No puede crearlas ni cambiar de quién son, su tipo, su
+-- origen ni su carga. Para no pisarse con el chat, bloquea antes el hilo
+-- (SELECT ... FOR UPDATE sobre conversation) y lo libera si era la activa.
 GRANT SELECT ON proposal TO fichaitor_api;
+GRANT UPDATE (state, slots, step_token, message_refs, confirmed_at, confirmed_event_id,
+              confirmed_summary, action_id, outcome_reason)
+    ON proposal TO fichaitor_api;
+GRANT SELECT (id, account_id, active_proposal_id) ON conversation TO fichaitor_api;
+GRANT UPDATE (active_proposal_id, updated_at) ON conversation TO fichaitor_api;
 
 -- === Conversación ============================================================
 GRANT SELECT ON channel_identity TO fichaitor_conversation;
@@ -259,9 +268,13 @@ GRANT INSERT (conversation_id, identity_id, direction, channel, channel_message_
 -- borrador, contar el tope de borradores y crear la acción confirmada con su fila de
 -- auditoría y su job. No lee el correo de la cuenta ni google_connection.
 REVOKE ALL ON account, location, review, review_draft, usage_counter, action, audit_log,
-              job, offboarding
+              job, offboarding, profile_summary
     FROM fichaitor_conversation;
-GRANT SELECT (id, google_sub, selected_location_id, deleted_at) ON account
+GRANT SELECT (id, google_sub, selected_location_id, deleted_at, disconnected_at) ON account
+    TO fichaitor_conversation;
+-- Fechas clave: el planificador lee de cada ficha elegida su estado y sus hechos
+-- (comunidad, dirección y días con horario especial). Nada más del resumen.
+GRANT SELECT (google_sub, location, status, facts) ON profile_summary
     TO fichaitor_conversation;
 GRANT SELECT (id, account_id, gbp_location, title, removed_at) ON location
     TO fichaitor_conversation;
@@ -276,14 +289,15 @@ GRANT UPDATE (hits) ON usage_counter TO fichaitor_conversation;
 -- cambiarlas. Solo el ejecutor del worker escribe en Google, y antes comprueba que la
 -- cuenta, su usuario de Google, la ficha y la reseña casan (claim_action, M1).
 GRANT SELECT ON action TO fichaitor_conversation;
-GRANT INSERT (account_id, type, google_sub, location, review_id, text, confirmed_at)
+GRANT INSERT (account_id, type, google_sub, location, review_id, special_date, text,
+                confirmed_at)
     ON action TO fichaitor_conversation;
 GRANT INSERT (event, account_id, action_id, action_type, location, review_id,
               gbp_review_id, text, confirmed_at, google_status, reason)
     ON audit_log TO fichaitor_conversation;
 DROP POLICY IF EXISTS audit_log_conversation_insert ON audit_log;
 CREATE POLICY audit_log_conversation_insert ON audit_log FOR INSERT TO fichaitor_conversation
-    WITH CHECK (event = 'reply_confirmed');
+    WITH CHECK (event IN ('reply_confirmed', 'special_hours_confirmed'));
 -- Cola: toma y cierra sus propios jobs (los de canal), encola el job del ejecutor de
 -- cada acción que crea y las sincronizaciones periódicas, y vacía la carga de los jobs
 -- del webhook al terminarlos. No puede borrar jobs.

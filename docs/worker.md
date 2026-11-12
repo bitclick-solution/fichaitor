@@ -2,10 +2,11 @@
 
 El worker ejecuta el trabajo asíncrono de Fichaitor. Toma jobs de una cola en PostgreSQL y los ejecuta. Es el único proceso que tiene la clave privada de los tokens y las credenciales de Google.
 
-Tiene seis jobs. Los tres primeros trabajan sobre la ficha:
+Tiene siete jobs. Los cuatro primeros trabajan sobre la ficha:
 
 - `sync_profile` lee una ficha en Google y guarda tres cosas: el resumen del panel (reseñas sin responder, horarios especiales y cambios hechos por Google); desde el 2026-11-11, los hechos de la ficha con los que la API calcula el diagnóstico (`GET /api/v1/me/diagnosis`); y desde el 2026-11-12, las reseñas de la ficha.
 - `reply_review` es **el ejecutor**: envía a Google la respuesta a una reseña que el dueño ha confirmado. Es el único código del producto que escribe en Google. Consulta [El job `reply_review`](#el-job-reply_review).
+- `set_special_hours` es **el ejecutor de las fechas clave** (2026-11-12): pone en Google el horario especial de un día que el dueño ha confirmado, por Telegram o en el panel. Es la segunda escritura en Google. Consulta [El job `set_special_hours`](#el-job-set_special_hours).
 - `analyze_sentiment` calcula el sentimiento del establecimiento a partir de las reseñas guardadas. Lo encola el propio worker al terminar una sincronización. Es el único job que llama al modelo. Consulta [El job `analyze_sentiment`](#el-job-analyze_sentiment).
 
 Los otros tres son los de la baja, y están en [Baja, correo y retención](#baja-correo-y-retención):
@@ -17,7 +18,7 @@ Los otros tres son los de la baja, y están en [Baja, correo y retención](#baja
 Desde el 2026-11-12, dos jobs más enlazan con los canales de mensajería (`docs/canales.md`). Este worker solo los **encola**; los ejecuta otro proceso, el de la conversación:
 
 - Al terminar una sincronización, `sync_profile` encola un `propose_review` por cada reseña guardada por primera vez, sin respuesta y escrita en los últimos 7 días. Nunca hace fallar la sincronización.
-- Al cerrar cada acción, bien o mal, `reply_review` encola un `channel_action_result` con `{"action_id", "ok", "error"}` y la clave `channel_action_result:<acción>`, para que el dueño que confirmó por Telegram sepa cómo acabó.
+- Al cerrar cada acción, bien o mal, `reply_review` y `set_special_hours` encolan un `channel_action_result` con `{"action_id", "ok", "error"}` y la clave `channel_action_result:<acción>`, para que el dueño que confirmó por Telegram sepa cómo acabó.
 
 En las tablas de los canales este worker solo **borra**: al hacer efectiva una baja y en la pasada de retención. Consulta [El proceso de la conversación](#el-proceso-de-la-conversación).
 
@@ -38,7 +39,7 @@ Reglas de la cola:
 - **Tiempo máximo.** Cada ejecución se corta a los `WORKER_JOB_TIMEOUT_SECONDS`, siempre antes de que caduque el bloqueo.
 - **Idempotencia.** Encolar dos veces con la misma `idempotency_key` no crea un segundo job.
 - **Tipos conocidos.** Un worker solo toma los `kind` para los que tiene manejador.
-- **Baja programada.** `sync_profile`, `analyze_sentiment` y `reply_review` no hacen nada para un usuario de Google con una baja programada: terminan `done` con el evento `account_suspended`. Una respuesta pendiente queda `failed` con el motivo `suspended`.
+- **Baja programada.** `sync_profile`, `analyze_sentiment`, `reply_review` y `set_special_hours` no hacen nada para un usuario de Google con una baja programada: terminan `done` con el evento `account_suspended`. Una respuesta pendiente queda `failed` con el motivo `suspended`.
 
 > **Importante:** La clave de idempotencia es única para siempre, también después de terminar el job. Para un trabajo periódico, incluye el periodo en la clave, por ejemplo `sync_profile:<google_sub>:<location>:2026-11-11`.
 
@@ -218,6 +219,38 @@ La operación de Google es `accounts.locations.reviews.updateReply` ([referencia
 
 > **Nota:** Si Google aplica la respuesta pero su contestación se pierde en los tres intentos, la acción queda `failed` con `unavailable` aunque la respuesta esté en Google. La siguiente sincronización la trae y la reseña sale respondida.
 
+## El job `set_special_hours`
+
+Carga: `{"action_id": "act_..."}`. Nada más. El día y el horario salen de la acción.
+
+La acción la crea, en estado `pending`, quien recibe la confirmación del dueño: el proceso de la conversación (botón o resumen confirmado en Telegram) o la API (`POST /api/v1/me/key-dates/{id}/answer`). Las dos usan el mismo método, `PostgresStore.create_special_hours_action`: en una transacción, la acción (`type = 'set_special_hours'`, `special_date` y en `text` el cambio en forma canónica, por ejemplo `{"date":"2026-12-08","kind":"periods","periods":[["10:00","14:00"]]}`), la fila de auditoría `special_hours_confirmed` y este job, con la clave `set_special_hours:<action_id>` y 6 intentos. Solo para la ficha elegida de esa cuenta, sin baja programada.
+
+Qué hace el job:
+
+1. **Toma la acción** con `claim_action`, que comprueba en la misma sentencia que la cuenta tiene ese usuario de Google y esa ficha, no retirada (M1). Una acción incoherente falla con `internal` sin llamar a Google.
+2. **Lee el cambio del texto** de la acción, de forma estricta: si no es exactamente la forma canónica, o su día no es `special_date`, falla con `internal`.
+3. Si hay **baja programada**, falla con `suspended`. Si el día **ya ha pasado** (hora peninsular), falla con `date_passed` sin llamar a Google. El mismo día todavía se aplica.
+4. Conexión, ficha y token como en `reply_review`.
+5. **Lee** el horario de la ficha: `GET locations/{id}?readMask=regularHours,specialHours`.
+6. **Fusiona**: quita los periodos que empiezan ese día, añade los nuevos y devuelve todos los demás tal cual, incluidos los que no sabe leer. Nunca borra otra fecha. "Horario normal" copia los periodos normales de ese día de la semana; si la ficha no tiene horario normal, falla con `no_regular_hours`. Un día de la semana sin periodos queda cerrado.
+7. Si Google **ya tiene exactamente** ese horario ese día (un reintento cuyo intento anterior llegó), no escribe y cierra con el motivo `already_applied`.
+8. **Escribe**: `PATCH locations/{id}?updateMask=specialHours` con `{"specialHours": {"specialHourPeriods": [...]}}`, la lista entera. Una petición por intento.
+9. Cierra la acción con su fila `special_hours_sent` o `special_hours_failed`, en una transacción. Si ha ido bien, añade el día a `facts.special_dates` del resumen. Encola `channel_action_result`.
+
+| Qué pasa | Job | Acción |
+|---|---|---|
+| Google acepta (200) | `done` | `done` |
+| Reintento: Google ya tiene ese horario | `done`, sin escribir | `done`, motivo `already_applied` |
+| `invalid_grant` o 401 | `failed`, sin reintentos | `failed`, `reconnect` |
+| Otro 4xx | `failed`, sin reintentos | `failed`, `rejected` |
+| 5xx, 429 o sin respuesta | Se reintenta (30 s, 60 s, 120 s, 240 s, 480 s) | `failed`, `unavailable` al agotar los 6 intentos |
+| El día ya pasó | `failed`, sin llamar a Google | `failed`, `date_passed` |
+| "Horario normal" sin horario normal en Google | `failed` | `failed`, `no_regular_hours` |
+| Acción incoherente o texto ilegible | `failed`, sin llamar a Google | `failed`, `internal` |
+| El worker muere en el último intento | `failed` al caducar el bloqueo | `failed`, `unavailable` (`on_lost`) |
+
+> **Importante:** La escritura de horario especial se probó a mano en la fase 0 contra la ficha de Bitclick (`docs/fase0/matriz-api.md`), con un día cerrado. Este código solo se ha probado con transporte HTTP simulado. Leer, fusionar y escribir no es atómico: si el dueño cambia otro día en Google entre la lectura y la escritura (unos segundos), ese cambio se pierde. La API no ofrece una escritura condicionada para esto.
+
 ### Los hechos de la ficha y el diagnóstico
 
 El worker guarda hechos; el diagnóstico lo calcula la API en cada petición con `app/domain/profile_diagnosis.py`. Motivos:
@@ -244,7 +277,9 @@ Qué contiene `facts`:
 | `service_count` | Número de servicios declarados |
 | `is_open` | `false` si la ficha figura como cerrada temporal o definitivamente |
 | `place_id`, `maps_url` | Identificador y enlace de Google Maps, si Google los da |
-| `special_dates` | Días con horario especial desde el día de la sincronización (hasta 400) |
+| `special_dates` | Días con horario especial desde el día de la sincronización (hasta 400). El ejecutor de fechas clave añade el día que aplica |
+| `region` | Comunidad autónoma (`AN`) sacada del código postal de una dirección de España; vacía si no se sabe. Añadido el 2026-11-12 sin cambiar `v`: en filas anteriores falta y se lee como vacía |
+| `regular_hours` | Horario normal como `[día, "HH:MM", "HH:MM"]`, lunes 0, para la opción «Horario normal» del panel. Añadido el 2026-11-12, igual que `region` |
 | `photo_count`, `latest_photo_at` | Fotos subidas por el dueño y fecha de la más reciente. `null` si no se pudieron leer |
 | `attribute_count` | Atributos declarados. `null` si no se pudieron leer |
 
@@ -389,7 +424,7 @@ El detalle está en [sentimiento.md](sentimiento.md#qué-se-guarda).
 
 ### `action`
 
-Acciones sobre Google confirmadas por el dueño. Hoy solo hay un tipo, `reply_review`.
+Acciones sobre Google confirmadas por el dueño. Dos tipos: `reply_review` y, desde el 2026-11-12, `set_special_hours` (sin `review_id`, con `special_date`; la restricción `action_target_check` lo exige). Como mucho una acción viva por reseña (`action_one_live_per_review`) y una por ficha y día (`action_one_live_per_special_date`).
 
 | Columna | Uso | Quién la escribe |
 |---|---|---|
@@ -408,7 +443,7 @@ Registro de auditoría. **Solo se añaden filas**: nadie las cambia. Solo se bor
 | Columna | Uso |
 |---|---|
 | `at`, `written_by` | Cuándo y con qué usuario de la base se escribió. Los pone la base: quien inserta no puede fijarlos |
-| `event` | `reply_confirmed` (la API, cuando el dueño confirma), `reply_sent` o `reply_failed` (el worker, con el resultado) |
+| `event` | `reply_confirmed` (la API o la conversación, cuando el dueño confirma), `reply_sent` o `reply_failed` (el worker, con el resultado). Para el horario: `special_hours_confirmed`, `special_hours_sent` y `special_hours_failed`, con `review_id` y `gbp_review_id` vacíos y en `text` el cambio canónico |
 | `account_id` | Quién: la cuenta que confirmó |
 | `action_id`, `action_type` | Qué acción |
 | `location`, `review_id`, `gbp_review_id` | Sobre qué: la ficha y la reseña, con nuestro identificador y el de Google |
@@ -576,14 +611,15 @@ Y monta el esquema del worker en el servicio `db`, hasta que se fusione en `sche
 | `channel_inbound` | La API, desde el webhook de Telegram (`telegram:<update_id>`, un intento) | Pasa la actualización a la conversación. Vacía la carga al terminar, acabe como acabe |
 | `conversation_tick` | Su planificador, cada 5 minutos (`conversation_tick:<franja>`) | Recordatorios, caducidades y lo que esperaba al fin del horario de silencio |
 | `propose_review` | Este worker, tras una sincronización (`propose_review:<reseña>`, 3 intentos) | Pide el borrador como el panel (borrador guardado, tope por cuenta, `validate_reply`) y propone la reseña por Telegram a las cuentas cuya ficha elegida la tiene y que vincularon un chat antes de que se escribiera |
-| `channel_action_result` | Este worker, al cerrar una acción (`channel_action_result:<acción>`, 3 intentos) | Cuenta el resultado por el chat. Si la acción se confirmó en el panel, no hace nada |
+| `channel_action_result` | Este worker, al cerrar una acción (`channel_action_result:<acción>`, 3 intentos) | Cuenta el resultado por el chat y cierra la propuesta. Una respuesta a reseña confirmada en el panel no tiene propuesta: no hace nada. Una fecha clave respondida en el panel sí la tiene: se cierra y se avisa por el chat |
+| `plan_key_dates` | Su planificador, una vez al día a las 9:05 (`plan_key_dates:<fecha>`, 3 intentos) | Crea una propuesta por ficha y día de las fechas clave próximas. Consulta `docs/calendario.md`, "Preguntar por el horario" |
 
 - **Planificador.** Cada minuto encola, con clave por franja, el `conversation_tick` y un `sync_profile` de cada ficha elegida de una cuenta con un chat vinculado: cada 30 minutos de 8:30 a 21:00 (hora peninsular) y cada 3 horas de noche. Varios procesos no duplican nada. Los 30 minutos están por contrastar con la cuota de la API de reseñas (`docs/fase0/matriz-api.md`).
 - **Sondeo largo.** Con `FICHAITOR_TELEGRAM_POLLING=true` recibe por `getUpdates` en lugar del webhook (solo desarrollo; borra el webhook del bot).
 - **Sin token.** Sin `FICHAITOR_TELEGRAM_BOT_TOKEN` arranca y no envía nada (`telegram_disabled` en el registro): las propuestas esperan.
 - **Registrar el webhook:** `python -m app.worker.conversation --set-webhook <url>` (`docs/despliegue.md`, "Webhook de Telegram").
 
-Variables propias: `FICHAITOR_CONVERSATION_DATABASE_URL` (obligatoria) y `FICHAITOR_PLANNER_INTERVAL_SECONDS` (60). Comparte con el worker `FICHAITOR_WORKER_POLL_INTERVAL_SECONDS`, `FICHAITOR_WORKER_JOB_TIMEOUT_SECONDS` (aquí 30 por defecto) y `FICHAITOR_WORKER_LOCK_TIMEOUT_SECONDS` (aquí 120). Las de Telegram, en `docs/canales.md`.
+Variables propias: `FICHAITOR_CONVERSATION_DATABASE_URL` (obligatoria), `FICHAITOR_PLANNER_INTERVAL_SECONDS` (60), `FICHAITOR_KEY_DATES_ENABLED` (`true`; con `false` no se planifican fechas clave) y `FICHAITOR_KEY_DATES_LEAD_DAYS` (5, de 1 a 60: días de antelación de un festivo). Comparte con el worker `FICHAITOR_WORKER_POLL_INTERVAL_SECONDS`, `FICHAITOR_WORKER_JOB_TIMEOUT_SECONDS` (aquí 30 por defecto) y `FICHAITOR_WORKER_LOCK_TIMEOUT_SECONDS` (aquí 120). Las de Telegram, en `docs/canales.md`.
 
 ## Añadir un tipo de job
 

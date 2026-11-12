@@ -98,6 +98,11 @@ class ProfileDetails:
     is_open: bool = True  # False when the owner has marked the business as closed
     place_id: str = ""
     maps_url: str = ""
+    # Regular hours as (weekday, "HH:MM", "HH:MM"), Monday 0.
+    regular_hours: tuple[tuple[int, str, str], ...] = ()
+    # Region (ISO 3166-2:ES, "AN") from the postal code of a Spanish address; empty
+    # otherwise. It chooses the regional holidays of the key dates.
+    region: str = ""
 
 
 @dataclass(frozen=True)
@@ -126,6 +131,9 @@ class ProfileFacts:
     place_id: str = ""
     maps_url: str = ""
     special_dates: tuple[date, ...] = ()  # days with special hours, from the sync day on
+    region: str = ""  # "AN"; empty when unknown (key dates: national holidays only)
+    # Regular hours as (weekday, "HH:MM", "HH:MM"), Monday 0: the panel's "Horario normal".
+    regular_hours: tuple[tuple[int, str, str], ...] = ()
     # None: Google did not let us read it, so the diagnosis says nothing about it.
     photo_count: int | None = None
     latest_photo_at: datetime | None = None
@@ -221,6 +229,8 @@ def collect_facts(
         place_id=details.place_id,
         maps_url=details.maps_url,
         special_dates=tuple(upcoming[:MAX_STORED_SPECIAL_DATES]),
+        region=details.region,
+        regular_hours=details.regular_hours,
         photo_count=media.count if media is not None else None,
         latest_photo_at=media.latest_at if media is not None else None,
         attribute_count=attribute_count,
@@ -242,6 +252,8 @@ def facts_to_json(facts: ProfileFacts) -> dict[str, Any]:
         "place_id": facts.place_id,
         "maps_url": facts.maps_url,
         "special_dates": [d.isoformat() for d in facts.special_dates],
+        "region": facts.region,
+        "regular_hours": [list(p) for p in facts.regular_hours],
         "photo_count": facts.photo_count,
         "latest_photo_at": facts.latest_photo_at.isoformat() if facts.latest_photo_at else None,
         "attribute_count": facts.attribute_count,
@@ -258,6 +270,32 @@ def _typed(raw: dict, key: str, kind: type, *, optional: bool = False) -> Any:
     if kind is int and value < 0:
         raise ValueError(key)
     return value
+
+
+def _region(value: object) -> str:
+    if not isinstance(value, str) or not re.fullmatch(r"[A-Z]{2}|", value):
+        raise ValueError("region")
+    return value
+
+
+_HHMM = re.compile(r"\d{2}:\d{2}")
+
+
+def _weekly(value: object) -> tuple[tuple[int, str, str], ...]:
+    if not isinstance(value, list):
+        raise ValueError("regular_hours")
+    out = []
+    for item in value:
+        if not (
+            isinstance(item, list)
+            and len(item) == 3
+            and isinstance(item[0], int)
+            and 0 <= item[0] <= 6
+            and all(isinstance(t, str) and _HHMM.fullmatch(t) for t in item[1:])
+        ):
+            raise ValueError("regular_hours")
+        out.append((item[0], item[1], item[2]))
+    return tuple(out)
 
 
 def facts_from_json(raw: object) -> ProfileFacts | None:
@@ -280,6 +318,9 @@ def facts_from_json(raw: object) -> ProfileFacts | None:
             place_id=_typed(raw, "place_id", str),
             maps_url=_typed(raw, "maps_url", str),
             special_dates=tuple(date.fromisoformat(d) for d in _typed(raw, "special_dates", list)),
+            # Added on 2026-11-12 without a new version: older rows simply lack it.
+            region=_region(raw.get("region", "")),
+            regular_hours=_weekly(raw.get("regular_hours", [])),
             photo_count=_typed(raw, "photo_count", int, optional=True),
             latest_photo_at=datetime.fromisoformat(latest) if latest else None,
             attribute_count=_typed(raw, "attribute_count", int, optional=True),

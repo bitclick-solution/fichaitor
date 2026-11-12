@@ -230,10 +230,39 @@ GRANT INSERT (event, account_id, action_id, action_type, location, review_id,
 ALTER TABLE audit_log ENABLE ROW LEVEL SECURITY;
 DROP POLICY IF EXISTS audit_log_api_insert ON audit_log;
 CREATE POLICY audit_log_api_insert ON audit_log FOR INSERT TO fichaitor_api
-    WITH CHECK (event = 'reply_confirmed');
+    WITH CHECK (event IN ('reply_confirmed', 'special_hours_confirmed'));
 DROP POLICY IF EXISTS audit_log_worker_insert ON audit_log;
 CREATE POLICY audit_log_worker_insert ON audit_log FOR INSERT TO fichaitor_worker
-    WITH CHECK (event IN ('reply_sent', 'reply_failed'));
+    WITH CHECK (event IN ('reply_sent', 'reply_failed', 'special_hours_sent',
+                          'special_hours_failed'));
+
+-- ---------------------------------------------------------------------------
+-- Fechas clave (2026-11-12): el horario especial de un día que el dueño confirma por el
+-- canal o en el panel. Consulta docs/calendario.md y docs/worker.md.
+-- Una acción set_special_hours no tiene reseña: special_date es el día que cambia y text
+-- es el cambio en su forma canónica (app/domain/special_hours.py), que nadie puede
+-- cambiar después, igual que el texto de una respuesta.
+ALTER TABLE action ADD COLUMN IF NOT EXISTS special_date date;
+ALTER TABLE action ALTER COLUMN review_id DROP NOT NULL;
+ALTER TABLE action DROP CONSTRAINT IF EXISTS action_type_check;
+ALTER TABLE action ADD CONSTRAINT action_type_check
+    CHECK (type IN ('reply_review', 'set_special_hours'));
+ALTER TABLE action DROP CONSTRAINT IF EXISTS action_target_check;
+ALTER TABLE action ADD CONSTRAINT action_target_check CHECK (
+    (type = 'reply_review' AND review_id IS NOT NULL AND special_date IS NULL)
+    OR (type = 'set_special_hours' AND review_id IS NULL AND special_date IS NOT NULL));
+-- Como mucho un cambio de horario en vuelo por ficha y día.
+CREATE UNIQUE INDEX IF NOT EXISTS action_one_live_per_special_date
+    ON action (google_sub, location, special_date)
+    WHERE type = 'set_special_hours' AND state IN ('pending', 'running');
+GRANT INSERT (special_date) ON action TO fichaitor_api;
+
+-- Auditoría: tres eventos más, con las mismas reglas que los de las respuestas (las
+-- políticas de fila de más arriba ya los admiten). review_id y gbp_review_id van vacíos.
+ALTER TABLE audit_log DROP CONSTRAINT IF EXISTS audit_log_event_check;
+ALTER TABLE audit_log ADD CONSTRAINT audit_log_event_check
+    CHECK (event IN ('reply_confirmed', 'reply_sent', 'reply_failed',
+                     'special_hours_confirmed', 'special_hours_sent', 'special_hours_failed'));
 
 -- ---------------------------------------------------------------------------
 -- Sentimiento del establecimiento (2026-11-12). Consulta docs/sentimiento.md.

@@ -6,7 +6,7 @@ from datetime import datetime
 
 from app.adapters.job_queue.memory import LOST_WORKER_ERROR, MemoryJobQueue
 from app.adapters.memory_tables import MemoryTables
-from app.domain.actions import ERROR_UNAVAILABLE
+from app.domain.actions import ERROR_UNAVAILABLE, SET_SPECIAL_HOURS
 from app.domain.jobs import FAILED
 from app.domain.profile_summary import (
     LOW_RATING_MAX,
@@ -43,6 +43,9 @@ class MemoryWorkerStore:
         self.denied: dict[tuple[str, str], int] = {}  # refusals in a row, by profile
         # Profiles retired for lack of access (the real store sets location.removed_at).
         self.lost_access: set[tuple[str, str]] = set()
+        # (account, location) whose action must not pass the M1 check: the accounts are
+        # not in these tables, so a test says which ones the real join would refuse.
+        self.not_owned: set[tuple[str, str]] = set()
 
     # --- sentiment -------------------------------------------------------------
 
@@ -149,8 +152,14 @@ class MemoryWorkerStore:
         action = self.tables.claim_action(action_id, job_id, at)
         if action is None:
             return None
-        # The accounts are not in these tables: only the review side of the check.
+        # The accounts are not in these tables: only the review (or the day) side of
+        # the check, plus the profiles a test marks as not owned.
         review = self.tables.coherent_review(action)
+        if action.type == SET_SPECIAL_HOURS:
+            target = action.special_date is not None
+        else:
+            target = review is not None
+        owned = (action.account_id, action.location) not in self.not_owned
         return ClaimedAction(
             id=action.id,
             google_sub=action.google_sub,
@@ -158,7 +167,9 @@ class MemoryWorkerStore:
             gbp_review_id=review.gbp_review_id if review is not None else "",
             text=action.text,
             attempts=action.attempts,
-            coherent=review is not None,
+            coherent=target and owned,
+            type=action.type,
+            special_date=action.special_date,
         )
 
     async def finish_action(

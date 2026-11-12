@@ -393,7 +393,7 @@ def classify_reply(text: str) -> Reply:
 # --- hours written by the owner ------------------------------------------------------
 
 MAX_CLARIFICATIONS = 2  # the third time, closed options
-MAX_PERIODS = 3
+MAX_PERIODS = 2  # "otro horario": one or two periods (a third one is asked again)
 
 
 class HoursKind(StrEnum):

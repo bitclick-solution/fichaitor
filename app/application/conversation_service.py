@@ -56,6 +56,8 @@ OWNER_TEXT_MAX = 900
 # Outcomes of an action, as the executor reports them.
 OUTCOME_TARGET_GONE = "target_gone"
 OUTCOME_RECONNECT = "reconnect"
+OUTCOME_TOO_LATE = "too_late"
+OUTCOME_NO_REGULAR_HOURS = "no_regular_hours"
 
 
 @dataclass(frozen=True)
@@ -86,6 +88,10 @@ class KeyDateInput:
     day: date
     name: str
     regular_hours: str = ""  # "de 9:00 a 14:00", if known, for the result message
+    location_id: str = ""  # the profile it is about ("loc_..."): the action targets it
+    # Ask "¿Abres?" with Abro normal / Cierro / Otro horario, as for a holiday, even if
+    # it is not one (Nochebuena). Holidays always do.
+    ask_hours: bool = False
 
 
 @dataclass(frozen=True)
@@ -663,6 +669,7 @@ class ConversationService:
             confirmed_at=now,
             confirmed_channel=identity.channel,
             confirmed_event_id=event.event_id,
+            location_id=str(proposal.payload.get("location_id", "")),
         )
         try:
             receipt = await self._actions.create(request)
@@ -691,7 +698,8 @@ class ConversationService:
         """Nothing was created. Either the proposal ends, or the owner changes it, or
         it stays as it is to be confirmed again."""
         if code == pa.REJECT_TARGET_GONE:
-            await self._dismiss(proposal, option, identity, "review.gone", OUTCOME_TARGET_GONE)
+            gone = "review.gone" if proposal.type is ProposalType.REVIEW_REPLY else "keydate.gone"
+            await self._dismiss(proposal, option, identity, gone, OUTCOME_TARGET_GONE)
         elif code == pa.REJECT_INVALID:
             await self._clear_buttons(proposal, option)
             await self._show_step(
@@ -779,8 +787,12 @@ class ConversationService:
                 "date": key_date.day.isoformat(),
                 "name": cm.one_line(key_date.name, 80),
                 "regular_hours": cm.one_line(key_date.regular_hours, 80),
+                **({"location_id": key_date.location_id} if key_date.location_id else {}),
+                **({"ask": "hours"} if key_date.ask_hours else {}),
             },
-            step=HOLIDAY_ASK if key_date.kind == rules.KIND_HOLIDAY else KEYDATE_ASK,
+            step=HOLIDAY_ASK
+            if key_date.kind == rules.KIND_HOLIDAY or key_date.ask_hours
+            else KEYDATE_ASK,
             step_token=_new_token(),
             remind_at=remind_at,
             expires_at=expires_at,
@@ -829,6 +841,13 @@ class ConversationService:
 
     def _result_message(self, proposal: Proposal, outcome: ActionOutcome) -> tuple[str, dict]:
         if not outcome.ok:
+            if outcome.error in (OUTCOME_TOO_LATE, OUTCOME_NO_REGULAR_HOURS) and (
+                proposal.type is ProposalType.KEY_DATE
+            ):
+                day = format_date_es(date.fromisoformat(proposal.payload["date"]))
+                if outcome.error == OUTCOME_TOO_LATE:
+                    return "hours.too_late", {"fecha_larga": day}
+                return "hours.no_regular", {"fecha_larga": day, **self._links()}
             if outcome.error == OUTCOME_TARGET_GONE:
                 return "review.gone", {}
             if outcome.error == OUTCOME_RECONNECT:
@@ -970,6 +989,8 @@ class ConversationService:
             if data["kind"] == rules.KIND_HOLIDAY:
                 key = "holiday.ask"
                 return key, cm.render(key, fecha_larga=day, nombre_festivo=data["name"])
+            if data.get("ask") == "hours":
+                return "eve.ask", cm.render("eve.ask", fecha_larga=day, nombre=data["name"])
             return "keydate.ask", cm.render("keydate.ask", evento=data["name"], fecha_larga=day)
         stars = cm.stars_text(data["stars"])
         # The review is somebody else's text: one line, bounded, between quotes. The
@@ -1183,7 +1204,8 @@ class ConversationService:
             step = REVIEW_ASK
         else:
             holiday = proposal.payload["kind"] == rules.KIND_HOLIDAY
-            step = HOLIDAY_ASK if holiday else KEYDATE_ASK
+            asks_hours = holiday or proposal.payload.get("ask") == "hours"
+            step = HOLIDAY_ASK if asks_hours else KEYDATE_ASK
         state = proposal.state
         if state is S.TO_CONFIRM:
             state = advance(state, E.REQUEST_CHANGES)

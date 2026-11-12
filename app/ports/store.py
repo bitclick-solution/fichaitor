@@ -136,11 +136,12 @@ class ReviewPage:
 class StoredAction:
     id: str  # "act_..."
     type: str
-    review_id: str
+    review_id: str | None  # None for a change of hours
     state: str  # pending, running, done or failed
     error_code: str | None
     confirmed_at: datetime
     finished_at: datetime | None
+    special_date: date | None = None  # set_special_hours: the day it changes
 
 
 @dataclass(frozen=True)

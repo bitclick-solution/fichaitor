@@ -12,15 +12,15 @@ from dataclasses import dataclass, field
 from datetime import date, datetime
 
 from app.domain.actions import (
+    AUDIT_EVENTS,
     DONE,
     EVENT_CONFIRMED,
-    EVENT_FAILED,
-    EVENT_SENT,
     FAILED,
     LIVE_STATES,
     PENDING,
     REPLY_REVIEW,
     RUNNING,
+    SET_SPECIAL_HOURS,
 )
 from app.domain.profile_summary import LOW_RATING_MAX, Review
 from app.domain.reviews import storable_reviews, storable_text
@@ -72,6 +72,7 @@ class ActionRow:
     finished_at: datetime | None = None
     google_status: int | None = None
     error_code: str | None = None
+    special_date: date | None = None  # set_special_hours only; review_id is then ""
 
 
 @dataclass(frozen=True)
@@ -237,6 +238,40 @@ class MemoryTables:
         self._audit(action, EVENT_CONFIRMED, "api", now)
         return action
 
+    def create_special_hours_action(
+        self,
+        account_id: str,
+        google_sub: str,
+        location: str,
+        day: date,
+        text: str,
+        now: datetime,
+        written_by: str = "api",
+    ) -> ActionRow | None:
+        """A pending change of the hours of one day, and its audit row. None if that day
+        of that profile already has one live (the unique index of PostgreSQL)."""
+        if any(
+            a.type == SET_SPECIAL_HOURS
+            and (a.google_sub, a.location, a.special_date) == (google_sub, location, day)
+            and a.state in LIVE_STATES
+            for a in self.actions.values()
+        ):
+            return None
+        action = ActionRow(
+            id=f"act_{secrets.token_hex(8)}",
+            account_id=account_id,
+            type=SET_SPECIAL_HOURS,
+            google_sub=google_sub,
+            location=location,
+            review_id="",
+            text=text,
+            confirmed_at=now,
+            special_date=day,
+        )
+        self.actions[action.id] = action
+        self._audit(action, AUDIT_EVENTS[SET_SPECIAL_HOURS][0], written_by, now)
+        return action
+
     def coherent_review(self, action: ActionRow) -> ReviewRow | None:
         """The review of that action, if it is of the action's own Google user and profile."""
         review = self.reviews.get(action.review_id)
@@ -281,8 +316,9 @@ class MemoryTables:
         action.state = DONE if done else FAILED
         action.finished_at, action.google_status = at, google_status
         action.error_code = None if done else reason
-        self._audit(action, EVENT_SENT if done else EVENT_FAILED, "worker", at, reason)
-        if done:
+        events = AUDIT_EVENTS.get(action.type, AUDIT_EVENTS[REPLY_REVIEW])
+        self._audit(action, events[1] if done else events[2], "worker", at, reason)
+        if done and action.type == REPLY_REVIEW:
             review = self.reviews[action.review_id]
             review.reply_text, review.reply_at, review.sent_at = action.text, reply_at or at, at
         return True

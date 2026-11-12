@@ -18,11 +18,14 @@ import asyncpg
 
 from app.adapters.job_queue.postgres import LOST_WORKER_ERROR
 from app.domain.actions import (
+    AUDIT_EVENTS,
     DONE,
     ERROR_UNAVAILABLE,
     EVENT_FAILED,
-    EVENT_SENT,
+    EVENT_HOURS_FAILED,
     FAILED,
+    REPLY_REVIEW,
+    SET_SPECIAL_HOURS,
 )
 from app.domain.offboarding import SCOPE_ACCOUNT, RetentionPolicy
 from app.domain.profile_summary import (
@@ -68,7 +71,7 @@ _AUDIT_FROM_ACTION = """
     INSERT INTO audit_log
         (event, account_id, action_id, action_type, location, review_id, gbp_review_id,
          text, confirmed_at, google_status, reason)
-    SELECT $2, a.account_id, a.id, a.type, a.location, a.review_id,
+    SELECT $2, a.account_id, a.id, a.type, a.location, coalesce(a.review_id, ''),
            coalesce(r.gbp_review_id, ''), a.text, a.confirmed_at, $3, $4
     FROM action a
     LEFT JOIN review r
@@ -346,7 +349,8 @@ class PostgresWorkerStore:
             SET state = 'running', job_id = $2, attempts = a.attempts + 1, started_at = $3
             WHERE a.id = $1
               AND (a.state = 'pending' OR (a.state = 'running' AND a.job_id = $2))
-            RETURNING a.id, a.google_sub, a.location, a.text, a.attempts,
+            RETURNING a.id, a.type, a.google_sub, a.location, a.text, a.attempts,
+                a.special_date,
                 (SELECT r.gbp_review_id FROM review r
                  WHERE r.id = a.review_id AND r.google_sub = a.google_sub
                    AND r.location = a.location) AS gbp_review_id,
@@ -361,6 +365,10 @@ class PostgresWorkerStore:
         )
         if row is None:
             return None
+        if row["type"] == SET_SPECIAL_HOURS:
+            target = row["special_date"] is not None
+        else:
+            target = row["type"] == REPLY_REVIEW and row["gbp_review_id"] is not None
         return ClaimedAction(
             id=row["id"],
             google_sub=row["google_sub"],
@@ -368,7 +376,9 @@ class PostgresWorkerStore:
             gbp_review_id=row["gbp_review_id"] or "",
             text=row["text"],
             attempts=row["attempts"],
-            coherent=row["gbp_review_id"] is not None and row["owned"],
+            coherent=target and row["owned"],
+            type=row["type"],
+            special_date=row["special_date"],
         )
 
     async def finish_action(
@@ -383,11 +393,12 @@ class PostgresWorkerStore:
         reply_at: datetime | None = None,
     ) -> bool:
         async with self._pool.acquire() as conn, conn.transaction():
-            status = await conn.execute(
+            closed = await conn.fetchrow(
                 """
                 UPDATE action
                 SET state = $3, finished_at = $4, google_status = $5, error_code = $6
                 WHERE id = $1 AND state = 'running' AND job_id = $2
+                RETURNING type, special_date
                 """,
                 action_id,
                 job_id,
@@ -396,17 +407,35 @@ class PostgresWorkerStore:
                 google_status,
                 None if done else reason,
             )
-            if not status.endswith(" 1"):
+            if closed is None:
                 return False
+            events = AUDIT_EVENTS.get(closed["type"], AUDIT_EVENTS[REPLY_REVIEW])
             # The audit row copies the text from the action inside the database.
             await conn.execute(
                 _AUDIT_FROM_ACTION,
                 action_id,
-                EVENT_SENT if done else EVENT_FAILED,
+                events[1] if done else events[2],
                 google_status,
                 reason,
             )
-            if done:
+            if done and closed["type"] == SET_SPECIAL_HOURS:
+                # The day now has special hours: the planner and the diagnosis see it
+                # before the next sync, which brings Google's own list anyway.
+                await conn.execute(
+                    """
+                    UPDATE profile_summary p
+                    SET facts = jsonb_set(p.facts, '{special_dates}', (
+                        SELECT coalesce(jsonb_agg(d ORDER BY d), '[]'::jsonb) FROM (
+                            SELECT jsonb_array_elements_text(p.facts->'special_dates') AS d
+                            UNION SELECT $2::text) AS s))
+                    FROM action a
+                    WHERE a.id = $1 AND p.google_sub = a.google_sub AND p.location = a.location
+                      AND jsonb_typeof(p.facts->'special_dates') = 'array'
+                    """,
+                    action_id,
+                    closed["special_date"].isoformat(),
+                )
+            if done and closed["type"] == REPLY_REVIEW:
                 # The stored review becomes answered with the text of the action, copied
                 # inside the database. If it was unanswered, the summary goes down by
                 # one; the next sync brings Google's own figures.
@@ -465,7 +494,8 @@ class PostgresWorkerStore:
             INSERT INTO audit_log
                 (event, account_id, action_id, action_type, location, review_id,
                  gbp_review_id, text, confirmed_at, reason)
-            SELECT $3, c.account_id, c.id, c.type, c.location, c.review_id,
+            SELECT CASE c.type WHEN $4 THEN $5 ELSE $3 END, c.account_id, c.id, c.type,
+                   c.location, coalesce(c.review_id, ''),
                    coalesce(r.gbp_review_id, ''), c.text, c.confirmed_at, $2
             FROM closed c
             LEFT JOIN review r
@@ -474,6 +504,8 @@ class PostgresWorkerStore:
             kind,
             ERROR_UNAVAILABLE,
             EVENT_FAILED,
+            SET_SPECIAL_HOURS,
+            EVENT_HOURS_FAILED,
         )
         return int(status.rsplit(" ", 1)[-1])
 

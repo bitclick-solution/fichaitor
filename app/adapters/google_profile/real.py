@@ -4,10 +4,13 @@ Token refresh, reviews and media (My Business v4), the profile itself, its attri
 and Google's own changes (Business Information v1). Endpoints verified in
 docs/fase0/matriz-api.md.
 
-One write: the reply to a review (`reviews.updateReply`, My Business v4),
-`PUT {account}/{location}/reviews/{reviewId}/reply` with `{"comment": text}`. It
-creates the reply or replaces the one there is. Taken from Google's reference; it has
-not been run against a real profile yet (docs/fase0/matriz-api.md, "Pendiente").
+Two writes. The special hours of the profile (`locations.patch` with
+`updateMask=specialHours`, Business Information v1), verified against the profile of
+Bitclick in docs/fase0/matriz-api.md. And the reply to a review
+(`reviews.updateReply`, My Business v4), `PUT {account}/{location}/reviews/{reviewId}/reply`
+with `{"comment": text}`. It creates the reply or replaces the one there is. Taken from
+Google's reference; it has not been run against a real profile yet
+(docs/fase0/matriz-api.md, "Pendiente").
 https://developers.google.com/my-business/reference/rest/v4/accounts.locations.reviews/updateReply
 
 Error messages carry only a status code: never a token, a request body or a
@@ -17,10 +20,12 @@ response body (Google may echo what it was sent).
 import asyncio
 import re
 from datetime import date, datetime, timedelta
+from typing import Any
 
 import httpx
 
 from app.domain.actions import GBP_REVIEW_ID
+from app.domain.key_dates import region_for_postal_code
 from app.domain.profile_summary import (
     GBP_LOCATION,
     MediaSummary,
@@ -32,7 +37,13 @@ from app.domain.profile_summary import (
     parse_diff_mask,
     star_rating,
 )
-from app.ports.google_profile import GoogleProfileError, GoogleRejected, ReconnectRequired
+from app.domain.special_hours import MAX_GOOGLE_PERIODS, weekly_hours
+from app.ports.google_profile import (
+    GoogleProfileError,
+    GoogleRejected,
+    LocationHours,
+    ReconnectRequired,
+)
 
 TOKEN_URL = "https://oauth2.googleapis.com/token"
 # https://developers.google.com/identity/protocols/oauth2/web-server#tokenrevoke
@@ -57,6 +68,8 @@ UPDATED_MASK = (
     "title,phoneNumbers,categories,storefrontAddress,websiteUri,"
     "regularHours,specialHours,openInfo,profile"
 )
+# What the executor of special hours reads just before writing.
+HOURS_MASK = "regularHours,specialHours"
 RETRIES = 3  # Business Information answers 503 now and then
 REVIEWS_PAGE_SIZE = 50  # the maximum Google accepts
 MAX_REVIEW_PAGES = 200  # 10.000 reviews; also stops a page token that never ends
@@ -188,6 +201,8 @@ class RealGoogleProfile:
             is_open=_dict(body.get("openInfo")).get("status") not in CLOSED_STATUSES,
             place_id=_text(metadata.get("placeId")),
             maps_url=_text(metadata.get("mapsUri")),
+            region=_region(_dict(body.get("storefrontAddress"))),
+            regular_hours=weekly_hours([p for p in periods if isinstance(p, dict)]),
         )
 
     async def attribute_count(self, access_token: str, location: str) -> int:
@@ -267,6 +282,46 @@ class RealGoogleProfile:
             raise ReconnectRequired("Google no acepta el acceso (401)")
         if status < 500 and status != 429:
             raise GoogleRejected(f"Google rechazó la respuesta (estado {status})", status)
+        raise GoogleProfileError(f"Google no aceptó la escritura (estado {status})", status)
+
+    async def hours(self, access_token: str, location: str) -> LocationHours:
+        body = await self._get(
+            LOCATION_URL.format(location=_loc(location)), access_token, {"readMask": HOURS_MASK}
+        )
+        regular = _dict(body.get("regularHours")).get("periods") or []
+        special = _dict(body.get("specialHours")).get("specialHourPeriods") or []
+        if not isinstance(regular, list) or not isinstance(special, list):
+            raise GoogleProfileError("horario de la ficha ilegible")
+        if len(special) > MAX_GOOGLE_PERIODS:
+            # A list this long cannot be sent back whole with certainty: nothing is written.
+            raise GoogleRejected("demasiados horarios especiales en la ficha")
+        return LocationHours(
+            regular=tuple(p for p in regular if isinstance(p, dict)),
+            special=tuple(p for p in special if isinstance(p, dict)),
+        )
+
+    async def set_special_hours(
+        self, access_token: str, location: str, periods: list[dict[str, Any]]
+    ) -> None:
+        # PATCH with updateMask=specialHours: only that field changes (verified in
+        # docs/fase0/matriz-api.md). The whole list goes: Google replaces it.
+        url = LOCATION_URL.format(location=_loc(location))
+        try:
+            resp = await self._client.patch(
+                url,
+                params={"updateMask": "specialHours"},
+                json={"specialHours": {"specialHourPeriods": periods}},
+                headers={"Authorization": f"Bearer {access_token}"},
+            )
+        except httpx.HTTPError:
+            raise GoogleProfileError("Google no respondió a la escritura") from None
+        status = resp.status_code
+        if status == 200:
+            return
+        if status == 401:
+            raise ReconnectRequired("Google no acepta el acceso (401)")
+        if status < 500 and status != 429:
+            raise GoogleRejected(f"Google rechazó el horario (estado {status})", status)
         raise GoogleProfileError(f"Google no aceptó la escritura (estado {status})", status)
 
     async def _get(self, url: str, access_token: str, params: dict | None = None) -> dict:
@@ -376,6 +431,13 @@ def _address(raw: dict) -> str:
     lines = [_text(line) for line in raw.get("addressLines") or []]
     town = " ".join(p for p in (_text(raw.get("postalCode")), _text(raw.get("locality"))) if p)
     return ", ".join(part for part in (*lines, town) if part)
+
+
+def _region(raw: dict) -> str:
+    """Region of a Spanish address, from its postal code; empty for any other country."""
+    if _text(raw.get("regionCode")) != "ES":
+        return ""
+    return region_for_postal_code(_text(raw.get("postalCode")))
 
 
 def _days(period: dict) -> list[date]:

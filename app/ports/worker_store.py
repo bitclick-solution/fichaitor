@@ -2,9 +2,10 @@
 
 from collections.abc import Sequence
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import date, datetime
 from typing import Protocol
 
+from app.domain.actions import REPLY_REVIEW
 from app.domain.offboarding import RetentionPolicy
 from app.domain.profile_summary import ProfileSummary, Review
 
@@ -53,6 +54,9 @@ class ClaimedAction:
     # The account, its Google identity, its profile and the review agree with one
     # another. An action that does not (only a forged row can) is never sent.
     coherent: bool = True
+    type: str = REPLY_REVIEW
+    # set_special_hours: the day it changes (also inside `text`, which must agree).
+    special_date: date | None = None
 
 
 @dataclass(frozen=True)
@@ -130,9 +134,10 @@ class WorkerStore(Protocol):
         already finished, or belongs to another job. The same job can claim it again
         (a retry).
 
-        `coherent` is False unless the review exists with the action's Google user and
-        profile, and the action's account has that Google user and that profile (not
-        retired, the account not deleted). The executor fails such an action.
+        `coherent` is False unless the action's account has that Google user and that
+        profile (not retired, the account not deleted) and, for a reply, the review
+        exists with the action's Google user and profile; for special hours, the action
+        names its day. The executor fails such an action.
         """
         ...
 
@@ -149,9 +154,10 @@ class WorkerStore(Protocol):
     ) -> bool:
         """Close the action that job holds and write its audit row, both or neither.
 
-        done: the stored review becomes answered with the confirmed text and, if it
-        was unanswered, the unanswered counts of the summary go down. Otherwise
-        `reason` is the error code.
+        done, for a reply: the stored review becomes answered with the confirmed text
+        and, if it was unanswered, the unanswered counts of the summary go down. Done,
+        for special hours: the day joins the special dates of the stored facts.
+        Otherwise `reason` is the error code. The audit events depend on the type.
         False if that job no longer holds the action.
         """
         ...

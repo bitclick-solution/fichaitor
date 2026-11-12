@@ -289,6 +289,27 @@ TEXTS: dict[str, str] = {
         "Una oferta publicada con tiempo se ve más días."
     ),
     "keydate.declined": "Anotado. No te lo vuelvo a proponer este año.",
+    # NEW (key dates, 2026-11-12): a day that is not a holiday but on which hours often
+    # change (Nochebuena, Nochevieja). Same buttons as holiday.ask.
+    "eve.ask": (
+        "El {fecha_larga} es {nombre}. ¿Abres?\n"
+        "Si no me dices nada, tu ficha mostrará el horario normal."
+    ),
+    # NEW: the profile of the key date is no longer the selected one, or a leave is
+    # scheduled: nothing can be changed from the chat.
+    "keydate.gone": (
+        "Ese día era de una ficha que ya no tienes elegida en Fichaitor. No he cambiado nada."
+    ),
+    # NEW: the executor could not apply the hours before the day ended.
+    "hours.too_late": (
+        "No he podido enviar a tiempo el horario del {fecha_larga} y el día ya ha pasado. "
+        "No se ha cambiado nada en tu ficha."
+    ),
+    # NEW: "Abro normal" on a profile without regular hours in Google.
+    "hours.no_regular": (
+        "Tu ficha no tiene horario normal en Google, así que no puedo copiarlo al "
+        "{fecha_larga}. No he cambiado nada. Ponlo desde el panel: {enlace_panel}"
+    ),
     "reminder.pending": "Sigue pendiente: {resumen_propuesta}. Caduca el {fecha_larga}.",
     "expired.past": (
         "Esa propuesta era para el {fecha_larga} y ya ha pasado. No he cambiado nada en tu ficha."

@@ -2,7 +2,7 @@
 
 Este documento describe los datos del calendario, su origen, cómo se actualizan cada año y qué reglas deciden qué fecha se propone a cada negocio.
 
-Estado a 11 de noviembre de 2026.
+Estado a 12 de noviembre de 2026.
 
 ## Piezas
 
@@ -126,6 +126,25 @@ Ejemplos de texto:
 
 El límite de mensajes por semana, el horario de silencio, los recordatorios y los botones no están aquí: son del planificador y de la propuesta.
 
+## Preguntar por el horario
+
+Desde el 2026-11-12 el producto pregunta al dueño, por cada ficha y día, si abre y con qué horario. Las reglas puras están en `app/domain/key_dates.py`; el cambio de horario, en `app/domain/special_hours.py`. Manda el código: `due_proposals` (agrupación de varias fechas en un mensaje) no se usa para esto.
+
+| Regla | Comportamiento |
+|---|---|
+| Qué días | Los festivos de la ficha (nacionales, de su comunidad y, si los datos los tienen, de su municipio) y el primer día de las temporadas `christmas` y `new_years_eve`: **Nochebuena** y **Nochevieja**. Las fechas comerciales (Black Friday, rebajas) piden una oferta, no un horario: esperan a las publicaciones |
+| Antelación | Festivo: 5 días (`FICHAITOR_KEY_DATES_LEAD_DAYS`). Nochebuena y Nochevieja: los 21 días de su temporada (`lead_days` del archivo) |
+| Ventana | Desde el aviso hasta el día anterior. El mismo día ya no se pregunta |
+| Una por día | Una propuesta por ficha y día, con clave `<loc_…>:<AAAA-MM-DD>`. Si coinciden un festivo y Nochebuena, gana el festivo. Repetir la planificación no crea nada |
+| Ya resuelto en Google | No se pregunta un día que ya tiene horario especial en la ficha (`facts.special_dates` de la última sincronización) |
+| Comunidad | La guarda la sincronización en `facts.region`, a partir del código postal de la dirección (`storefrontAddress.postalCode`, solo si `regionCode` es `ES`): las dos primeras cifras son la provincia. Si no está (fichas sincronizadas antes), se saca del código postal de la dirección guardada. Sin ninguno, solo festivos nacionales |
+| Municipio | No se conoce todavía (la ficha no trae el código INE): las fiestas locales precargadas no se proponen |
+| Qué fichas | Las elegidas de cuentas no dadas de baja ni desconectadas, sin baja programada, no retiradas, cuya última sincronización no perdió el acceso y guardó sus hechos. Con chat vinculado o sin él: el panel las muestra igual |
+| Cuándo salen | El job `plan_key_dates` corre una vez al día a las 9:05 (hora peninsular). Los mensajes los envía la conversación con sus reglas: horario de silencio (de 21:00 a 9:00), límite semanal y cola |
+| Caducidad | La propuesta sin respuesta caduca a las 00:00 del día (flujo 3 del guion); el dueño todavía puede responderla ese día desde el chat (flujo 9) o desde el panel. Una confirmada que el worker no consigue aplicar antes de que acabe el día falla con `date_passed` |
+
+Las respuestas posibles: **cerrado**, **horario normal** (se copia el horario normal de ese día de la semana que la ficha tenga en Google al enviarlo) u **otro horario** (una o dos franjas, sin cruzar la medianoche). Consulta `docs/canales.md` y `docs/contrato-web-api.md`, "Fechas clave".
+
 ## Actualizar los festivos cada año
 
 La resolución se publica en el BOE en octubre. Haz la carga antes del 1 de diciembre: el aviso del 1 de enero sale el 27 de diciembre y la temporada de Nochevieja incluye el Año Nuevo.
@@ -226,8 +245,8 @@ Un festivo precargado solo se aplica a los negocios cuyo `municipality_code` coi
 
 ## Qué hace falta fuera de estas rutas
 
-- **Imagen de Docker.** El `Dockerfile` solo copia `app`. Añade `COPY data ./data`; el cargador busca los datos en `/srv/data/calendar`.
-- **Arranque.** Llama a `load_calendar()` una vez al arrancar el worker, para que un archivo mal formado detenga el servicio.
+- **Imagen de Docker.** Hecho: el `Dockerfile` copia `data`.
+- **Arranque.** El proceso de la conversación llama a `load_calendar()` al arrancar. Si un archivo está mal formado, registra `key_dates_calendar_error` y sigue sin fechas clave (el resto del producto no se detiene).
 - **Persistencia.** El LLD prevé `event_preference(declined_count)`. Para la regla de dos años seguidos hace falta el año de cada descarte: guarda una fila por descarte con el identificador del evento y la fecha, que es lo que recibe `Business.dismissed`.
 - **Alta.** Falta la pregunta de las dos fiestas locales y su confirmación cada diciembre.
-- **Planificador.** Tiene que guardar las claves de cada propuesta creada y pasarlas en `already_proposed`.
+- **Planificador.** Hecho para el horario (`plan_key_dates`): la clave de cada propuesta es la ficha y el día, y la base impide repetirla. El aprendizaje por descartes (`Dismissal`) no se aplica todavía a los festivos, que nunca se silencian.

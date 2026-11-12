@@ -9,9 +9,10 @@ idempotency key per slot, so that any number of processes enqueue each job once:
   30 minutes from 8:30 to 21:00 (local) and every 3 hours at night: key
   `sync:<google_sub>:<location>:<slot>`.
 
-`plan_key_dates` is not enqueued: the executor of `set_special_hours` does not exist
-yet (docs/canales.md, step 7). A profile with a scheduled leave is not synced (the
-worker would skip it anyway).
+- `plan_key_dates`, when given its kind, once a local day, to run at 9:05: key
+  `plan_key_dates:<date>`.
+
+A profile with a scheduled leave is not synced (the worker would skip it anyway).
 """
 
 import asyncio
@@ -39,6 +40,7 @@ class ChannelPlanner:
         zone: tzinfo | None = None,
         sync_kind: str = SYNC_KIND,
         tick_kind: str = channel_jobs.CONVERSATION_TICK,
+        plan_kind: str | None = None,
     ) -> None:
         self._jobs = jobs
         self._profiles = profiles
@@ -47,6 +49,8 @@ class ChannelPlanner:
         self._zone = zone or timezone_for(DEFAULT_TIMEZONE)
         self._sync_kind = sync_kind
         self._tick_kind = tick_kind
+        # The kind of the daily planning of key dates; None: not enqueued.
+        self._plan_kind = plan_kind
 
     async def plan_once(self) -> dict[str, int]:
         """Enqueue what is due now. Returns how many jobs were created of each kind."""
@@ -73,6 +77,19 @@ class ChannelPlanner:
                 max_attempts=SYNC_MAX_ATTEMPTS,
             ):
                 created["sync_profile"] += 1
+        if self._plan_kind is not None:
+            today = now.astimezone(self._zone).date()
+            created["plan_key_dates"] = int(
+                await self._jobs.enqueue(
+                    self._plan_kind,
+                    {},
+                    idempotency_key=channel_jobs.plan_key_dates_key(today).replace(
+                        channel_jobs.PLAN_KEY_DATES, self._plan_kind, 1
+                    ),
+                    run_at=channel_jobs.plan_key_dates_run_at(now, self._zone),
+                    max_attempts=channel_jobs.PLAN_MAX_ATTEMPTS,
+                )
+            )
         return created
 
     async def run(self, stop: asyncio.Event, every: float = PLAN_EVERY_SECONDS) -> None:

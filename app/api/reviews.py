@@ -87,7 +87,7 @@ class ReplyRequest(BaseModel):
 class ActionResponse(BaseModel):
     id: str
     type: str
-    review_id: str
+    review_id: str | None  # None for a change of hours (key dates)
     status: str
     message: str
     error: str | None
@@ -117,7 +117,7 @@ def _action_out(action: StoredAction) -> ActionResponse:
         type=action.type,
         review_id=action.review_id,
         status=status_label(action.state),
-        message=status_message(action.state, action.error_code),
+        message=status_message(action.state, action.error_code, action.type),
         error=action.error_code,
         confirmed_at=seconds(action.confirmed_at),
         finished_at=seconds(action.finished_at),

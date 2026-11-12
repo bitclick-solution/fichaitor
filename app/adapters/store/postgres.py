@@ -11,16 +11,34 @@ which it can read but never change, and it can only add to the audit log.
 """
 
 import json
+import secrets
 from collections.abc import Sequence
-from datetime import datetime
+from datetime import date, datetime
 
 import asyncpg
 
-from app.adapters.conversation_store.postgres import insert_link_code
+from app.adapters.conversation_store.postgres import (
+    PROPOSAL_COLUMNS,
+    insert_link_code,
+    proposal_from_row,
+)
 from app.adapters.job_queue.postgres import PostgresJobQueue
-from app.domain.actions import EVENT_CONFIRMED, REPLY_REVIEW
+from app.domain.actions import (
+    EVENT_CONFIRMED,
+    EVENT_HOURS_CONFIRMED,
+    REPLY_REVIEW,
+    SET_SPECIAL_HOURS,
+)
 from app.domain.conversation import ChannelIdentity
 from app.domain.jobs import DEFAULT_MAX_ATTEMPTS
+from app.domain.key_dates import (
+    OUTCOME_DISMISSED,
+    REFUSED_PROFILE,
+    PanelRefused,
+    panel_confirm_path,
+    panel_dismiss_path,
+    panel_event_id,
+)
 from app.domain.link_codes import LinkCode
 from app.domain.offboarding import (
     APPLY_KIND,
@@ -37,10 +55,14 @@ from app.domain.offboarding import (
     same_hash,
 )
 from app.domain.profile_summary import ProfileFacts, facts_from_json
+from app.domain.proposals import ProposalType, advance
 from app.domain.quota import window
 from app.domain.sentiment import Analysis, Figures, TopicCount, first_history_month
+from app.domain.special_hours import JOB_MAX_ATTEMPTS as HOURS_MAX_ATTEMPTS
+from app.domain.special_hours import SpecialHoursChange, describe
 from app.ports.channel_links import LinkCodeTaken
 from app.ports.google_oauth import ProfileLocation
+from app.ports.key_dates import KeyDateNotFound, KeyDateView, SpecialHoursInProgress
 from app.ports.quota import QuotaUnavailable
 from app.ports.store import (
     Account,
@@ -98,6 +120,7 @@ class PostgresStore:
         reply_job_kind: str = REPLY_REVIEW,
         mail_job_kind: str = SEND_MAIL_KIND,
         apply_job_kind: str = APPLY_KIND,
+        hours_job_kind: str = SET_SPECIAL_HOURS,
     ) -> None:
         self._dsn = dsn
         self._pool: asyncpg.Pool | None = None
@@ -107,6 +130,7 @@ class PostgresStore:
         self._reply_job_kind = reply_job_kind
         self._mail_job_kind = mail_job_kind
         self._apply_job_kind = apply_job_kind
+        self._hours_job_kind = hours_job_kind
 
     async def connect(self) -> None:
         self._pool = await asyncpg.create_pool(self._dsn, min_size=1, max_size=5)
@@ -549,7 +573,8 @@ class PostgresStore:
     async def get_action(self, account_id: str, action_id: str) -> StoredAction | None:
         row = await self._require_pool().fetchrow(
             """
-            SELECT id, type, review_id, state, error_code, confirmed_at, finished_at
+            SELECT id, type, review_id, state, error_code, confirmed_at, finished_at,
+                   special_date
             FROM action WHERE id = $2 AND account_id = $1::uuid
             """,
             account_id,
@@ -565,7 +590,196 @@ class PostgresStore:
             row["error_code"],
             row["confirmed_at"],
             row["finished_at"],
+            row["special_date"],
         )
+
+    # --- key dates: the hours of one day (app/ports/key_dates.py) -----------------
+
+    async def _insert_hours_action(
+        self,
+        conn: asyncpg.Connection,
+        account_id: str,
+        location_id: str,
+        change: SpecialHoursChange,
+        now: datetime,
+    ) -> str | None:
+        """The action, its audit row and its job, on a connection inside a transaction.
+        The account, its Google identity and the profile come from the same join as every
+        read: only the selected profile of that account, without a leave."""
+        action_id = await conn.fetchval(
+            f"""
+            INSERT INTO action
+                (account_id, type, google_sub, location, special_date, text, confirmed_at)
+            SELECT a.id, $3, a.google_sub, l.gbp_location, $4, $5, $6
+            {_SELECTED}
+            WHERE a.id = $1::uuid AND l.id = $2 AND {_NO_OPEN_LEAVE}
+            ON CONFLICT DO NOTHING
+            RETURNING id
+            """,  # noqa: S608
+            account_id,
+            location_id,
+            SET_SPECIAL_HOURS,
+            change.day,
+            change.to_text(),
+            now,
+        )
+        if action_id is None:
+            owned = await conn.fetchval(
+                f"SELECT 1 {_SELECTED} WHERE a.id = $1::uuid AND l.id = $2 AND {_NO_OPEN_LEAVE}",  # noqa: S608
+                account_id,
+                location_id,
+            )
+            if owned is None:
+                return None
+            raise SpecialHoursInProgress
+        await conn.execute(
+            """
+            INSERT INTO audit_log
+                (event, account_id, action_id, action_type, location, review_id,
+                 gbp_review_id, text, confirmed_at)
+            SELECT $2, a.account_id, a.id, a.type, a.location, '', '', a.text, a.confirmed_at
+            FROM action a WHERE a.id = $1
+            """,
+            action_id,
+            EVENT_HOURS_CONFIRMED,
+        )
+        # The job carries the id of the action and nothing else, as for a reply.
+        await conn.execute(
+            """
+            INSERT INTO job (kind, payload, idempotency_key, max_attempts)
+            VALUES ($1, $2::jsonb, $3, $4)
+            """,
+            self._hours_job_kind,
+            json.dumps({"action_id": action_id}),
+            f"{self._hours_job_kind}:{action_id}",
+            HOURS_MAX_ATTEMPTS,
+        )
+        return action_id
+
+    async def create_special_hours_action(
+        self, account_id: str, location_id: str, change: SpecialHoursChange, now: datetime
+    ) -> str | None:
+        async with self._require_pool().acquire() as conn, conn.transaction():
+            return await self._insert_hours_action(conn, account_id, location_id, change, now)
+
+    @staticmethod
+    def _key_dates_sql(condition: str) -> str:
+        """Key date proposals of the selected profile of account $1, with their action.
+        `condition` narrows the proposals (pr) further; it is never built from input."""
+        return f"""
+            SELECT p.*, x.id AS x_id, x.type AS x_type, x.state AS x_state,
+                   x.error_code AS x_error, x.confirmed_at AS x_confirmed_at,
+                   x.finished_at AS x_finished_at, x.special_date AS x_special_date
+            FROM (
+                SELECT {PROPOSAL_COLUMNS} FROM proposal pr
+                WHERE pr.account_id = $1::uuid AND pr.type = 'key_date'
+                  AND pr.payload->>'location_id' = (
+                      SELECT a.selected_location_id FROM account a
+                      WHERE a.id = $1::uuid AND a.deleted_at IS NULL)
+                  AND {condition}
+            ) p
+            LEFT JOIN action x ON x.id = p.action_id AND x.account_id = $1::uuid
+            ORDER BY p.payload::jsonb->>'date', p.id
+        """  # noqa: S608
+
+    async def list_key_dates(self, account_id: str, today: date) -> list[KeyDateView]:
+        rows = await self._require_pool().fetch(
+            self._key_dates_sql("pr.payload->>'date' >= $2"), account_id, today.isoformat()
+        )
+        return [_key_date(r) for r in rows]
+
+    async def get_key_date(self, account_id: str, proposal_id: str) -> KeyDateView | None:
+        row = await self._require_pool().fetchrow(
+            self._key_dates_sql("pr.id = $2"), account_id, proposal_id
+        )
+        return _key_date(row) if row is not None else None
+
+    async def _locked_key_date(self, conn: asyncpg.Connection, account_id: str, proposal_id: str):
+        # The thread of the conversation first, as the conversation itself does: a press
+        # in the chat and an answer in the panel are handled one after the other.
+        await conn.execute(
+            "SELECT 1 FROM conversation WHERE account_id = $1::uuid FOR UPDATE", account_id
+        )
+        row = await conn.fetchrow(
+            f"""
+            SELECT {PROPOSAL_COLUMNS} FROM proposal
+            WHERE id = $2 AND account_id = $1::uuid AND type = $3
+            FOR UPDATE
+            """,  # noqa: S608
+            account_id,
+            proposal_id,
+            ProposalType.KEY_DATE.value,
+        )
+        if row is None:
+            raise KeyDateNotFound
+        return proposal_from_row(row)
+
+    @staticmethod
+    async def _release(conn: asyncpg.Connection, account_id: str, proposal_id: str) -> None:
+        await conn.execute(
+            """
+            UPDATE conversation SET active_proposal_id = NULL, updated_at = now()
+            WHERE account_id = $1::uuid AND active_proposal_id = $2
+            """,
+            account_id,
+            proposal_id,
+        )
+
+    async def answer_key_date(
+        self,
+        account_id: str,
+        proposal_id: str,
+        change: SpecialHoursChange,
+        now: datetime,
+        today: date,
+    ) -> str:
+        async with self._require_pool().acquire() as conn, conn.transaction():
+            proposal = await self._locked_key_date(conn, account_id, proposal_id)
+            if proposal.payload.get("date") != change.day.isoformat():
+                raise KeyDateNotFound
+            path = panel_confirm_path(proposal.state, change.day, today)
+            action_id = await self._insert_hours_action(
+                conn, account_id, str(proposal.payload.get("location_id", "")), change, now
+            )
+            if action_id is None:
+                raise PanelRefused(REFUSED_PROFILE)
+            confirmed = {"kind": change.kind, "periods": [list(p) for p in change.periods]}
+            await conn.execute(
+                """
+                UPDATE proposal SET
+                    state = $2, step_token = $3, message_refs = '{}'::jsonb,
+                    slots = slots || $4::jsonb, confirmed_at = $5, confirmed_event_id = $6,
+                    confirmed_summary = $7, action_id = $8, outcome_reason = NULL
+                WHERE id = $1
+                """,
+                proposal_id,
+                advance(proposal.state, *path).value,
+                secrets.token_hex(3),
+                json.dumps({"confirmed": confirmed, "answered_in": "panel"}),
+                now,
+                panel_event_id(now, secrets.token_hex(4)),
+                f"{change.day.isoformat()}: {describe(change)}",
+                action_id,
+            )
+            await self._release(conn, account_id, proposal_id)
+        return action_id
+
+    async def dismiss_key_date(self, account_id: str, proposal_id: str, now: datetime) -> None:
+        async with self._require_pool().acquire() as conn, conn.transaction():
+            proposal = await self._locked_key_date(conn, account_id, proposal_id)
+            path = panel_dismiss_path(proposal.state)
+            await conn.execute(
+                """
+                UPDATE proposal SET state = $2, step_token = $3, message_refs = '{}'::jsonb,
+                                    outcome_reason = $4
+                WHERE id = $1
+                """,
+                proposal_id,
+                advance(proposal.state, *path).value,
+                secrets.token_hex(3),
+                OUTCOME_DISMISSED,
+            )
+            await self._release(conn, account_id, proposal_id)
 
     async def sentiment(self, account_id: str, now: datetime) -> StoredSentiment | None:
         # Same join as the summary: the analysis is reached through the account's own
@@ -922,6 +1136,34 @@ def _topic_counts(raw: str | None) -> tuple[TopicCount, ...]:
         if isinstance(item, dict)
         and isinstance(item.get("topic"), str)
         and isinstance(item.get("mentions"), int)
+    )
+
+
+def _key_date(row: asyncpg.Record) -> KeyDateView:
+    proposal = proposal_from_row(row)
+    action = None
+    if row["x_id"] is not None:
+        action = StoredAction(
+            row["x_id"],
+            row["x_type"],
+            None,
+            row["x_state"],
+            row["x_error"],
+            row["x_confirmed_at"],
+            row["x_finished_at"],
+            row["x_special_date"],
+        )
+    payload = proposal.payload
+    return KeyDateView(
+        id=proposal.id,
+        day=date.fromisoformat(payload["date"]),
+        name=str(payload.get("name", "")),
+        kind=str(payload.get("kind", "")),
+        state=proposal.state,
+        location_id=str(payload.get("location_id", "")),
+        expires_at=proposal.expires_at,
+        confirmed=dict(proposal.slots.get("confirmed") or {}),
+        action=action,
     )
 
 

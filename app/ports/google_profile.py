@@ -1,8 +1,10 @@
 """Access to Google Business Profile, as the worker needs it: the reads of a sync and
-the one write there is so far, the reply to a review."""
+the two writes: the reply to a review and the special hours of a day."""
 
+from collections.abc import Mapping
+from dataclasses import dataclass
 from datetime import datetime
-from typing import Protocol
+from typing import Any, Protocol
 
 from app.domain.profile_summary import MediaSummary, ProfileDetails, ReviewSet
 
@@ -24,6 +26,15 @@ class GoogleRejected(GoogleProfileError):
 class ReconnectRequired(Exception):
     """The owner's grant is gone (revoked or expired): they must connect again.
     Never retried."""
+
+
+@dataclass(frozen=True)
+class LocationHours:
+    """The hours of a profile as Google has them now, in Google's own shapes:
+    `regularHours.periods` and `specialHours.specialHourPeriods`."""
+
+    regular: tuple[Mapping[str, Any], ...] = ()
+    special: tuple[Mapping[str, Any], ...] = ()
 
 
 class GoogleProfile(Protocol):
@@ -70,5 +81,20 @@ class GoogleProfile(Protocol):
         `text` is sent exactly as given. One request and no retry inside: a temporary
         failure (GoogleProfileError) may or may not have reached Google, and deciding
         what to do next is up to the caller. Returns Google's update time if it gives one.
+        """
+        ...
+
+    async def hours(self, access_token: str, location: str) -> LocationHours:
+        """The regular and the special hours of the profile, read right now."""
+        ...
+
+    async def set_special_hours(
+        self, access_token: str, location: str, periods: list[dict[str, Any]]
+    ) -> None:
+        """Replace the whole list of special hours of the profile with `periods`. THE
+        WRITE: public once Google accepts it. The caller sends every period it read,
+        changed only on the day it means to change.
+
+        One request and no retry inside, as with the reply to a review.
         """
         ...

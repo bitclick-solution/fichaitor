@@ -12,7 +12,8 @@ from app.domain.profile_summary import (
     ReviewSet,
     collect_facts,
 )
-from app.ports.google_profile import GoogleProfileError, GoogleRejected
+from app.domain.special_hours import weekly_hours
+from app.ports.google_profile import GoogleProfileError, GoogleRejected, LocationHours
 
 FAKE_ACCESS_TOKEN = "fake-access-token"
 DEMO_ATTRIBUTES = 3
@@ -82,6 +83,7 @@ def demo_details(today: date | None = None, hours: ProfileHours | None = None) -
         is_open=True,
         place_id="",
         maps_url="",
+        regular_hours=weekly_hours(demo_regular_hours()),
     )
 
 
@@ -94,6 +96,29 @@ def demo_facts(now: datetime | None = None) -> ProfileFacts:
     """What a sync of the demo profile stores."""
     now = now or datetime.now(UTC)
     return collect_facts(demo_details(now.date()), demo_media(now), DEMO_ATTRIBUTES, now.date())
+
+
+def demo_regular_hours() -> tuple[dict, ...]:
+    """A bar open from Monday to Saturday, 9:00 to 14:00 and 17:00 to 23:00, and on
+    Sunday morning. In Google's shape (regularHours.periods)."""
+    days = ("MONDAY", "TUESDAY", "WEDNESDAY", "THURSDAY", "FRIDAY", "SATURDAY")
+    periods = []
+    for day in days:
+        periods.append(
+            {"openDay": day, "openTime": {"hours": 9}, "closeDay": day, "closeTime": {"hours": 14}}
+        )
+        periods.append(
+            {"openDay": day, "openTime": {"hours": 17}, "closeDay": day, "closeTime": {"hours": 23}}
+        )
+    periods.append(
+        {
+            "openDay": "SUNDAY",
+            "openTime": {"hours": 10},
+            "closeDay": "SUNDAY",
+            "closeTime": {"hours": 14},
+        }
+    )
+    return tuple(periods)
 
 
 class FakeGoogleProfile:
@@ -113,6 +138,8 @@ class FakeGoogleProfile:
         optional_error: Exception | None = None,
         reply_error: Exception | None = None,
         reply_failures: int = 0,
+        regular_hours: tuple[dict, ...] | None = None,
+        special_hours: tuple[dict, ...] = (),
     ) -> None:
         self._reviews = reviews if reviews is not None else demo_reviews()
         # `hours` alone keeps the rest of the demo profile; `details` replaces it all.
@@ -137,6 +164,16 @@ class FakeGoogleProfile:
         self.revoke_error: Exception | None = None  # raised on every revocation
         self.revoked: list[str] = []  # refresh tokens "revoked at Google"
         self._replied: dict[tuple[str, str], tuple[str, datetime]] = {}  # by profile and review
+        # Special hours: what "Google" has for every profile (the same list for all at
+        # first), and every write that reached it: (location, the whole list sent).
+        self.regular_hours = regular_hours if regular_hours is not None else demo_regular_hours()
+        self._initial_special = tuple(dict(p) for p in special_hours)
+        self.special: dict[str, list[dict]] = {}
+        self.special_writes: list[tuple[str, list[dict]]] = []
+        self.hours_error: Exception | None = None  # raised on every read of the hours
+        self.hours_error_location: str | None = None  # only for that profile, if set
+        self.special_error: Exception | None = None  # raised on every write of special hours
+        self.special_failures = 0  # this many writes fail (503), then they work
 
     async def revoke_token(self, refresh_token: str) -> None:
         # Nothing leaves the process. Tests set revoke_error and read revoked.
@@ -199,6 +236,31 @@ class FakeGoogleProfile:
         if failing:
             raise GoogleProfileError("fallo temporal simulado", 503)
         return now
+
+    def special_of(self, location: str) -> list[dict]:
+        return self.special.setdefault(location, [dict(p) for p in self._initial_special])
+
+    async def hours(self, access_token: str, location: str) -> LocationHours:
+        self._read("hours", location)
+        if self.hours_error is not None and self.hours_error_location in (None, location):
+            raise self.hours_error
+        return LocationHours(
+            regular=tuple(dict(p) for p in self.regular_hours),
+            special=tuple(dict(p) for p in self.special_of(location)),
+        )
+
+    async def set_special_hours(self, access_token: str, location: str, periods: list) -> None:
+        self.write_attempts += 1
+        if self.special_error is not None:
+            raise self.special_error
+        failing = self.special_failures > 0
+        if failing:
+            self.special_failures -= 1
+        if not failing or self.failed_writes_arrive:
+            self.special[location] = [dict(p) for p in periods]
+            self.special_writes.append((location, [dict(p) for p in periods]))
+        if failing:
+            raise GoogleProfileError("fallo temporal simulado", 503)
 
     async def details(self, access_token: str, location: str) -> ProfileDetails:
         self._read("details", location)

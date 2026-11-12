@@ -45,6 +45,9 @@ class ActionRequest:
     confirmed_at: datetime
     confirmed_channel: str
     confirmed_event_id: str
+    # set_special_hours: the profile ("loc_...") the key date was proposed for. The
+    # implementation checks that it is still the selected one of the account.
+    location_id: str = ""
 
 
 @dataclass(frozen=True)

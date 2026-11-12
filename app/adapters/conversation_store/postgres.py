@@ -39,8 +39,14 @@ from app.domain.link_codes import (
     SenderState,
     failure_window,
 )
+from app.domain.profile_summary import facts_from_json
 from app.domain.proposals import Proposal, ProposalState, ProposalType
-from app.ports.conversation_store import LinkResult, MessageRecord, ReviewTarget
+from app.ports.conversation_store import (
+    KeyDateProfile,
+    LinkResult,
+    MessageRecord,
+    ReviewTarget,
+)
 
 # The connection of the lock this task holds, if any, and the store it belongs to.
 _HELD: ContextVar[tuple[object, asyncpg.Connection] | None] = ContextVar(
@@ -104,6 +110,11 @@ def _proposal(row: asyncpg.Record) -> Proposal:
         action_id=row["action_id"],
         outcome_reason=row["outcome_reason"],
     )
+
+
+# Shared with the API's store, which reads and moves key dates for the panel.
+PROPOSAL_COLUMNS = _PROPOSAL
+proposal_from_row = _proposal
 
 
 def _json(value: Any) -> str:
@@ -726,6 +737,42 @@ class PostgresConversationStore:
                 """
             )
         return [(r["google_sub"], r["gbp_location"]) for r in rows]
+
+    async def key_date_profiles(self) -> list[KeyDateProfile]:
+        """The profiles the planner of key dates asks about (KeyDateProfiles)."""
+        async with self._conn() as conn:
+            rows = await conn.fetch(
+                """
+                SELECT a.id::text AS account_id, l.id AS location_id, p.facts::text AS facts
+                FROM account a
+                JOIN location l
+                  ON l.id = a.selected_location_id AND l.account_id = a.id
+                 AND l.removed_at IS NULL
+                JOIN profile_summary p
+                  ON p.google_sub = a.google_sub AND p.location = l.gbp_location
+                WHERE a.deleted_at IS NULL AND a.disconnected_at IS NULL
+                  AND p.status <> 'needs_reconnect' AND p.facts IS NOT NULL
+                  AND NOT EXISTS (SELECT 1 FROM offboarding o
+                                  WHERE o.google_sub = a.google_sub
+                                    AND o.restored_at IS NULL AND o.purged_at IS NULL)
+                ORDER BY a.id
+                """
+            )
+        found = []
+        for row in rows:
+            facts = facts_from_json(json.loads(row["facts"]))
+            if facts is None:
+                continue  # unreadable or of another version: the next sync rewrites them
+            found.append(
+                KeyDateProfile(
+                    row["account_id"],
+                    row["location_id"],
+                    facts.region,
+                    facts.address,
+                    facts.special_dates,
+                )
+            )
+        return found
 
     async def scrub_job(self, job_id: str) -> None:
         """Empty the payload of a job: the update of a webhook may carry a link code."""

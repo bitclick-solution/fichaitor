@@ -34,6 +34,7 @@ from app.worker import (
     reply_review,
     retention,
     send_mail,
+    set_special_hours,
     sync_profile,
 )
 from app.worker.config import ConfigError, WorkerSettings
@@ -74,6 +75,11 @@ def build_registry(
     registry.register(
         reply_review.KIND,
         reply_review.ReplyReview(store, google, settings.token_private_key, results=jobs),
+    )
+    # The special hours of a key date (docs/calendario.md): the second write to Google.
+    registry.register(
+        set_special_hours.KIND,
+        set_special_hours.SetSpecialHours(store, google, settings.token_private_key, results=jobs),
     )
     # Leaving: the emails, making a leave effective at its date, and the daily pass
     # that deletes what is past its term (docs/retencion.md).

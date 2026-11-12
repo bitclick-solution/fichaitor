@@ -777,6 +777,7 @@ def test_the_worker_process_registers_the_executor():
     assert set(registry.kinds) == {
         "sync_profile",
         "reply_review",
+        "set_special_hours",
         "analyze_sentiment",
         "send_mail",
         "apply_offboarding",

@@ -138,7 +138,7 @@ Valores de `intent`: `answer_active_proposal`, `owner_order`, `expert_question`,
 
 | `type` | Carga | API de Google |
 |---|---|---|
-| `set_special_hours` | `[{date, closed \| open, close}]` | Business Information, `specialHours` |
+| `set_special_hours` | `[{date, closed}]`, `[{date, regular}]` o una o dos `{date, open, close}` del mismo día. Se guarda en `action.text` en forma canónica y `action.special_date` | Business Information, `locations.patch` con `updateMask=specialHours`: se lee la lista, se cambia solo ese día y se envía entera |
 | `set_regular_hours` | `{periods}` | Business Information, `regularHours` |
 | `reply_review` | `{gbp_review_id, text}` | My Business v4, `reviews.updateReply` |
 | `create_post` | `{post_type: update \| offer \| event, body, media_id?, offer?, cta?}` | My Business v4, `localPosts` |
@@ -189,7 +189,7 @@ Prefijo `/api/v1`. Autenticación por sesión con cookie; los webhooks, por firm
 | `GET /google/locations`, `POST /businesses` | Elegir ficha y crear el negocio |
 | `POST /channels/link-code` | Genera el código de vinculación |
 | `GET /proposals`, `GET /proposals/{id}` | Bandeja e historial |
-| `POST /proposals/{id}/confirm`, `/edit`, `/dismiss` | Mismas acciones que por WhatsApp |
+| `POST /proposals/{id}/confirm`, `/edit`, `/dismiss` | Mismas acciones que por WhatsApp. Para las fechas clave existe ya como `GET /me/key-dates` y `POST /me/key-dates/{id}/answer` y `/dismiss` (`docs/contrato-web-api.md`) |
 | `GET /reviews`, `GET /posts`, `GET /media` | Listados |
 | `POST /media` | Subida de foto desde el panel |
 | `GET /metrics` | Indicadores de la ficha y del agente |

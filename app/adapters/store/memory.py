@@ -4,12 +4,20 @@ import secrets
 import uuid
 from collections.abc import Sequence
 from dataclasses import dataclass, replace
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
 
 from app.adapters.memory_tables import ActionRow, MemoryTables, ReviewRow
 from app.adapters.quota.memory import MemoryQuota
-from app.domain.actions import REPLY_REVIEW
+from app.domain.actions import REPLY_REVIEW, SET_SPECIAL_HOURS
 from app.domain.conversation import ChannelIdentity
+from app.domain.key_dates import (
+    OUTCOME_DISMISSED,
+    REFUSED_PROFILE,
+    PanelRefused,
+    panel_confirm_path,
+    panel_dismiss_path,
+    panel_event_id,
+)
 from app.domain.link_codes import LinkCode
 from app.domain.offboarding import (
     APPLY_KIND,
@@ -26,9 +34,13 @@ from app.domain.offboarding import (
     PendingDeletion,
     same_hash,
 )
+from app.domain.proposals import Proposal, ProposalType, advance
+from app.domain.special_hours import JOB_MAX_ATTEMPTS as HOURS_MAX_ATTEMPTS
+from app.domain.special_hours import SpecialHoursChange, describe
 from app.ports.channel_links import LinkCodeTaken
 from app.ports.google_oauth import ProfileLocation
 from app.ports.job_queue import JobEnqueuer
+from app.ports.key_dates import KeyDateNotFound, KeyDateView, SpecialHoursInProgress
 from app.ports.store import (
     Account,
     GoogleConnection,
@@ -126,6 +138,8 @@ class MemoryStore:
         # Messaging channels: what the conversation would have linked, and the codes.
         self.channels: list[ChannelIdentity] = []
         self.link_codes: list[LinkCode] = []  # hashes only, never a code
+        # Key date proposals, as the conversation would have created them (by id).
+        self.key_date_proposals: dict[str, Proposal] = {}
         self._fail = fail
 
     def _check(self) -> None:
@@ -358,11 +372,132 @@ class MemoryStore:
         return StoredAction(
             action.id,
             action.type,
-            action.review_id,
+            action.review_id if action.type == REPLY_REVIEW else None,
             action.state,
             action.error_code,
             action.confirmed_at,
             action.finished_at,
+            action.special_date,
+        )
+
+    # --- key dates: the hours of one day (app/ports/key_dates.py) -----------------
+
+    def _selected_id(self, account_id: str) -> str | None:
+        account = next((a for a in self.accounts.values() if a.id == account_id), None)
+        return account.selected_location_id if account is not None else None
+
+    async def create_special_hours_action(
+        self, account_id: str, location_id: str, change: SpecialHoursChange, now: datetime
+    ) -> str | None:
+        self._check()
+        key = self._selected_key(account_id)
+        if key is None or self._selected_id(account_id) != location_id:
+            return None
+        action = self.tables.create_special_hours_action(
+            account_id, key[0], key[1], change.day, change.to_text(), now
+        )
+        if action is None:
+            raise SpecialHoursInProgress
+        if self.jobs is not None:
+            await self.jobs.enqueue(
+                SET_SPECIAL_HOURS,
+                {"action_id": action.id},
+                idempotency_key=f"{SET_SPECIAL_HOURS}:{action.id}",
+                max_attempts=HOURS_MAX_ATTEMPTS,
+            )
+        return action.id
+
+    async def _key_date_view(self, account_id: str, proposal: Proposal) -> KeyDateView:
+        action = None
+        if proposal.action_id is not None:
+            action = await self.get_action(account_id, proposal.action_id)
+        payload = proposal.payload
+        return KeyDateView(
+            id=proposal.id,
+            day=date.fromisoformat(payload["date"]),
+            name=str(payload.get("name", "")),
+            kind=str(payload.get("kind", "")),
+            state=proposal.state,
+            location_id=str(payload.get("location_id", "")),
+            expires_at=proposal.expires_at,
+            confirmed=dict(proposal.slots.get("confirmed") or {}),
+            action=action,
+        )
+
+    def _own_key_dates(self, account_id: str) -> list[Proposal]:
+        selected = self._selected_id(account_id)
+        return [
+            p
+            for p in self.key_date_proposals.values()
+            if p.account_id == account_id
+            and p.type is ProposalType.KEY_DATE
+            and selected is not None
+            and p.payload.get("location_id") == selected
+        ]
+
+    async def list_key_dates(self, account_id: str, today: date) -> list[KeyDateView]:
+        self._check()
+        found = [
+            p for p in self._own_key_dates(account_id) if p.payload["date"] >= today.isoformat()
+        ]
+        found.sort(key=lambda p: (p.payload["date"], p.id))
+        return [await self._key_date_view(account_id, p) for p in found]
+
+    async def get_key_date(self, account_id: str, proposal_id: str) -> KeyDateView | None:
+        self._check()
+        for proposal in self._own_key_dates(account_id):
+            if proposal.id == proposal_id:
+                return await self._key_date_view(account_id, proposal)
+        return None
+
+    def _own_key_date(self, account_id: str, proposal_id: str) -> Proposal:
+        proposal = self.key_date_proposals.get(proposal_id)
+        if proposal is None or proposal.account_id != account_id:
+            raise KeyDateNotFound
+        return proposal
+
+    async def answer_key_date(
+        self,
+        account_id: str,
+        proposal_id: str,
+        change: SpecialHoursChange,
+        now: datetime,
+        today: date,
+    ) -> str:
+        self._check()
+        proposal = self._own_key_date(account_id, proposal_id)
+        if proposal.payload.get("date") != change.day.isoformat():
+            raise KeyDateNotFound
+        path = panel_confirm_path(proposal.state, change.day, today)
+        location_id = str(proposal.payload.get("location_id", ""))
+        action_id = await self.create_special_hours_action(account_id, location_id, change, now)
+        if action_id is None:
+            raise PanelRefused(REFUSED_PROFILE)
+        confirmed = {"kind": change.kind, "periods": [list(p) for p in change.periods]}
+        self.key_date_proposals[proposal_id] = replace(
+            proposal,
+            state=advance(proposal.state, *path),
+            step_token=secrets.token_hex(3),
+            message_refs={},
+            slots={**proposal.slots, "confirmed": confirmed, "answered_in": "panel"},
+            confirmed_at=now,
+            confirmed_event_id=panel_event_id(now, secrets.token_hex(4)),
+            confirmed_summary=f"{change.day.isoformat()}: {describe(change)}",
+            action_id=action_id,
+            outcome_reason=None,
+        )
+        return action_id
+
+    async def dismiss_key_date(self, account_id: str, proposal_id: str, now: datetime) -> None:
+        self._check()
+        proposal = self._own_key_date(account_id, proposal_id)
+        path = panel_dismiss_path(proposal.state)
+        self.key_date_proposals[proposal_id] = replace(
+            proposal,
+            state=advance(proposal.state, *path),
+            step_token=secrets.token_hex(3),
+            message_refs={},
+            outcome_reason=OUTCOME_DISMISSED,
         )
 
     async def sentiment(self, account_id: str, now: datetime) -> StoredSentiment | None:

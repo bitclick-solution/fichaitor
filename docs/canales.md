@@ -4,7 +4,7 @@ Base de los canales por los que el agente avisa al dueño y recibe sus respuesta
 
 Este documento explica cómo funciona, qué límites aplica y cómo se integra con el resto del sistema. Los textos y botones son los de `docs/fase1/guion-conversacional.md`; los estados, los de `docs/01-flujos.md`.
 
-> **Importante:** Desde el 2026-11-12 está cableada de punta a punta (pasos 0 a 5, 7 y 8 del [plan de integración](#9-plan-de-integración); el 6, sin `plan_key_dates`). El dueño vincula su Telegram desde el panel y recibe y publica por Telegram las respuestas a sus reseñas. Las fechas clave siguen sin ejecutor: no se proponen.
+> **Importante:** Desde el 2026-11-12 está cableada de punta a punta (pasos 0 a 5, 7 y 8 del [plan de integración](#9-plan-de-integración); el 6, sin `plan_key_dates`). El dueño vincula su Telegram desde el panel y recibe y publica por Telegram las respuestas a sus reseñas. Desde la misma fecha, también las **fechas clave**: el planificador `plan_key_dates` pregunta por el horario de cada festivo, Nochebuena y Nochevieja, y el ejecutor `set_special_hours` lo aplica en Google (consulta [Fechas clave](#fechas-clave)).
 
 ## 1. Qué hay
 
@@ -18,10 +18,10 @@ Este documento explica cómo funciona, qué límites aplica y cómo se integra c
 | Orquestador | `app/application/conversation_service.py` | `ConversationService`: recibe eventos, aplica las reglas y envía mensajes. Solo usa puertos |
 | Telegram | `app/adapters/messaging/telegram.py` | Bot API con `httpx`, webhook y sondeo largo. Solo atiende `/start`, `/ayuda` y `/privacidad` como comandos |
 | Almacén en PostgreSQL | `app/adapters/conversation_store/postgres.py` | `PostgresConversationStore`, con el rol `fichaitor_conversation` |
-| Puerta de las acciones | `app/adapters/proposal_actions/review_replies.py` | `ReviewReplyActions`: la misma vía que el panel (`ReviewReplies.confirm`) |
+| Puerta de las acciones | `app/adapters/proposal_actions/review_replies.py`, `special_hours.py` | `ReviewReplyActions` y `SpecialHoursActions`: la misma vía que el panel. `ProposalActionsByType` elige la de cada tipo |
 | Rutas | `app/api/channels.py` | Código de vinculación, canales vinculados, desvincular y webhook |
 | Proceso | `app/worker/conversation.py` | `python -m app.worker.conversation`: jobs de canal, planificador y sondeo largo |
-| Jobs | `app/worker/channel_inbound.py`, `conversation_tick.py`, `propose_review.py`, `channel_action_result.py`, `channel_planner.py` | Consulta `docs/worker.md` |
+| Jobs | `app/worker/channel_inbound.py`, `conversation_tick.py`, `propose_review.py`, `channel_action_result.py`, `plan_key_dates.py`, `channel_planner.py` | Consulta `docs/worker.md` |
 | Dobles | `app/adapters/messaging/fake.py`, `app/adapters/conversation_store/memory.py`, `InMemoryProposalActions` | Para pruebas y para la prueba local |
 | Ajustes | `app/channels_config.py` | Variables `FICHAITOR_*` |
 | Esquema | `db/schema_channels.sql` | Tablas y privilegios |
@@ -103,7 +103,7 @@ Se añaden cuatro transiciones que el diagrama no tiene (`EXTRA_TRANSITIONS`):
 | `recopilando → caducada`, `por_confirmar → caducada` | El dueño dejó la propuesta a medias. Sin esto bloquearía el hilo para siempre |
 | `caducada → programada` | El dueño responde a una propuesta caducada que sigue vigente (flujo 9 del guion) |
 
-Tipos: `review_reply` y `key_date` tienen flujo. `owner_order` ("hoy cierro") existe en el modelo y en la tabla, sin flujo todavía.
+Tipos: `review_reply` y `key_date` tienen flujo (la fecha clave, con ejecutor desde el 2026-11-12). `owner_order` ("hoy cierro") existe en el modelo y en la tabla, sin flujo todavía.
 
 ## 4. Reglas de frecuencia y de tiempo
 
@@ -121,6 +121,17 @@ Tipos: `review_reply` y `key_date` tienen flujo. `owner_order` ("hoy cierro") ex
 Al caducar no se envía nada.
 
 El horario de silencio se aplica a todo lo que el agente envía por iniciativa propia: propuestas, recordatorios y propuestas retomadas. No se aplica a las respuestas a algo que el dueño acaba de enviar ni al resultado de un cambio que confirmó.
+
+## Fechas clave
+
+Qué días se preguntan y cuándo: `docs/calendario.md`, "Preguntar por el horario". Aquí, cómo se conversa.
+
+- **Una propuesta por ficha y día** (`source_ref = <loc_…>:<AAAA-MM-DD>`), con `payload.location_id`. La crea `plan_key_dates` con `submit_key_date(..., ask_hours=True)`.
+- **Mensaje.** Un festivo, `holiday.ask`. Nochebuena y Nochevieja, `eve.ask` ("El jueves 24 de diciembre es Nochebuena. ¿Abres?"). Los mismos botones: `Abro normal` · `Cierro` · `Otro horario`. `Cierro` y `Abro normal` confirman en un toque (guion 1.3); un horario escrito ("de 10 a 14", "de 9 a 13 y de 17 a 20") lo lee `parse_hours`, código determinista sin modelo, y pasa siempre por `change.confirm`. Tres franjas, o una que cruza la medianoche, no se interpretan: se pide aclaración.
+- **Confirmar** crea la acción `set_special_hours` por `SpecialHoursActions`, que llama a `PostgresStore.create_special_hours_action`: la misma puerta que el panel, con la ficha de la propuesta. Si esa ficha ya no es la elegida o hay baja programada, no se crea nada y el dueño lee `keydate.gone`.
+- **El panel** responde y descarta las mismas propuestas (`docs/contrato-web-api.md`, "Fechas clave"). Lo hace con el rol de la API, que bloquea antes el hilo (`SELECT ... FOR UPDATE` sobre `conversation`, igual que la conversación): una pulsación en Telegram y una respuesta en el panel nunca se tratan a la vez. La propuesta pasa a `ejecutando` (o `descartada`), cambia su testigo y deja libre el hilo: un botón antiguo de Telegram responde `stale.resolved`. El mensaje de Telegram conserva sus botones (la API no habla con Telegram).
+- **Resultado.** El ejecutor encola `channel_action_result`; la conversación cierra la propuesta (`aplicada` o `fallida`) y avisa por el chat, también si se confirmó en el panel: `holiday.sent_closed`, `holiday.sent_open`, `change.sent`, `hours.too_late` (el día pasó antes de poder aplicarlo), `hours.no_regular` ("Abro normal" sin horario normal en Google) o `google.failed`.
+- **Caducidad.** Sin respuesta, caduca a las 00:00 del día (no se envía nada). Ese mismo día una pulsación la reabre (flujo 9) y el panel todavía la responde. Después, `expired.past`.
 
 ## 5. Vinculación
 
@@ -491,7 +502,11 @@ Las que no venían dictadas. Las tres primeras se apartan del guion.
 | Una pulsación tardía sobre una propuesta caducada la reabre y la vuelve a mostrar; no confirma nada | Cumple el flujo 9 y el invariante de que una pulsación tardía no crea una acción |
 | "sí" y "no" ante "¿Abres?" no confirman nada: llevan a opciones cerradas | "No" puede ser "cierro" o "déjalo". No se supone |
 | Un horario que no abre antes de cerrar ("de 9 a 2") no se interpreta | "Nunca se supone" (`docs/01-flujos.md`, excepciones). Los horarios que pasan de medianoche quedan para el panel |
-| `Abro normal` crea la acción `{"date", "regular": true}` | El ejecutor resuelve el horario habitual de ese día. Amplía la carga de `set_special_hours` del LLD |
+| `Abro normal` crea la acción `{"date", "regular": true}` | El ejecutor copia el horario normal de ese día de la semana que la ficha tenga en Google al enviarlo. Sin horario normal, falla con `no_regular_hours`. Amplía la carga de `set_special_hours` del LLD |
+| Fechas clave: una propuesta por ficha y día, sin agrupar | El encargo lo pide así. `holiday.ask_multi` sigue pendiente |
+| Nochebuena y Nochevieja se preguntan como un festivo (`eve.ask`) | Son los días en que más cambia el horario sin ser festivos. Las fechas comerciales esperan a las publicaciones |
+| Otro horario: una o dos franjas, sin cruzar la medianoche | El encargo fija una o dos. Un horario especial que acaba al día siguiente ocupa dos fechas en Google; se deja para Google o para `Abro normal` |
+| El panel mueve las propuestas con el rol de la API | Lo prevé el LLD (`/proposals/{id}/confirm` y `/dismiss`). Bloquea el hilo como la conversación |
 | La rama `Tengo oferta` no está | El guion la retira si los posts no entran en el MVP. No hay acción `create_post` |
 | Un hilo por cuenta, no por dirección | Con dueño y encargado vinculados, la propuesta activa es una sola. Se aparta de `conversation(channel_identity_id)` del LLD |
 | Zona horaria con la regla de la UE escrita en el dominio | `zoneinfo` no trae datos en Windows sin el paquete `tzdata`, y no se podían añadir dependencias |
@@ -502,7 +517,8 @@ Las que no venían dictadas. Las tres primeras se apartan del guion.
 - Flujos del guion sin implementar: bienvenida con primera mejora (flujo 1), varias reseñas en un día (`review.digest`), dos festivos seguidos (`holiday.ask_multi`), "hoy cierro" (flujo 5), experto (6), mejoras (7), reconexión proactiva (10), resumen semanal (11) y el menú `fallback.options` (12). Con un texto no entendido y sin propuesta abierta, el agente responde `fallback.first`, después `fallback.other`, y después calla.
 - `review.edit_warn` (datos personales, insultos u ofertas en la respuesta del dueño) y `Reintentar` tras `google.failed`.
 - Audios y fotos: `parse_update` los ignora.
-- Agrupar un festivo y una fecha comercial de la misma semana en un mensaje.
+- Agrupar un festivo y una fecha comercial de la misma semana en un mensaje (`holiday.ask_multi`).
+- Quitar los botones del mensaje de Telegram cuando la fecha se responde en el panel.
 - Si el bot está bloqueado por el dueño (error 403), la propuesta se queda en `programada` y se reintenta en cada `tick` hasta caducar. Falta marcar la dirección como inalcanzable y avisar en el panel.
 - Adaptador de WhatsApp. El modelo y las reglas ya no dependen de Telegram; faltan la ventana de 24 horas y las plantillas (`template_fallback`).
 - Enlaces como botón de URL en Telegram (`Ver ficha`, `Abrir panel`). Hoy van en el texto.

@@ -213,10 +213,21 @@ def test_stored_facts_hold_no_text_of_the_description_nor_of_reviews():
         "place_id",
         "maps_url",
         "special_dates",
+        "region",
+        "regular_hours",
         "photo_count",
         "latest_photo_at",
         "attribute_count",
     }
+
+
+def test_facts_of_before_the_key_dates_still_read_without_region_nor_hours():
+    raw = facts_to_json(collect_facts(_details(), MediaSummary(1), 0, TODAY))
+    del raw["region"], raw["regular_hours"]
+    facts = facts_from_json(raw)
+    assert facts is not None and facts.region == "" and facts.regular_hours == ()
+    for bad in ({"region": "andalucia"}, {"regular_hours": [[7, "09:00", "14:00"]]}):
+        assert facts_from_json({**raw, **bad}) is None
 
 
 def test_missing_malformed_or_newer_facts_read_as_none():

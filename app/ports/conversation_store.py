@@ -4,7 +4,7 @@ account, the messages and the proposals. Tables in `db/schema_channels.sql`."""
 from collections.abc import Sequence
 from contextlib import AbstractAsyncContextManager
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import date, datetime
 from typing import Protocol
 
 from app.domain.conversation import AccountInfo, ChannelIdentity, Conversation, LinkOutcome
@@ -167,4 +167,24 @@ class LinkedProfiles(Protocol):
     async def linked_profiles(self) -> Sequence[tuple[str, str]]:
         """(google_sub, Google location) of the selected profiles of the accounts with a
         linked address: what the planner keeps in sync."""
+        ...
+
+
+@dataclass(frozen=True)
+class KeyDateProfile:
+    """A selected profile Fichaitor asks about key dates for, with what the last sync
+    stored of it."""
+
+    account_id: str
+    location_id: str  # ours: "loc_..."
+    region: str  # "AN", or empty when the sync did not get it
+    address: str  # as the panel shows it; its postal code is the fallback for the region
+    special_dates: tuple[date, ...]  # days that already have special hours in Google
+
+
+class KeyDateProfiles(Protocol):
+    async def key_date_profiles(self) -> Sequence[KeyDateProfile]:
+        """Every selected profile of an account that is not deleted nor disconnected,
+        without a scheduled leave, not retired, whose last sync did not lose the access
+        to Google and stored its facts. Linked chat or not: the panel shows them too."""
         ...

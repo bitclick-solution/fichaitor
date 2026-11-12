@@ -30,17 +30,25 @@ import httpx
 from pydantic import Field, ValidationError
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
+from app.adapters.calendar.loader import CalendarDataError, load_calendar
 from app.adapters.conversation_store.postgres import PostgresConversationStore
 from app.adapters.job_queue.postgres import PostgresJobQueue
 from app.adapters.messaging import telegram
 from app.adapters.messaging.offline import OfflineChannel
 from app.adapters.proposal_actions.review_replies import ReviewReplyActions
+from app.adapters.proposal_actions.special_hours import (
+    ProposalActionsByType,
+    SpecialHoursActions,
+)
 from app.adapters.screenshot_reader.prompt import PROMPT_VERSION
 from app.adapters.store.postgres import PostgresStore
 from app.application.conversation_service import ConversationService
 from app.application.review_replies import ReviewReplies
 from app.channels_config import ChannelsSettings
 from app.config import Settings
+from app.domain.actions import REPLY_REVIEW, SET_SPECIAL_HOURS
+from app.domain.calendar import Calendar
+from app.domain.key_dates import DEFAULT_LEAD_DAYS, MAX_LEAD_DAYS
 from app.ports.messaging import MessagingChannel, MessagingError
 from app.ports.reply_writer import ReplyWriter
 from app.screenshot_config import ScreenshotSettings
@@ -49,6 +57,7 @@ from app.worker import (
     channel_inbound,
     conversation_tick,
     log,
+    plan_key_dates,
     propose_review,
 )
 from app.worker.__main__ import install_stop_signals
@@ -74,6 +83,10 @@ class ConversationSettings(BaseSettings):
     worker_lock_timeout_seconds: float = Field(default=120.0, gt=0)
     worker_id: str = Field(default_factory=_default_worker_id)
     planner_interval_seconds: float = Field(default=60.0, gt=0)
+    # Key dates (docs/calendario.md): ask about the hours of holidays and of Nochebuena
+    # and Nochevieja, and how many days before a holiday.
+    key_dates_enabled: bool = True
+    key_dates_lead_days: int = Field(default=DEFAULT_LEAD_DAYS, ge=1, le=MAX_LEAD_DAYS)
 
     def check(self) -> None:
         problems: list[str] = []
@@ -129,11 +142,17 @@ def build_service(
     channels: dict[str, MessagingChannel],
     replies: ReviewReplies,
     settings: ChannelsSettings,
+    hours_store: PostgresStore | None = None,
 ) -> ConversationService:
+    """The actions are created by the same doors as in the panel: a reply with
+    `ReviewReplies.confirm`, the hours of a day with `create_special_hours_action`."""
+    doors: dict = {REPLY_REVIEW: ReviewReplyActions(replies)}
+    if hours_store is not None:
+        doors[SET_SPECIAL_HOURS] = SpecialHoursActions(hours_store)
     return ConversationService(
         store,
         channels,
-        ReviewReplyActions(replies),
+        ProposalActionsByType(doors),
         settings.service_config(),
         clock=lambda: datetime.now(UTC),
     )
@@ -143,9 +162,16 @@ def build_registry(
     service: ConversationService,
     store: PostgresConversationStore,
     replies: ReviewReplies,
+    calendar: Calendar | None = None,
+    lead_days: int = DEFAULT_LEAD_DAYS,
 ) -> HandlerRegistry:
-    """The jobs of the channels, and only them."""
+    """The jobs of the channels, and only them. Without a calendar, no key dates."""
     registry = HandlerRegistry()
+    if calendar is not None:
+        registry.register(
+            plan_key_dates.KIND,
+            plan_key_dates.PlanKeyDates(store, service, calendar, lead_days=lead_days),
+        )
     registry.register(channel_inbound.KIND, channel_inbound.ChannelInbound(service, store))
     registry.register(conversation_tick.KIND, conversation_tick.ConversationTick(service))
     registry.register(propose_review.KIND, propose_review.ProposeReview(store, replies, service))
@@ -177,12 +203,15 @@ async def run(settings: ConversationSettings) -> None:
             conversation_store = PostgresConversationStore(pool)
             replies = build_replies(store, writer, Settings())
             service = build_service(
-                conversation_store, {telegram.CHANNEL: channel}, replies, channels_settings
+                conversation_store, {telegram.CHANNEL: channel}, replies, channels_settings, store
             )
+            calendar = load_key_dates_calendar(settings)
             queue = PostgresJobQueue(pool)
             worker = Worker(
                 queue,
-                build_registry(service, conversation_store, replies),
+                build_registry(
+                    service, conversation_store, replies, calendar, settings.key_dates_lead_days
+                ),
                 worker_id=settings.worker_id,
                 poll_interval=settings.worker_poll_interval_seconds,
                 job_timeout=settings.worker_job_timeout_seconds,
@@ -192,9 +221,11 @@ async def run(settings: ConversationSettings) -> None:
             install_stop_signals(stop)
             tasks = [
                 asyncio.create_task(
-                    ChannelPlanner(queue, conversation_store).run(
-                        stop, settings.planner_interval_seconds
-                    )
+                    ChannelPlanner(
+                        queue,
+                        conversation_store,
+                        plan_kind=plan_key_dates.KIND if calendar is not None else None,
+                    ).run(stop, settings.planner_interval_seconds)
                 )
             ]
             if channels_settings.telegram_polling and isinstance(channel, telegram.TelegramChannel):
@@ -213,6 +244,20 @@ async def run(settings: ConversationSettings) -> None:
                 await writer.close()
             await store.close()
             await pool.close()
+
+
+def load_key_dates_calendar(settings: ConversationSettings) -> Calendar | None:
+    """The calendar of holidays, once at start. Disabled, or with data that does not
+    load, there are no key dates (logged); everything else keeps working."""
+    if not settings.key_dates_enabled:
+        log.event("key_dates_disabled", logging.WARNING)
+        return None
+    try:
+        data = load_calendar()
+    except CalendarDataError as exc:
+        log.event("key_dates_calendar_error", logging.ERROR, error=str(exc)[:200])
+        return None
+    return data.calendar
 
 
 async def set_webhook(url: str) -> None:

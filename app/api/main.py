@@ -26,6 +26,7 @@ from app.adapters.worker_store.memory import MemoryWorkerStore
 from app.api.channels import build_router as build_channels_router
 from app.api.diagnosis_out import DiagnosisResponse, to_response
 from app.api.google_oauth import build_router as build_google_router
+from app.api.key_dates import build_router as build_key_dates_router
 from app.api.me import build_router as build_me_router
 from app.api.offboarding import build_router as build_offboarding_router
 from app.api.reviews import build_router as build_reviews_router
@@ -33,6 +34,7 @@ from app.api.screenshot import build_reader as build_reply_writer
 from app.api.screenshot import build_router_from_settings as build_screenshot_router
 from app.api.waitlist import SOURCE_PATTERN, build_router
 from app.application.diagnosis_service import DailyLimitReached, DiagnosisService, RateLimited
+from app.application.key_dates import KeyDates
 from app.application.offboarding import Offboarding
 from app.application.profile_sync import ProfileSync
 from app.application.rate_limit import SlidingWindowLimiter
@@ -356,6 +358,17 @@ def create_app(
                 prompt_version=PROMPT_VERSION,
                 quota=quota,
             ),
+            clock=clock,
+            cookie_secure=settings.cookie_secure,
+        )
+    )
+
+    # Key dates (docs/calendario.md): the days Fichaitor asks about, answered from the
+    # panel through the same action as from the chat.
+    app.include_router(
+        build_key_dates_router(
+            store=store,
+            key_dates=KeyDates(store, clock),
             clock=clock,
             cookie_secure=settings.cookie_secure,
         )

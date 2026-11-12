@@ -15,13 +15,15 @@ CHANNEL_INBOUND = "channel_inbound"  # {"channel": "telegram", "update": {...}}
 CONVERSATION_TICK = "conversation_tick"  # {}
 PROPOSE_REVIEW = "propose_review"  # {"review_id": "rev_..."}
 CHANNEL_ACTION_RESULT = "channel_action_result"  # {"action_id", "ok", "error"}
+PLAN_KEY_DATES = "plan_key_dates"  # {}: once a day, the key dates of every profile
 
-KINDS = (CHANNEL_INBOUND, CONVERSATION_TICK, PROPOSE_REVIEW, CHANNEL_ACTION_RESULT)
+KINDS = (CHANNEL_INBOUND, CONVERSATION_TICK, PROPOSE_REVIEW, CHANNEL_ACTION_RESULT, PLAN_KEY_DATES)
 
 INBOUND_MAX_ATTEMPTS = 1  # an event is recorded as seen first: a retry would do nothing
 TICK_MAX_ATTEMPTS = 1
 PROPOSE_MAX_ATTEMPTS = 3
 RESULT_MAX_ATTEMPTS = 3
+PLAN_MAX_ATTEMPTS = 3
 
 REVIEW_ID = re.compile(r"rev_[0-9a-f]{8,32}")
 
@@ -32,6 +34,8 @@ PROPOSE_REVIEWS_NEWER_THAN = timedelta(days=7)
 RESULT_TARGET_GONE = "target_gone"
 RESULT_RECONNECT = "reconnect"
 RESULT_FAILED = "failed"
+RESULT_TOO_LATE = "too_late"  # special hours: the day passed before they could be sent
+RESULT_NO_REGULAR_HOURS = "no_regular_hours"  # "horario normal" without regular hours
 
 
 def inbound_key(channel: str, update_id: int) -> str:
@@ -55,6 +59,10 @@ def result_error(error_code: str | None) -> str | None:
         return RESULT_TARGET_GONE
     if error_code == "reconnect":
         return RESULT_RECONNECT
+    if error_code == "date_passed":
+        return RESULT_TOO_LATE
+    if error_code == "no_regular_hours":
+        return RESULT_NO_REGULAR_HOURS
     return RESULT_FAILED
 
 
@@ -87,6 +95,23 @@ def sync_slot(now: datetime, zone: tzinfo) -> str:
     if SYNC_DAY_START <= local < SYNC_DAY_END:
         return f"d{_slot(now, SYNC_DAY_EVERY)}"
     return f"n{_slot(now, SYNC_NIGHT_EVERY)}"
+
+
+# The key dates are planned once a day, at this local time: the questions then wait
+# for nothing but the weekly cap (the quiet hours end at 9:00).
+PLAN_KEY_DATES_AT = time(9, 5)
+
+
+def plan_key_dates_key(day: object) -> str:
+    """One planning per local day, whatever number of processes try to enqueue it."""
+    return f"{PLAN_KEY_DATES}:{day}"
+
+
+def plan_key_dates_run_at(now: datetime, zone: tzinfo) -> datetime:
+    """When today's planning runs: at PLAN_KEY_DATES_AT local time, or now if later."""
+    local = now.astimezone(zone)
+    at = datetime.combine(local.date(), PLAN_KEY_DATES_AT, tzinfo=zone)
+    return max(at, now)
 
 
 def sync_key(google_sub: str, location: str, slot: str) -> str:
