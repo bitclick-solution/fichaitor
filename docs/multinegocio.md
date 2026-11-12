@@ -437,6 +437,24 @@ Reglas para cuando exista el cobro (no se construyen ahora):
 - «Activar» llama a `POST …/activation`. Con 402, enseña la oferta de planes con el precio con descuento. No hay cobro: hasta el lanzamiento, el texto es «Escríbenos para activar más fichas».
 - «Desactivar», en Ajustes de la ficha, pide confirmación con este texto: «Dejaremos de leer esta ficha y de avisarte de ella. Las propuestas pendientes se cancelan. Si no la vuelves a activar en 30 días, borraremos lo que tenemos de ella. Para retirar el acceso de Fichaitor a tu cuenta de Google, usa Desconectar Google.»
 
+### Precios en la respuesta (añadido 2026-11-12)
+
+La web no guarda ninguna cifra: todo precio sale de la API. `GET /me` (y la respuesta de activar y desactivar) añade:
+
+```json
+"pricing": {
+  "currency": "EUR", "period": "year", "charging": false,
+  "plans": { "pro": { "first": 3500, "additional": 3325 },
+             "pro_whatsapp": { "first": 5900, "additional": 5605 } },
+  "total": 0,
+  "if_activate": { "pro": 3325, "pro_whatsapp": 5605 },
+  "if_deactivate": { "loc_3f2a": 0 }
+}
+```
+
+- Importes en céntimos. `total` es lo que pagaría la cuenta con sus fichas activas; `if_activate` y `if_deactivate`, el total resultante de cada cambio. Los calcula `app/domain/plans.py` con las reglas de la sección 11 y las decisiones de la sección 15.
+- `charging: false` mientras no haya cobro (beta): la web enseña los precios como referencia y, ante un 402, «Escríbenos para activar más fichas».
+
 ### Canales
 
 - Cada chat enseña «Recibe: todos tus negocios» o la lista de fichas, y se puede editar.
