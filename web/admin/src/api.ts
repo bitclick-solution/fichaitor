@@ -62,10 +62,7 @@ async function una<T>(method: "GET" | "POST", ruta: string, cuerpo?: unknown): P
 
   let r: Response;
   try {
-    r =
-      import.meta.env.MODE === "mock"
-        ? await (await import("./mock")).simular(method, `/admin/api${ruta}`, cuerpo)
-        : await fetch(`/admin/api${ruta}`, init);
+    r = import.meta.env.MODE === "mock" ? await (await import("./mock")).simular(method, `/admin/api${ruta}`, cuerpo) : await fetch(`/admin/api${ruta}`, init);
   } catch {
     throw new ErrorAdmin(0, "network", "No hay conexión con el backoffice. ¿Está abierto el túnel?");
   }
@@ -195,7 +192,32 @@ export interface DetalleCuenta {
   blocks: Bloqueo[];
   activations: { at: string; location_id: string; event: string; plan: string | null; reason: string | null }[];
   offboardings: { id: string; scope: string; confirmed_at: string; delete_at: string; restored_at: string | null; effective_at: string | null; reason: string | null }[];
+  next_cursors: Cursores;
 }
+
+// ── Paginación (contrato, 1.3): cursor opaco; null cuando no hay más ──
+
+export type Cursor = string | null;
+export type Cursores = Record<string, Cursor>;
+export interface Pagina<T> {
+  items: T[];
+  next_cursor: Cursor;
+}
+
+/** «?limit=…&cursor=…» o «&…», sin parámetros vacíos. */
+function paginas(cursor: Cursor | undefined, limit?: number, primero = "?"): string {
+  const p = new URLSearchParams();
+  if (limit) p.set("limit", String(limit));
+  if (cursor) p.set("cursor", cursor);
+  const s = p.toString();
+  return s ? `${primero}${s}` : "";
+}
+
+/** Listados de una cuenta con páginas siguientes en /accounts/{id}/lists/{nombre}. */
+export type ListaCuenta =
+  "locations" | "entitlements" | "seats" | "blocks" | "activations" | "offboardings" | "billing_seats" | "charges" | "documents" | "refunds" | "billing_blocks";
+/** Listados de la revisión del cobro con páginas siguientes en /billing/review/lists/{nombre}. */
+export type ListaRevision = "documents" | "seats" | "refunds" | "events" | "paid_without_document" | "blocks";
 
 export interface NombreFicha {
   location_id: string;
@@ -270,11 +292,24 @@ export interface CobroCuenta {
     updated_at: string;
     stripe_url: string | null;
   } | null;
-  seats: { id: string; plan: string; collection: string; stripe_subscription_id: string | null; location_id: string | null; status: string; current_period_end: string | null; cancel_at_period_end: boolean; next_price_key: string | null; review_reason: string | null; stripe_url: string | null }[];
+  seats: {
+    id: string;
+    plan: string;
+    collection: string;
+    stripe_subscription_id: string | null;
+    location_id: string | null;
+    status: string;
+    current_period_end: string | null;
+    cancel_at_period_end: boolean;
+    next_price_key: string | null;
+    review_reason: string | null;
+    stripe_url: string | null;
+  }[];
   charges: Cargo[];
   documents: DocumentoLegal[];
   refunds: Reembolso[];
   blocks: Bloqueo[];
+  next_cursors: Cursores;
 }
 
 export interface ContactoFiscal {
@@ -298,9 +333,22 @@ export interface Revision {
   events: { id: string; type: string; object_id: string | null; received_at: string; processed_at: string | null; outcome: string | null }[];
   paid_without_document: { entitlement_id: string; account_id: string; stripe_invoice_id: string; seat_id: string | null; starts_at: string }[];
   blocks: (Bloqueo & { account_id: string })[];
-  links: { customer: string; invoice: string; subscription: string; payment: string };
+  links: EnlacesRevision;
   odoo_link: string;
+  next_cursors: Cursores;
 }
+
+export interface EnlacesRevision {
+  customer: string;
+  invoice: string;
+  subscription: string;
+  payment: string;
+}
+
+export type FalloTrabajo = { job_id: string; kind: string; attempts: number; finished_at: string | null; last_error: string | null };
+export type PasadaRetencion = { run_id?: number; at: string; deleted: Record<string, number> };
+export type FilaSync = { account_id?: string; location_id: string; status: string; status_at: string | null; synced_at: string | null };
+export type Chat = { identity_id: string; channel: string; verified_at: string | null; last_inbound_at: string | null; unlinked_at: string | null };
 
 export interface Salud {
   summaries: Record<string, number>;
@@ -309,9 +357,10 @@ export interface Salud {
   jobs_stuck: number;
   jobs_failed_24h: number;
   jobs: { kind: string; state: string; jobs: number; oldest_run_at: string | null; stuck: number }[];
-  failed_jobs: { job_id: string; kind: string; attempts: number; finished_at: string | null; last_error: string | null }[];
-  retention_runs: { at: string; deleted: Record<string, number> }[];
-  sync_errors: { account_id: string; location_id: string; status: string; status_at: string | null; synced_at: string | null }[];
+  failed_jobs: FalloTrabajo[];
+  retention_runs: PasadaRetencion[];
+  sync_errors: (FilaSync & { account_id: string })[];
+  next_cursors: Cursores;
 }
 
 export interface Metricas {
@@ -319,7 +368,7 @@ export interface Metricas {
   revenue: { arr_cents: number; mrr_cents: number; estimated_seats: number };
   seats_in_force: { plan: string; next_price_key: string | null; seats: number }[];
   signups: { accounts: number; first_seats: number; new_seats: number };
-  churn: { seats_canceled: number; seats_lost_unpaid: number; seats_to_cancel: number; account_leaves: number };
+  churn: { seats_canceled: number; seats_to_cancel: number; account_leaves: number };
   blocks: { opened: number; closed: number; open_now: number };
   conversion: { beta_accounts: number; beta_paid: number; free_accounts: number; free_paid: number };
   funnel: Record<string, number>;
@@ -384,21 +433,35 @@ export const api = {
   altaTerminar: (token: string, password: string, state: string, code: string) =>
     una<{ username: string; recovery_codes: string[] }>("POST", "/enrollment/finish", { token, password, state, code }),
   // ── Cuentas
-  buscar: (q: string) => una<{ accounts: CuentaEncontrada[] }>("GET", `/accounts?q=${enc(q)}`),
+  buscar: (q: string, cursor?: Cursor) => una<{ accounts: CuentaEncontrada[]; next_cursor: Cursor }>("GET", `/accounts?q=${enc(q)}${paginas(cursor, undefined, "&")}`),
   cuenta: (id: string) => una<DetalleCuenta>("GET", `/accounts/${enc(id)}`),
-  nombresFichas: (id: string, ticket_ref: string) => una<{ locations: NombreFicha[] }>("POST", `/accounts/${enc(id)}/locations`, { ticket_ref }),
-  sincronizacion: (id: string) => una<{ sync: { location_id: string; status: string; status_at: string | null; synced_at: string | null }[] }>("GET", `/accounts/${enc(id)}/sync`),
-  chats: (id: string) => una<{ channels: { identity_id: string; channel: string; verified_at: string | null; last_inbound_at: string | null; unlinked_at: string | null }[] }>("GET", `/accounts/${enc(id)}/channels`),
+  /** Página siguiente de un listado del resumen o del cobro de una cuenta. */
+  listaCuenta: <T>(id: string, nombre: ListaCuenta, cursor: string) => una<Pagina<T>>("GET", `/accounts/${enc(id)}/lists/${nombre}${paginas(cursor)}`),
+  // Cada página de nombres es una lectura con ticket, y se audita.
+  nombresFichas: (id: string, ticket_ref: string, cursor?: Cursor) =>
+    una<{ locations: NombreFicha[]; next_cursor: Cursor }>("POST", `/accounts/${enc(id)}/locations${paginas(cursor)}`, { ticket_ref }),
+  sincronizacion: (id: string, cursor?: Cursor) => una<{ sync: FilaSync[]; next_cursor: Cursor }>("GET", `/accounts/${enc(id)}/sync${paginas(cursor)}`),
+  chats: (id: string, cursor?: Cursor) => una<{ channels: Chat[]; next_cursor: Cursor }>("GET", `/accounts/${enc(id)}/channels${paginas(cursor)}`),
   comprobarCorreo: (id: string, raw_message: string) =>
     una<{ dmarc: string; from_domain: string; matches_account: boolean }>("POST", `/accounts/${enc(id)}/offboarding/check`, { raw_message }),
   bajaPorCorreo: (id: string, scope: "ficha" | "cuenta", location_id: string | null, ticket_ref: string) =>
-    pedir<{ offboarding_id: string; delete_at: string }>("POST", `/accounts/${enc(id)}/offboarding`, location_id ? { scope, location_id, ticket_ref } : { scope, ticket_ref }),
+    pedir<{ offboarding_id: string; delete_at: string }>(
+      "POST",
+      `/accounts/${enc(id)}/offboarding`,
+      location_id ? { scope, location_id, ticket_ref } : { scope, ticket_ref },
+    ),
   // ── Cobro
   cobro: (id: string) => una<CobroCuenta>("GET", `/accounts/${enc(id)}/billing`),
   contactoFiscal: (id: string, ticket_ref: string) => una<ContactoFiscal>("POST", `/accounts/${enc(id)}/billing/contact`, { ticket_ref }),
   revision: () => una<Revision>("GET", "/billing/review"),
+  listaRevision: <T>(nombre: ListaRevision, cursor: string) =>
+    una<Pagina<T> & { links: EnlacesRevision; odoo_link: string }>("GET", `/billing/review/lists/${nombre}${paginas(cursor)}`),
   reembolsar: (stripe_invoice_id: string, amount: number | null, reason: string, ticket_ref: string) =>
-    pedir<{ refund_request_id: string }>("POST", "/refunds", amount === null ? { stripe_invoice_id, reason, ticket_ref } : { stripe_invoice_id, amount, reason, ticket_ref }),
+    pedir<{ refund_request_id: string }>(
+      "POST",
+      "/refunds",
+      amount === null ? { stripe_invoice_id, reason, ticket_ref } : { stripe_invoice_id, amount, reason, ticket_ref },
+    ),
   // ── Derechos y bloqueos
   conceder: (id: string, cuerpo: { plan: string; quantity: number; source: string; ends_at: string; note_code?: string; ticket_ref: string }) =>
     pedir<{ entitlement_id: string }>("POST", `/accounts/${enc(id)}/entitlements`, cuerpo),
@@ -406,8 +469,11 @@ export const api = {
   cerrarBloqueo: (id: number, ticket_ref: string) => pedir<{ account_id: string }>("POST", `/blocks/${id}/close`, { ticket_ref }),
   // ── Salud, métricas, lista de espera, personas y auditoría
   salud: () => una<Salud>("GET", "/health/overview"),
+  saludFallidos: (cursor: string) => una<{ failed_jobs: FalloTrabajo[]; next_cursor: Cursor }>("GET", `/health/failed-jobs${paginas(cursor)}`),
+  saludRetencion: (cursor: string) => una<{ retention_runs: PasadaRetencion[]; next_cursor: Cursor }>("GET", `/health/retention-runs${paginas(cursor)}`),
+  saludErroresSync: (cursor: string) => una<{ sync_errors: (FilaSync & { account_id: string })[]; next_cursor: Cursor }>("GET", `/health/sync-errors${paginas(cursor)}`),
   metricas: (desde: string, hasta: string) => una<Metricas>("GET", `/metrics?from=${enc(desde)}&to=${enc(hasta)}`),
-  espera: () => una<{ min_cell: number; cells: CeldaEspera[] }>("GET", "/waitlist"),
-  personas: () => una<{ users: Persona[] }>("GET", "/users"),
-  auditoria: (antes: number | null) => una<{ rows: FilaAuditoria[]; next_before: number | null }>("GET", `/audit?limit=100${antes ? `&before=${antes}` : ""}`),
+  espera: (cursor?: Cursor) => una<{ min_cell: number; cells: CeldaEspera[]; next_cursor: Cursor }>("GET", `/waitlist${paginas(cursor)}`),
+  personas: (cursor?: Cursor) => una<{ users: Persona[]; next_cursor: Cursor }>("GET", `/users${paginas(cursor)}`),
+  auditoria: (cursor?: Cursor) => una<{ rows: FilaAuditoria[]; next_cursor: Cursor }>("GET", `/audit${paginas(cursor, 100)}`),
 };

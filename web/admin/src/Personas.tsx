@@ -1,37 +1,31 @@
 import { useEffect, useId, useState } from "react";
 import { api, type FilaAuditoria, type Persona, type Sesion } from "./api";
-import { Cargando, cuando, Error, mensajeDe } from "./comun";
+import { Cargando, cuando, Error, Mas, mensajeDe, useLista } from "./comun";
 import { nombreRol, NuevoTotp } from "./Entrar";
 
 // Personas y auditoría (apartado 8, solo propietario) y «Mi cuenta» (cambiar la contraseña y la app de
 // autenticación, para todos los roles).
 
 export function Personas() {
-  const [personas, setPersonas] = useState<Persona[] | null>(null);
-  const [filas, setFilas] = useState<FilaAuditoria[]>([]);
-  const [siguiente, setSiguiente] = useState<number | null | undefined>(undefined);
+  const lPersonas = useLista<Persona>((cursor) => api.personas(cursor).then((r) => ({ items: r.users, next_cursor: r.next_cursor })));
+  const lAuditoria = useLista<FilaAuditoria>((cursor) => api.auditoria(cursor).then((r) => ({ items: r.rows, next_cursor: r.next_cursor })));
+  const personas = lPersonas.filas;
+  const filas = lAuditoria.filas ?? [];
+  const cargando = lAuditoria.filas === null;
   const [error, setError] = useState<string | null>(null);
-  const [cargando, setCargando] = useState(false);
-
-  const masAuditoria = (antes: number | null) => {
-    setCargando(true);
-    api
-      .auditoria(antes)
-      .then((r) => {
-        setFilas((f) => (antes ? [...f, ...r.rows] : r.rows));
-        setSiguiente(r.rows.length > 0 ? r.next_before : null);
-      })
-      .catch((e: unknown) => setError(mensajeDe(e)))
-      .finally(() => setCargando(false));
-  };
+  const empezarPersonas = lPersonas.empezar;
+  const empezarAuditoria = lAuditoria.empezar;
 
   useEffect(() => {
     api
       .personas()
-      .then((r) => setPersonas(r.users))
+      .then((r) => empezarPersonas(r.users, r.next_cursor))
       .catch((e: unknown) => setError(mensajeDe(e)));
-    masAuditoria(null);
-  }, []);
+    api
+      .auditoria()
+      .then((r) => empezarAuditoria(r.rows, r.next_cursor))
+      .catch((e: unknown) => setError(mensajeDe(e)));
+  }, [empezarPersonas, empezarAuditoria]);
 
   return (
     <>
@@ -80,6 +74,7 @@ export function Personas() {
             </table>
           </div>
         )}
+        <Mas lista={lPersonas} />
       </section>
 
       <section className="bloque">
@@ -120,13 +115,8 @@ export function Personas() {
             </table>
           </div>
         )}
-        {siguiente !== null && siguiente !== undefined && (
-          <div className="acciones">
-            <button className="btn sec" type="button" disabled={cargando} onClick={() => masAuditoria(siguiente)}>
-              {cargando ? "Cargando…" : "Más antiguos"}
-            </button>
-          </div>
-        )}
+        {!cargando && filas.length === 0 && <p className="sec">Sin registros.</p>}
+        <Mas lista={lAuditoria} texto="Más antiguos" />
       </section>
     </>
   );

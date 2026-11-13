@@ -1,15 +1,23 @@
 import { useEffect, useId, useState } from "react";
 import {
   api,
+  type Cargo,
+  type Chat,
   type CobroCuenta,
+  type Cursor,
+  type DocumentoLegal,
+  type FilaSync,
+  type Reembolso,
   type ContactoFiscal,
   type CuentaEncontrada,
   type DetalleCuenta,
+  type Bloqueo,
   type Derecho,
+  type ListaCuenta,
   type NombreFicha,
   type Rol,
 } from "./api";
-import { CampoTicket, Cargando, cuando, dia, Error, euros, Externo, mensajeDe, plan, problemaTicket, Ventana } from "./comun";
+import { CampoTicket, Cargando, cuando, dia, Error, euros, Externo, Mas, mensajeDe, plan, problemaTicket, useLista, useListaDe, Ventana } from "./comun";
 
 // «Cuentas» (docs/contrato-backoffice.md, apartados 4, 5 y 6). Se busca por id, correo exacto, NIF o
 // razón social, nunca por el nombre de una ficha. Los nombres de las fichas, la dirección fiscal y el
@@ -33,7 +41,10 @@ const MOTIVO_REEMBOLSO: [string, string][] = [
 export function Cuentas({ rol }: { rol: Rol }) {
   const id = useId();
   const [q, setQ] = useState("");
-  const [resultados, setResultados] = useState<CuentaEncontrada[] | null>(null);
+  // La búsqueda de la que salen las páginas siguientes (no lo que se esté escribiendo ahora).
+  const [buscada, setBuscada] = useState("");
+  const lista = useLista<CuentaEncontrada>((cursor) => api.buscar(buscada, cursor).then((r) => ({ items: r.accounts, next_cursor: r.next_cursor })));
+  const resultados = lista.filas;
   const [buscando, setBuscando] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [abierta, setAbierta] = useState<string | null>(null);
@@ -51,9 +62,13 @@ export function Cuentas({ rol }: { rol: Rol }) {
           if (!valida) return;
           setBuscando(true);
           setError(null);
+          const busqueda = q.trim();
           api
-            .buscar(q.trim())
-            .then((r) => setResultados(r.accounts))
+            .buscar(busqueda)
+            .then((r) => {
+              setBuscada(busqueda);
+              lista.empezar(r.accounts, r.next_cursor);
+            })
             .catch((e2: unknown) => setError(mensajeDe(e2)))
             .finally(() => setBuscando(false));
         }}
@@ -103,6 +118,7 @@ export function Cuentas({ rol }: { rol: Rol }) {
             ))}
           </ul>
         ))}
+      <Mas lista={lista} texto="Más resultados" />
     </>
   );
 }
@@ -115,8 +131,10 @@ function Cuenta({ id, rol, onVolver }: { id: string; rol: Rol; onVolver: () => v
   const [pestana, setPestana] = useState<Pestana>("resumen");
   const [version, setVersion] = useState(0);
   const [hecho, setHecho] = useState<string | null>(null);
-  // Nombres de las fichas, si ya se han leído con un ticket (solo en memoria).
-  const [nombres, setNombres] = useState<NombreFicha[] | null>(null);
+  // Nombres de las fichas, si ya se han leído con un ticket (solo en memoria), con el cursor de la página
+  // siguiente y el ticket con el que se leyeron: cada página es otra lectura con ese ticket.
+  const [lectura, setLectura] = useState<LecturaNombres | null>(null);
+  const nombres = lectura?.filas ?? null;
 
   useEffect(() => {
     let vivo = true;
@@ -184,7 +202,7 @@ function Cuenta({ id, rol, onVolver }: { id: string; rol: Rol; onVolver: () => v
             ))}
           </nav>
           {pestana === "resumen" && <Resumen d={d} rol={rol} nombres={nombres} onCambio={recargar} />}
-          {pestana === "fichas" && <FichasYChats id={id} nombres={nombres} onNombres={setNombres} />}
+          {pestana === "fichas" && <FichasYChats id={id} lectura={lectura} onLectura={setLectura} />}
           {pestana === "sync" && <Sincronizacion id={id} />}
           {pestana === "cobro" && <Cobro id={id} onCambio={recargar} />}
           {pestana === "baja" && <BajaPorCorreo d={d} nombres={nombres} onHecha={recargar} />}
@@ -212,12 +230,24 @@ function Resumen({ d, rol, nombres, onCambio }: { d: DetalleCuenta; rol: Rol; no
   const [recortando, setRecortando] = useState<Derecho | null>(null);
   const [cerrando, setCerrando] = useState<number | null>(null);
   const propietario = rol === "propietario";
+  // Cada listado trae su primera página; las siguientes, de /accounts/{id}/lists/{nombre}.
+  const sig =
+    <T,>(nombre: ListaCuenta) =>
+    (cursor: string) =>
+      api.listaCuenta<T>(d.account.id, nombre, cursor);
+  const c = d.next_cursors ?? {};
+  const fichas = useListaDe(d.locations, c["locations"], sig<DetalleCuenta["locations"][number]>("locations"));
+  const derechos = useListaDe(d.entitlements, c["entitlements"], sig<Derecho>("entitlements"));
+  const plazas = useListaDe(d.seats, c["seats"], sig<DetalleCuenta["seats"][number]>("seats"));
+  const bloqueos = useListaDe(d.blocks, c["blocks"], sig<Bloqueo>("blocks"));
+  const bajas = useListaDe(d.offboardings, c["offboardings"], sig<DetalleCuenta["offboardings"][number]>("offboardings"));
+  const activaciones = useListaDe(d.activations, c["activations"], sig<DetalleCuenta["activations"][number]>("activations"));
 
   return (
     <>
       <section className="bloque">
         <h2>Fichas</h2>
-        {d.locations.length === 0 ? (
+        {fichas.filas.length === 0 ? (
           <p className="sec">Sin fichas.</p>
         ) : (
           <div className="tabla">
@@ -231,7 +261,7 @@ function Resumen({ d, rol, nombres, onCambio }: { d: DetalleCuenta; rol: Rol; no
                 </tr>
               </thead>
               <tbody>
-                {d.locations.map((l) => (
+                {fichas.filas.map((l) => (
                   <tr key={l.id}>
                     <td>
                       <Ficha id={l.id} nombres={nombres} />
@@ -239,7 +269,13 @@ function Resumen({ d, rol, nombres, onCambio }: { d: DetalleCuenta; rol: Rol; no
                     <td>{plan(l.plan)}</td>
                     <td>{cuando(l.active_since)}</td>
                     <td>
-                      {l.removed_at ? `Google la retiró ${dia(l.removed_at)}` : l.deactivated_at ? `Desactivada ${dia(l.deactivated_at)}` : l.plan ? "Activa" : "Sin activar"}
+                      {l.removed_at
+                        ? `Google la retiró ${dia(l.removed_at)}`
+                        : l.deactivated_at
+                          ? `Desactivada ${dia(l.deactivated_at)}`
+                          : l.plan
+                            ? "Activa"
+                            : "Sin activar"}
                       {!l.verified && " · sin verificar"}
                     </td>
                   </tr>
@@ -248,11 +284,12 @@ function Resumen({ d, rol, nombres, onCambio }: { d: DetalleCuenta; rol: Rol; no
             </table>
           </div>
         )}
+        <Mas lista={fichas} />
       </section>
 
       <section className="bloque">
         <h2>Derechos</h2>
-        {d.entitlements.length === 0 ? (
+        {derechos.filas.length === 0 ? (
           <p className="sec">Sin derechos.</p>
         ) : (
           <div className="tabla">
@@ -269,7 +306,7 @@ function Resumen({ d, rol, nombres, onCambio }: { d: DetalleCuenta; rol: Rol; no
                 </tr>
               </thead>
               <tbody>
-                {d.entitlements.map((e) => (
+                {derechos.filas.map((e) => (
                   <tr key={e.id}>
                     <td>
                       {plan(e.plan)} {e.current ? <span className="etiqueta bien">Vigente</span> : <span className="etiqueta neutra">Pasado</span>}
@@ -297,11 +334,12 @@ function Resumen({ d, rol, nombres, onCambio }: { d: DetalleCuenta; rol: Rol; no
             </table>
           </div>
         )}
+        <Mas lista={derechos} />
       </section>
 
       <section className="bloque">
         <h2>Plazas</h2>
-        {d.seats.length === 0 ? (
+        {plazas.filas.length === 0 ? (
           <p className="sec">Sin plazas de pago.</p>
         ) : (
           <div className="tabla">
@@ -317,7 +355,7 @@ function Resumen({ d, rol, nombres, onCambio }: { d: DetalleCuenta; rol: Rol; no
                 </tr>
               </thead>
               <tbody>
-                {d.seats.map((s) => (
+                {plazas.filas.map((s) => (
                   <tr key={s.id}>
                     <td>
                       <code>{s.id}</code>
@@ -340,18 +378,21 @@ function Resumen({ d, rol, nombres, onCambio }: { d: DetalleCuenta; rol: Rol; no
                     <td>
                       {dia(s.current_period_start)} – {dia(s.current_period_end)}
                     </td>
-                    <td className="num">{!s.next_price_key ? "—" : PRECIO[s.next_price_key] !== undefined ? euros(PRECIO[s.next_price_key]) : <code>{s.next_price_key}</code>}</td>
+                    <td className="num">
+                      {!s.next_price_key ? "—" : PRECIO[s.next_price_key] !== undefined ? euros(PRECIO[s.next_price_key]) : <code>{s.next_price_key}</code>}
+                    </td>
                   </tr>
                 ))}
               </tbody>
             </table>
           </div>
         )}
+        <Mas lista={plazas} />
       </section>
 
       <section className="bloque">
         <h2>Bloqueos por impago</h2>
-        {d.blocks.length === 0 ? (
+        {bloqueos.filas.length === 0 ? (
           <p className="sec">Ninguno.</p>
         ) : (
           <div className="tabla">
@@ -366,7 +407,7 @@ function Resumen({ d, rol, nombres, onCambio }: { d: DetalleCuenta; rol: Rol; no
                 </tr>
               </thead>
               <tbody>
-                {d.blocks.map((b) => (
+                {bloqueos.filas.map((b) => (
                   <tr key={b.id}>
                     <td>{cuando(b.blocked_at)}</td>
                     <td>{b.reason}</td>
@@ -385,11 +426,12 @@ function Resumen({ d, rol, nombres, onCambio }: { d: DetalleCuenta; rol: Rol; no
             </table>
           </div>
         )}
+        <Mas lista={bloqueos} />
       </section>
 
       <section className="bloque">
         <h2>Bajas</h2>
-        {d.offboardings.length === 0 ? (
+        {bajas.filas.length === 0 ? (
           <p className="sec">Ninguna.</p>
         ) : (
           <div className="tabla">
@@ -404,7 +446,7 @@ function Resumen({ d, rol, nombres, onCambio }: { d: DetalleCuenta; rol: Rol; no
                 </tr>
               </thead>
               <tbody>
-                {d.offboardings.map((o) => (
+                {bajas.filas.map((o) => (
                   <tr key={o.id}>
                     <td>{o.scope}</td>
                     <td>{cuando(o.confirmed_at)}</td>
@@ -417,11 +459,12 @@ function Resumen({ d, rol, nombres, onCambio }: { d: DetalleCuenta; rol: Rol; no
             </table>
           </div>
         )}
+        <Mas lista={bajas} />
       </section>
 
       <section className="bloque">
-        <h2>Activaciones (las 100 últimas)</h2>
-        {d.activations.length === 0 ? (
+        <h2>Activaciones</h2>
+        {activaciones.filas.length === 0 ? (
           <p className="sec">Ninguna.</p>
         ) : (
           <div className="tabla">
@@ -436,7 +479,7 @@ function Resumen({ d, rol, nombres, onCambio }: { d: DetalleCuenta; rol: Rol; no
                 </tr>
               </thead>
               <tbody>
-                {d.activations.map((a, i) => (
+                {activaciones.filas.map((a, i) => (
                   <tr key={`${a.at}-${i}`}>
                     <td>{cuando(a.at)}</td>
                     <td>
@@ -451,6 +494,7 @@ function Resumen({ d, rol, nombres, onCambio }: { d: DetalleCuenta; rol: Rol; no
             </table>
           </div>
         )}
+        <Mas lista={activaciones} />
       </section>
 
       {recortando && (
@@ -508,8 +552,7 @@ function Recortar({ derecho, onCerrar, onHecho }: { derecho: Derecho; onCerrar: 
   return (
     <Ventana titulo="Recortar un derecho" onCerrar={onCerrar} bloqueada={a.enviando}>
       <p>
-        {plan(derecho.plan)} × {derecho.quantity} ({ORIGEN[derecho.source] ?? derecho.source}), hasta {dia(derecho.ends_at)}. Recortar adelanta su fin; nunca lo
-        alarga.
+        {plan(derecho.plan)} × {derecho.quantity} ({ORIGEN[derecho.source] ?? derecho.source}), hasta {dia(derecho.ends_at)}. Recortar adelanta su fin; nunca lo alarga.
       </p>
       <form
         onSubmit={(e) => {
@@ -568,17 +611,35 @@ function CerrarBloqueo({ id, onCerrar, onHecho }: { id: number; onCerrar: () => 
   );
 }
 
-function FichasYChats({ id, nombres, onNombres }: { id: string; nombres: NombreFicha[] | null; onNombres: (n: NombreFicha[]) => void }) {
+type LecturaNombres = { filas: NombreFicha[]; cursor: Cursor; ticket: string };
+
+function FichasYChats({ id, lectura, onLectura }: { id: string; lectura: LecturaNombres | null; onLectura: (l: LecturaNombres) => void }) {
   const a = useAccion();
-  const [chats, setChats] = useState<Awaited<ReturnType<typeof api.chats>>["channels"] | null>(null);
+  const nombres = lectura?.filas ?? null;
+  const [masNombres, setMasNombres] = useState(false);
+  const [errorNombres, setErrorNombres] = useState<string | null>(null);
+  const lista = useLista<Chat>((cursor) => api.chats(id, cursor).then((r) => ({ items: r.channels, next_cursor: r.next_cursor })));
+  const chats = lista.filas;
+  const { empezar } = lista;
   const [errorChats, setErrorChats] = useState<string | null>(null);
 
   useEffect(() => {
     api
       .chats(id)
-      .then((r) => setChats(r.channels))
+      .then((r) => empezar(r.channels, r.next_cursor))
       .catch((e: unknown) => setErrorChats(mensajeDe(e)));
-  }, [id]);
+  }, [id, empezar]);
+
+  const siguientesNombres = () => {
+    if (!lectura?.cursor) return;
+    setMasNombres(true);
+    setErrorNombres(null);
+    api
+      .nombresFichas(id, lectura.ticket, lectura.cursor)
+      .then((r) => onLectura({ ...lectura, filas: [...lectura.filas, ...r.locations], cursor: r.next_cursor }))
+      .catch((e: unknown) => setErrorNombres(mensajeDe(e)))
+      .finally(() => setMasNombres(false));
+  };
 
   return (
     <>
@@ -613,7 +674,10 @@ function FichasYChats({ id, nombres, onNombres }: { id: string; nombres: NombreF
           <form
             onSubmit={(e) => {
               e.preventDefault();
-              void a.ejecutar(async () => onNombres((await api.nombresFichas(id, a.ticket)).locations));
+              void a.ejecutar(async () => {
+                const r = await api.nombresFichas(id, a.ticket);
+                onLectura({ filas: r.locations, cursor: r.next_cursor, ticket: a.ticket });
+              });
             }}
           >
             <p className="sec">El nombre de una ficha es un dato de Google: solo se lee con la referencia del ticket que lo justifica.</p>
@@ -625,6 +689,12 @@ function FichasYChats({ id, nombres, onNombres }: { id: string; nombres: NombreF
               </button>
             </div>
           </form>
+        )}
+        {lectura && (
+          <Mas
+            lista={{ hayMas: lectura.cursor !== null, cargando: masNombres, error: errorNombres, mas: siguientesNombres }}
+            texto="Leer más nombres (con el mismo ticket)"
+          />
         )}
       </section>
       <section className="bloque">
@@ -658,20 +728,23 @@ function FichasYChats({ id, nombres, onNombres }: { id: string; nombres: NombreF
               </table>
             </div>
           ))}
+        <Mas lista={lista} />
       </section>
     </>
   );
 }
 
 function Sincronizacion({ id }: { id: string }) {
-  const [filas, setFilas] = useState<Awaited<ReturnType<typeof api.sincronizacion>>["sync"] | null>(null);
+  const lista = useLista<FilaSync>((cursor) => api.sincronizacion(id, cursor).then((r) => ({ items: r.sync, next_cursor: r.next_cursor })));
+  const filas = lista.filas;
+  const { empezar } = lista;
   const [error, setError] = useState<string | null>(null);
   useEffect(() => {
     api
       .sincronizacion(id)
-      .then((r) => setFilas(r.sync))
+      .then((r) => empezar(r.sync, r.next_cursor))
       .catch((e: unknown) => setError(mensajeDe(e)));
-  }, [id]);
+  }, [id, empezar]);
   return (
     <section className="bloque">
       <h2>Sincronización con Google</h2>
@@ -708,6 +781,7 @@ function Sincronizacion({ id }: { id: string }) {
             </table>
           </div>
         ))}
+      <Mas lista={lista} />
     </section>
   );
 }
@@ -715,10 +789,7 @@ function Sincronizacion({ id }: { id: string }) {
 function Cobro({ id, onCambio }: { id: string; onCambio: (m: string) => void }) {
   const [c, setC] = useState<CobroCuenta | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const [contacto, setContacto] = useState<ContactoFiscal | null>(null);
-  const [reembolsando, setReembolsando] = useState<CobroCuenta["charges"][number] | null>(null);
   const [version, setVersion] = useState(0);
-  const a = useAccion();
 
   useEffect(() => {
     api
@@ -729,6 +800,31 @@ function Cobro({ id, onCambio }: { id: string; onCambio: (m: string) => void }) 
 
   if (error) return <Error texto={error} />;
   if (!c) return <Cargando />;
+  return (
+    <CobroVista
+      id={id}
+      c={c}
+      onCambio={(m) => {
+        setVersion((v) => v + 1);
+        onCambio(m);
+      }}
+    />
+  );
+}
+
+function CobroVista({ id, c, onCambio }: { id: string; c: CobroCuenta; onCambio: (m: string) => void }) {
+  const [contacto, setContacto] = useState<ContactoFiscal | null>(null);
+  const [reembolsando, setReembolsando] = useState<Cargo | null>(null);
+  const a = useAccion();
+  // Cada listado trae su primera página; las siguientes, de /accounts/{id}/lists/{nombre}, con los enlaces hechos.
+  const sig =
+    <T,>(nombre: ListaCuenta) =>
+    (cursor: string) =>
+      api.listaCuenta<T>(id, nombre, cursor);
+  const cur = c.next_cursors ?? {};
+  const cobros = useListaDe(c.charges, cur["charges"], sig<Cargo>("charges"));
+  const facturas = useListaDe(c.documents, cur["documents"], sig<DocumentoLegal>("documents"));
+  const reembolsos = useListaDe(c.refunds, cur["refunds"], sig<Reembolso>("refunds"));
 
   return (
     <>
@@ -791,7 +887,7 @@ function Cobro({ id, onCambio }: { id: string; onCambio: (m: string) => void }) 
 
       <section className="bloque">
         <h2>Cobros</h2>
-        {c.charges.length === 0 ? (
+        {cobros.filas.length === 0 ? (
           <p className="sec">Ninguno.</p>
         ) : (
           <div className="tabla">
@@ -808,7 +904,7 @@ function Cobro({ id, onCambio }: { id: string; onCambio: (m: string) => void }) 
                 </tr>
               </thead>
               <tbody>
-                {c.charges.map((g) => {
+                {cobros.filas.map((g) => {
                   const pendiente = g.amount_paid - g.amount_refunded;
                   return (
                     <tr key={g.stripe_invoice_id}>
@@ -839,11 +935,12 @@ function Cobro({ id, onCambio }: { id: string; onCambio: (m: string) => void }) 
             </table>
           </div>
         )}
+        <Mas lista={cobros} />
       </section>
 
       <section className="bloque">
         <h2>Facturas legales (Odoo)</h2>
-        {c.documents.length === 0 ? (
+        {facturas.filas.length === 0 ? (
           <p className="sec">Ninguna todavía.</p>
         ) : (
           <div className="tabla">
@@ -859,7 +956,7 @@ function Cobro({ id, onCambio }: { id: string; onCambio: (m: string) => void }) 
                 </tr>
               </thead>
               <tbody>
-                {c.documents.map((doc) => (
+                {facturas.filas.map((doc) => (
                   <tr key={doc.id}>
                     <td>
                       <Externo href={doc.odoo_url}>{doc.number ?? "—"}</Externo>
@@ -878,11 +975,12 @@ function Cobro({ id, onCambio }: { id: string; onCambio: (m: string) => void }) 
             </table>
           </div>
         )}
+        <Mas lista={facturas} />
       </section>
 
       <section className="bloque">
         <h2>Reembolsos</h2>
-        {c.refunds.length === 0 ? (
+        {reembolsos.filas.length === 0 ? (
           <p className="sec">Ninguno.</p>
         ) : (
           <div className="tabla">
@@ -898,7 +996,7 @@ function Cobro({ id, onCambio }: { id: string; onCambio: (m: string) => void }) 
                 </tr>
               </thead>
               <tbody>
-                {c.refunds.map((r) => (
+                {reembolsos.filas.map((r) => (
                   <tr key={r.id}>
                     <td>
                       <code>{r.stripe_invoice_id}</code>
@@ -914,6 +1012,7 @@ function Cobro({ id, onCambio }: { id: string; onCambio: (m: string) => void }) 
             </table>
           </div>
         )}
+        <Mas lista={reembolsos} />
       </section>
 
       {reembolsando && (
@@ -922,7 +1021,6 @@ function Cobro({ id, onCambio }: { id: string; onCambio: (m: string) => void }) 
           onCerrar={() => setReembolsando(null)}
           onHecho={() => {
             setReembolsando(null);
-            setVersion((v) => v + 1);
             onCambio("Reembolso pedido. El proceso de cobro lo ejecuta en segundo plano: su estado sale en «Reembolsos».");
           }}
         />
@@ -931,7 +1029,7 @@ function Cobro({ id, onCambio }: { id: string; onCambio: (m: string) => void }) 
   );
 }
 
-function Reembolsar({ cargo, onCerrar, onHecho }: { cargo: CobroCuenta["charges"][number]; onCerrar: () => void; onHecho: () => void }) {
+function Reembolsar({ cargo, onCerrar, onHecho }: { cargo: Cargo; onCerrar: () => void; onHecho: () => void }) {
   const id = useId();
   const a = useAccion();
   const pendiente = cargo.amount_paid - cargo.amount_refunded;
@@ -1010,8 +1108,8 @@ function BajaPorCorreo({ d, nombres, onHecha }: { d: DetalleCuenta; nombres: Nom
     <section className="bloque">
       <h2>Baja por correo</h2>
       <p className="sec">
-        Pega el original completo del correo (en Gmail, «Mostrar original»), con sus cabeceras. Solo se tramita si nuestro servidor de correo confirma
-        el remitente (DMARC) y es el correo de la cuenta. La baja queda programada a 48 horas, con el correo de aviso y su enlace para restaurarla.
+        Pega el original completo del correo (en Gmail, «Mostrar original»), con sus cabeceras. Solo se tramita si nuestro servidor de correo confirma el remitente
+        (DMARC) y es el correo de la cuenta. La baja queda programada a 48 horas, con el correo de aviso y su enlace para restaurarla.
       </p>
       <form
         onSubmit={(e) => {
@@ -1043,8 +1141,7 @@ function BajaPorCorreo({ d, nombres, onHecha }: { d: DetalleCuenta; nombres: Nom
       {comprobacion &&
         (!comprobacion.matches_account ? (
           <p className="error">
-            DMARC correcto ({comprobacion.from_domain}), pero el remitente no es el correo de esta cuenta. No sigas: pide que escriban desde la dirección
-            de la cuenta.
+            DMARC correcto ({comprobacion.from_domain}), pero el remitente no es el correo de esta cuenta. No sigas: pide que escriban desde la dirección de la cuenta.
           </p>
         ) : (
           <form
@@ -1153,7 +1250,14 @@ function Conceder({ id, onHecho }: { id: string; onHecho: (m: string) => void })
           </label>
           <label className="campo" htmlFor={`${fid}-c`}>
             <span>Fichas</span>
-            <input id={`${fid}-c`} type="number" min={1} max={10} value={cantidad} onChange={(e) => setCantidad(Math.max(1, Math.min(10, Number(e.target.value) || 1)))} />
+            <input
+              id={`${fid}-c`}
+              type="number"
+              min={1}
+              max={10}
+              value={cantidad}
+              onChange={(e) => setCantidad(Math.max(1, Math.min(10, Number(e.target.value) || 1)))}
+            />
           </label>
           <label className="campo" htmlFor={`${fid}-o`}>
             <span>Origen</span>
@@ -1189,7 +1293,15 @@ function Conceder({ id, onHecho }: { id: string; onHecho: (m: string) => void })
 
 // ── Fechas en hora de Madrid ──
 
-const PARTES_MADRID = new Intl.DateTimeFormat("en-CA", { timeZone: "Europe/Madrid", year: "numeric", month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit", hourCycle: "h23" });
+const PARTES_MADRID = new Intl.DateTimeFormat("en-CA", {
+  timeZone: "Europe/Madrid",
+  year: "numeric",
+  month: "2-digit",
+  day: "2-digit",
+  hour: "2-digit",
+  minute: "2-digit",
+  hourCycle: "h23",
+});
 
 /** «AAAA-MM-DD» del día que es en Madrid en ese instante (para los `min`/`max` de un `<input type=date>`). */
 function diaMadrid(d: Date): string {

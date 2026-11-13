@@ -1,6 +1,6 @@
-import { useEffect, useId, useRef, useState, type ReactNode } from "react";
+import { useCallback, useEffect, useId, useRef, useState, type ReactNode } from "react";
 import qrcode from "qrcode-generator";
-import { ErrorAdmin } from "./api";
+import { ErrorAdmin, type Cursor } from "./api";
 
 // Piezas comunes del backoffice. Sin estilos en línea: la CSP solo permite hojas de estilo propias.
 
@@ -60,14 +60,112 @@ export function problemaTicket(t: string, max = 500): string | null {
   return null;
 }
 
-export function CampoTicket({ valor, onCambio, max = 500, etiqueta = "Referencia del ticket" }: { valor: string; onCambio: (v: string) => void; max?: number; etiqueta?: string }) {
+export function CampoTicket({
+  valor,
+  onCambio,
+  max = 500,
+  etiqueta = "Referencia del ticket",
+}: {
+  valor: string;
+  onCambio: (v: string) => void;
+  max?: number;
+  etiqueta?: string;
+}) {
   const id = useId();
   return (
     <label className="campo" htmlFor={id}>
       <span>{etiqueta}</span>
-      <input id={id} type="text" value={valor} maxLength={max} onChange={(e) => onCambio(e.target.value.replace(/[\u0000-\u001f\u007f]/g, " "))} placeholder="Ticket 4321" autoComplete="off" />
+      <input
+        id={id}
+        type="text"
+        value={valor}
+        maxLength={max}
+        onChange={(e) => onCambio(e.target.value.replace(/[\u0000-\u001f\u007f]/g, " "))}
+        placeholder="Ticket 4321"
+        autoComplete="off"
+      />
       <small>Se guarda en la auditoría. Sin direcciones de correo.</small>
     </label>
+  );
+}
+
+// ── Paginación por cursor (contrato, 1.3) ──
+
+export interface Lista<T> {
+  /** Las filas enseñadas (la primera página y las que se hayan cargado después); null antes de la primera. */
+  filas: T[] | null;
+  hayMas: boolean;
+  cargando: boolean;
+  error: string | null;
+  /** Empieza de cero con la primera página (al abrir la pantalla, al buscar o al recargar). */
+  empezar: (filas: T[], cursor: Cursor) => void;
+  /** Pide la página siguiente y la añade debajo. */
+  mas: () => void;
+}
+
+/**
+ * Un listado por páginas: «Cargar más» añade la página siguiente debajo, sin números de página (con cursor
+ * no hay total ni salto a una página). `siguiente` pide la página de un cursor; se usa siempre la última
+ * versión que se pase. Si se empieza de cero mientras llega una página, esa página se descarta.
+ */
+export function useLista<T>(siguiente: (cursor: string) => Promise<{ items: T[]; next_cursor: Cursor }>): Lista<T> {
+  const [filas, setFilas] = useState<T[] | null>(null);
+  const [cursor, setCursor] = useState<Cursor>(null);
+  const [cargando, setCargando] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const pedir = useRef(siguiente);
+  pedir.current = siguiente;
+  const vez = useRef(0);
+
+  const empezar = useCallback((f: T[], c: Cursor) => {
+    vez.current += 1;
+    setFilas(f);
+    setCursor(c);
+    setCargando(false);
+    setError(null);
+  }, []);
+
+  const mas = () => {
+    if (!cursor || cargando) return;
+    const esta = vez.current;
+    setCargando(true);
+    setError(null);
+    pedir
+      .current(cursor)
+      .then((p) => {
+        if (esta !== vez.current) return;
+        setFilas((f) => [...(f ?? []), ...p.items]);
+        setCursor(p.next_cursor);
+      })
+      .catch((e: unknown) => esta === vez.current && setError(mensajeDe(e)))
+      .finally(() => esta === vez.current && setCargando(false));
+  };
+
+  return { filas, hayMas: cursor !== null, cargando, error, empezar, mas };
+}
+
+/** Un listado que llega dentro de otra respuesta (la primera página y su cursor): se reinicia cuando cambian. */
+export function useListaDe<T>(inicial: T[], cursor: Cursor | undefined, siguiente: (cursor: string) => Promise<{ items: T[]; next_cursor: Cursor }>) {
+  const l = useLista(siguiente);
+  const { empezar } = l;
+  useEffect(() => empezar(inicial, cursor ?? null), [inicial, cursor, empezar]);
+  return { ...l, filas: l.filas ?? inicial };
+}
+
+/** El pie de un listado: «Cargar más» mientras haya páginas, y el error de la última, si lo hubo. */
+export function Mas({ lista, texto = "Cargar más" }: { lista: Pick<Lista<unknown>, "hayMas" | "cargando" | "error" | "mas">; texto?: string }) {
+  if (!lista.hayMas && !lista.error) return null;
+  return (
+    <>
+      <Error texto={lista.error} />
+      {lista.hayMas && (
+        <div className="acciones">
+          <button className="btn sec" type="button" disabled={lista.cargando} onClick={lista.mas}>
+            {lista.cargando ? "Cargando…" : texto}
+          </button>
+        </div>
+      )}
+    </>
   );
 }
 
@@ -88,7 +186,9 @@ export function Ventana({ titulo, children, onCerrar, bloqueada = false }: { tit
       if (e.key === "Escape" && !bloqueada) onCerrar();
       // Tab no sale de la ventana: lo de detrás sigue en la página, pero no se alcanza con el teclado.
       if (e.key === "Tab" && caja.current) {
-        const enfocables = [...caja.current.querySelectorAll<HTMLElement>("a[href], button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled])")];
+        const enfocables = [
+          ...caja.current.querySelectorAll<HTMLElement>("a[href], button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled])"),
+        ];
         const primero = enfocables[0];
         const ultimo = enfocables[enfocables.length - 1];
         if (!primero || !ultimo) return;
@@ -185,7 +285,17 @@ export function QR({ texto, etiqueta }: { texto: string; etiqueta: string }) {
  * Los 10 códigos de recuperación: se enseñan una sola vez. Se pueden copiar (para el gestor de
  * contraseñas) o descargar en JSON; la descarga avisa de sacar el archivo de este ordenador.
  */
-export function CodigosRecuperacion({ codigos, usuario, onListo, etiquetaListo = "Ya los he guardado" }: { codigos: string[]; usuario: string; onListo: () => void; etiquetaListo?: string }) {
+export function CodigosRecuperacion({
+  codigos,
+  usuario,
+  onListo,
+  etiquetaListo = "Ya los he guardado",
+}: {
+  codigos: string[];
+  usuario: string;
+  onListo: () => void;
+  etiquetaListo?: string;
+}) {
   const [guardados, setGuardados] = useState(false);
   const [copiados, setCopiados] = useState<boolean | null>(null);
   const [descargado, setDescargado] = useState(false);
@@ -215,8 +325,8 @@ export function CodigosRecuperacion({ codigos, usuario, onListo, etiquetaListo =
   return (
     <div className="recuperacion">
       <p className="aviso">
-        Estos códigos solo se enseñan ahora. Guárdalos fuera de este ordenador (en tu gestor de contraseñas o en papel). Cada uno sirve una sola vez si
-        pierdes tu app de autenticación.
+        Estos códigos solo se enseñan ahora. Guárdalos fuera de este ordenador (en tu gestor de contraseñas o en papel). Cada uno sirve una sola vez si pierdes tu app de
+        autenticación.
       </p>
       <ol className="codigos">
         {codigos.map((c) => (
