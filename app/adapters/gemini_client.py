@@ -14,6 +14,10 @@ Two providers of the same models, chosen by FICHAITOR_GEMINI_PROVIDER (see
   never in the URL, so it cannot end up in an access log.
 - Vertex AI: the URL carries the project and the location; an OAuth access token of a
   service account goes in `Authorization: Bearer` (`app.adapters.gemini_auth`).
+- Vertex AI with an API key of Agent Platform: the key goes in `x-goog-api-key`, as on
+  AI Studio. A key bound to a service account calls the same URL, with the project and
+  the location (`eu` included); a key of the express mode only has the projectless
+  global endpoint, so it cannot keep the processing in the EU.
 
 The body, the structured output (`responseJsonSchema`, accepted by both), the limits,
 the reading of the answer, the errors and the usage of tokens are the same for both.
@@ -27,6 +31,7 @@ import httpx
 from pydantic import BaseModel, ValidationError
 
 from app.adapters.gemini_auth import TokenSource, VertexAuthError
+from app.screenshot_config import EXPRESS_NEEDS_GLOBAL, VERTEX_EXPRESS_LOCATION
 
 BASE_URL = "https://generativelanguage.googleapis.com/v1beta"
 VERTEX_API_VERSION = "v1"
@@ -129,6 +134,47 @@ class VertexBackend:
 
     def rejected(self) -> None:
         self._tokens.invalidate()
+
+
+class VertexApiKeyBackend:
+    """Vertex AI with an API key. With a project: a key bound to a service account, on the
+    endpoint of the project and the location. Without one: a key of the express mode,
+    on the projectless global endpoint, the only one it has; any other location is
+    refused here instead of being changed to `global` behind the owner's back."""
+
+    def __init__(self, api_key: str, project: str, location: str) -> None:
+        if not api_key or any(c.isspace() for c in api_key):
+            raise ValueError("FICHAITOR_VERTEX_API_KEY no es una clave válida")
+        if project and not _PROJECT_ID.fullmatch(project):
+            raise ValueError("FICHAITOR_VERTEX_PROJECT no es un ID de proyecto válido")
+        if not _LOCATION.fullmatch(location):
+            raise ValueError("FICHAITOR_VERTEX_LOCATION no es una ubicación válida")
+        if not project and location != VERTEX_EXPRESS_LOCATION:
+            raise ValueError(EXPRESS_NEEDS_GLOBAL)
+        self.project = project
+        self.location = location
+        self._api_key = api_key
+
+    def __repr__(self) -> str:  # never the key
+        return f"VertexApiKeyBackend(project={self.project!r}, location={self.location!r})"
+
+    def url(self, model: str) -> str:
+        name = model_path(model).removeprefix("models/")
+        if not self.project:
+            return (
+                f"https://{vertex_host(VERTEX_EXPRESS_LOCATION)}/{VERTEX_API_VERSION}"
+                f"/publishers/google/models/{name}:generateContent"
+            )
+        return (
+            f"https://{vertex_host(self.location)}/{VERTEX_API_VERSION}/projects/{self.project}"
+            f"/locations/{self.location}/publishers/google/models/{name}:generateContent"
+        )
+
+    async def headers(self, client: httpx.AsyncClient) -> dict[str, str]:
+        return {"x-goog-api-key": self._api_key}
+
+    def rejected(self) -> None:
+        pass  # nothing cached: a refused key stays refused until it is replaced
 
 
 class GeminiClient:

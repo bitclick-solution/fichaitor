@@ -499,7 +499,9 @@ El webhook se registra **a mano, una vez**, y otra vez solo si cambian la URL o 
 
 ## Gemini en Vertex AI
 
-La beta llama a Gemini por AI Studio (la API de Gemini, con `FICHAITOR_GEMINI_API_KEY`). Para producción, la decisión es Vertex AI, en Google Cloud, en una ubicación europea. El cambio es solo de configuración: el código ya habla con los dos proveedores (`app/adapters/gemini_client.py`, `gemini_auth.py` y `gemini_provider.py`) con el mismo cuerpo, la misma salida estructurada (`responseJsonSchema`), los mismos límites, los mismos errores, sin reintentos y con el mismo registro de tokens.
+La beta llama a Gemini por AI Studio (la API de Gemini, con `FICHAITOR_GEMINI_API_KEY`). Para producción, la decisión es Vertex AI (hoy «Gemini Enterprise Agent Platform»), en Google Cloud, en una ubicación europea. El cambio es solo de configuración: el código ya habla con los dos proveedores (`app/adapters/gemini_client.py`, `gemini_auth.py` y `gemini_provider.py`) con el mismo cuerpo, la misma salida estructurada (`responseJsonSchema`), los mismos límites, los mismos errores, sin reintentos y con el mismo registro de tokens.
+
+En Vertex hay dos formas de autenticarse. La elegida para producción es la **clave de API de Agent Platform vinculada a una cuenta de servicio** (`FICHAITOR_VERTEX_API_KEY`); la cuenta de servicio con su archivo JSON queda como alternativa. Ver [Clave de API o cuenta de servicio](#clave-de-api-o-cuenta-de-servicio).
 
 > **Importante:** A 2026-11-12 no se ha hecho nada de lo que sigue en Google Cloud. Producción sigue en AI Studio.
 
@@ -522,7 +524,44 @@ Consultado en la documentación oficial el 2026-11-12. Precios en USD por milló
 
 > **Precaución:** En Vertex AI, `gemini-3.6-flash` tiene fecha de retirada el **19-11-2026**, y Google pide pasar a `gemini-3.8-flash`. En AI Studio no hay fecha anunciada. Al pasar a Vertex, pon `FICHAITOR_GEMINI_MODEL=gemini-3.8-flash` y prueba antes la captura, las propuestas de respuesta y el análisis de opinión con ese modelo.
 
-### Pasos en Google Cloud
+### Clave de API o cuenta de servicio
+
+Consultado en la documentación oficial el 2026-11-13:
+
+- Agent Platform acepta claves de API solo en `generateContent` y `streamGenerateContent`, que son los únicos métodos que usa Fichaitor ([Authenticate to Agent Platform](https://docs.cloud.google.com/vertex-ai/docs/authentication)).
+- Hay dos tipos de clave ([Use the Agent Platform remote MCP server](https://docs.cloud.google.com/gemini-enterprise-agent-platform/reference/use-agent-platform-mcp)): la del **modo exprés** y la **vinculada a una cuenta de servicio** en un proyecto estándar. Una clave estándar sin vincular no vale: no da a IAM ninguna identidad que comprobar.
+- **Modo exprés** ([overview](https://docs.cloud.google.com/vertex-ai/generative-ai/docs/start/express-mode/overview), [API reference](https://docs.cloud.google.com/vertex-ai/generative-ai/docs/start/express-mode/vertex-ai-express-mode-api-reference)): solo para cuentas `@gmail.com`, en vista previa (Pre-GA), con cuotas reducidas y una lista cerrada de modelos en la que **no están** `gemini-3.6-flash` ni `gemini-3.8-flash`. Su endpoint no lleva proyecto ni ubicación y es el global (`https://aiplatform.googleapis.com/v1/publishers/google/models/MODELO:generateContent`), así que **no garantiza que el procesamiento se quede en la UE**. No sirve para Fichaitor.
+- **Clave vinculada a una cuenta de servicio** ([API keys](https://docs.cloud.google.com/docs/authentication/api-keys)): las peticiones se atribuyen a esa cuenta y IAM decide con sus permisos. `aiplatform.googleapis.com` está entre las API que la admiten. Fichaitor la usa con el mismo endpoint que la cuenta de servicio, con proyecto y ubicación: `https://aiplatform.eu.rep.googleapis.com/v1/projects/PROYECTO/locations/eu/publishers/google/models/MODELO:generateContent`.
+- La clave va en la cabecera `x-goog-api-key`, nunca en `?key=`, para que no acabe en un registro de accesos. Google recomienda la cabecera y deja el parámetro para clientes que no pueden poner cabeceras.
+
+> **Importante:** La documentación de Google muestra la clave con el endpoint global del modo exprés y no tiene un ejemplo explícito de clave vinculada con un endpoint multirregional (`eu`). Tampoco dice que no se pueda. Antes de anunciar el cambio, haz la comprobación del paso 5 de [Pasos en el servidor](#pasos-en-el-servidor): si `eu` respondiera `status 401` o `403` con una clave que en `global` funciona, la clave no admite `eu` y hay que volver a la cuenta de servicio, **no** pasar a `global`.
+
+Cómo elige Fichaitor, con `FICHAITOR_GEMINI_PROVIDER=vertex`:
+
+| Variables | Credencial | Endpoint |
+|---|---|---|
+| `FICHAITOR_VERTEX_API_KEY` y `FICHAITOR_VERTEX_PROJECT` | Clave vinculada, en `x-goog-api-key` | El del proyecto y la ubicación (`eu` por defecto) |
+| `FICHAITOR_VERTEX_API_KEY` sin proyecto y `FICHAITOR_VERTEX_LOCATION=global` | Clave del modo exprés | Global sin proyecto |
+| `FICHAITOR_VERTEX_API_KEY` sin proyecto y otra ubicación | — | El proceso no arranca y dice que esa clave solo admite `global` |
+| Sin clave | Archivo de `FICHAITOR_VERTEX_CREDENTIALS_FILE` o, si está vacío, ADC | El del proyecto y la ubicación |
+
+Si hay clave, el archivo de la cuenta de servicio no se lee aunque la variable siga puesta. La clave es un `SecretStr`: no sale en los `repr`, en los errores ni en los registros.
+
+### Pasos en Google Cloud con clave de API
+
+Necesitas permisos de propietario del proyecto. `PROYECTO` es el ID del proyecto, con facturación activa.
+
+1. Activa la API de Vertex AI (Agent Platform): `gcloud services enable aiplatform.googleapis.com --project=PROYECTO`.
+1. Crea la cuenta de servicio `fichaitor-gemini` y dale el permiso mínimo: pasos 2 y 3 de [Pasos en Google Cloud con cuenta de servicio](#pasos-en-google-cloud-con-cuenta-de-servicio). No hace falta su clave JSON.
+1. Permite vincular claves a cuentas de servicio. La restricción de organización `constraints/iam.managed.disableServiceAccountApiKeyCreation` («Block service account API key bindings») lo impide por defecto: desactívala para este proyecto o añade `aiplatform.googleapis.com` a los servicios permitidos. Solo se puede cambiar en un proyecto que pertenece a una organización. Quien crea la clave necesita además `roles/iam.serviceAccountUser` y `roles/iam.serviceAccountApiKeyBindingAdmin`.
+1. Crea la clave en la consola, en **Agent Platform > Agent Studio > Ajustes > API keys** (`https://console.cloud.google.com/agent-platform/studio/settings/api-keys`) o en **APIs y servicios > Credenciales > Crear credenciales > Clave de API**:
+    1. Marca **Authenticate API calls through a service account** y elige `fichaitor-gemini`.
+    1. En **Restricciones de API**, deja solo la API de Vertex AI (`aiplatform.googleapis.com`).
+    1. En **Restricciones de aplicación**, elige **Direcciones IP** y pon la IP pública del VPS. Es la única restricción de aplicación que admiten estas claves.
+1. Copia la clave a tu gestor de contraseñas. No la subas a GitHub ni la mandes por correo o chat.
+1. Revisa el contrato de tratamiento de datos (ver [Datos y contrato](#datos-y-contrato-dpa)).
+
+### Pasos en Google Cloud con cuenta de servicio
 
 Necesitas permisos de propietario del proyecto y `gcloud`. En los ejemplos, `PROYECTO` es el ID del proyecto: puede ser el de Bitclick u otro con facturación activa.
 
@@ -565,6 +604,28 @@ Necesitas permisos de propietario del proyecto y `gcloud`. En los ejemplos, `PRO
 
 ### Pasos en el servidor
 
+**Con clave de API:**
+
+1. En `api.env`, `worker.env` y `conversation.env` (carpeta del despliegue en el VPS, junto a `vertex/`):
+
+    ```bash
+    FICHAITOR_GEMINI_PROVIDER=vertex
+    FICHAITOR_GEMINI_MODEL=gemini-3.8-flash
+    FICHAITOR_VERTEX_PROJECT=PROYECTO
+    FICHAITOR_VERTEX_LOCATION=eu
+    FICHAITOR_VERTEX_API_KEY=LA_CLAVE
+    ```
+
+    Deja `FICHAITOR_GEMINI_API_KEY` vacía. `FICHAITOR_VERTEX_CREDENTIALS_FILE` puede quedarse como está: con clave no se lee, y la carpeta `vertex/` puede estar vacía.
+1. Comprueba que los tres archivos siguen con permisos `600`.
+1. Despliega como siempre.
+1. Comprueba la captura de reseñas en la web, una propuesta de respuesta por Telegram y el análisis de opinión. En `docker compose logs` no debe aparecer `status 401`, `status 403` ni `status 404`.
+1. Si sale `status 401` o `403` y la clave, el proyecto y el permiso están bien, la clave no admite `eu` (ver la nota de [Clave de API o cuenta de servicio](#clave-de-api-o-cuenta-de-servicio)). Vacía `FICHAITOR_VERTEX_API_KEY` y sigue los pasos con cuenta de servicio. No cambies a `global` sin actualizar antes la política de privacidad.
+
+**Rotar la clave de API:** crea otra igual, cámbiala en los tres archivos, recrea los tres servicios y borra la antigua en la consola. Hazlo al menos una vez al año, y en el momento si se filtra.
+
+**Con cuenta de servicio:**
+
 1. Copia la clave al servidor con `scp` a una ruta temporal y colócala en su carpeta, legible solo por el usuario de los contenedores (UID 10001):
 
     ```bash
@@ -593,7 +654,7 @@ Necesitas permisos de propietario del proyecto y `gcloud`. En los ejemplos, `PRO
 
 **Volver a AI Studio:** pon `FICHAITOR_GEMINI_PROVIDER=aistudio` y la clave en los tres archivos, y vuelve a desplegar.
 
-**Rotar la clave:** crea otra (paso 4 de Google Cloud), sustituye el archivo, recrea los tres servicios y borra la antigua con `gcloud iam service-accounts keys delete`. Hazlo al menos una vez al año, y en el momento si se filtra.
+**Rotar la clave JSON:** crea otra (paso 4 de [Pasos en Google Cloud con cuenta de servicio](#pasos-en-google-cloud-con-cuenta-de-servicio)), sustituye el archivo, recrea los tres servicios y borra la antigua con `gcloud iam service-accounts keys delete`. Hazlo al menos una vez al año, y en el momento si se filtra.
 
 ### Datos y contrato (DPA)
 

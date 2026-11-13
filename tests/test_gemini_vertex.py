@@ -32,6 +32,7 @@ from app.adapters.gemini_client import (
     GeminiClient,
     GeminiUnavailable,
     GeminiUsage,
+    VertexApiKeyBackend,
     VertexBackend,
     vertex_host,
 )
@@ -653,8 +654,193 @@ def test_the_key_never_enters_the_image_and_the_examples_keep_ai_studio():
         assert (
             "FICHAITOR_VERTEX_CREDENTIALS_FILE=/run/secrets/vertex/cuenta-servicio.json" in lines
         ), name
+        assert "FICHAITOR_VERTEX_API_KEY=" in lines, name  # empty: never a key in an example
+    assert "# FICHAITOR_VERTEX_API_KEY=" in (ROOT / ".env.example").read_text(encoding="utf-8")
 
 
 def test_the_project_number_is_accepted_too():
     backend = VertexBackend("544696777336", "eu", MetadataServerTokens(Clock()))
     assert "/projects/544696777336/locations/eu/" in backend.url(MODEL)
+
+
+# --- Vertex AI with an API key of Agent Platform ------------------------------------------
+
+VERTEX_KEY = "AQ.clave-de-agent-platform-no-real"
+EXPRESS_URL = (
+    "https://aiplatform.googleapis.com/v1/publishers/google/models/gemini-3.6-flash:generateContent"
+)
+
+
+def key_client(google: FakeGoogle, project: str = PROJECT, location: str = "eu") -> GeminiClient:
+    backend = VertexApiKeyBackend(VERTEX_KEY, project, location)
+    return GeminiClient(backend, MODEL, client=google.http())
+
+
+def test_a_bound_key_calls_the_eu_endpoint_of_the_project_with_the_key_in_a_header():
+    google = FakeGoogle()
+    ((answer, usage),) = generate(key_client(google))
+    assert answer == Answer(ok=True)
+    assert usage == GeminiUsage(input_tokens=120, output_tokens=38)
+    (request,) = google.model_requests
+    assert str(request.url) == VERTEX_URL  # same URL as with the service account
+    assert request.headers["x-goog-api-key"] == VERTEX_KEY
+    assert "authorization" not in request.headers
+    assert "x-goog-user-project" not in request.headers
+    assert VERTEX_KEY not in str(request.url)  # never ?key=: it would end up in a log
+    assert google.token_requests == []  # no OAuth at all
+
+    # Same body as with the service account (and so as with AI Studio).
+    bearer = FakeGoogle()
+    generate(vertex_client(bearer))
+    assert json.loads(request.content) == json.loads(bearer.model_requests[0].content)
+    config = json.loads(request.content)["generationConfig"]
+    assert config["responseJsonSchema"] == SCHEMA
+    assert config["thinkingConfig"] == {"thinkingLevel": "LOW"}
+
+
+def test_an_express_key_has_only_the_projectless_global_endpoint():
+    google = FakeGoogle()
+    generate(key_client(google, project="", location="global"))
+    (request,) = google.model_requests
+    assert str(request.url) == EXPRESS_URL
+    assert request.headers["x-goog-api-key"] == VERTEX_KEY
+    # Asked for the EU without a project: refused, never moved to global in silence.
+    for location in ("eu", "europe-west1", "us"):
+        with pytest.raises(ValueError, match="solo admite la ubicación global"):
+            VertexApiKeyBackend(VERTEX_KEY, "", location)
+
+
+@pytest.mark.parametrize(
+    ("key", "project", "location"),
+    [
+        ("", PROJECT, "eu"),
+        ("con espacio", PROJECT, "eu"),
+        ("salto\nde-linea", PROJECT, "eu"),
+        (VERTEX_KEY, "p/../../x", "eu"),
+        (VERTEX_KEY, PROJECT, "eu/../x"),
+        (VERTEX_KEY, PROJECT, ""),
+    ],
+)
+def test_a_bad_key_project_or_location_is_refused(key, project, location):
+    with pytest.raises(ValueError) as refused:
+        VertexApiKeyBackend(key, project, location)
+    assert VERTEX_KEY not in str(refused.value)
+
+
+def test_a_refused_key_is_a_fixed_error_and_nothing_is_retried():
+    google = FakeGoogle()
+    client = key_client(google)
+    google.model_status = 401
+    with pytest.raises(GeminiUnavailable, match="^status 401$"):
+        generate(client)
+    google.model_status = 403
+    with pytest.raises(GeminiUnavailable, match="^status 403$"):
+        generate(client)
+    assert len(google.model_requests) == 2
+
+
+def test_the_key_wins_over_the_service_account_and_no_file_is_read(tmp_path):
+    s = settings(
+        gemini_provider="vertex",
+        vertex_project=PROJECT,
+        vertex_api_key=VERTEX_KEY,
+        # As in the production examples: the path is in the env, the file is not on disk.
+        vertex_credentials_file=str(tmp_path / "no-esta.json"),
+        gemini_model="gemini-3.8-flash",
+    )
+    backend = gemini_credentials(s)
+    assert isinstance(backend, VertexApiKeyBackend)
+    assert (backend.project, backend.location) == (PROJECT, "eu")
+    sentiment = build_sentiment_model(s, 5)
+    assert sentiment._gemini._url == (
+        "https://aiplatform.eu.rep.googleapis.com/v1/projects/proyecto-pruebas/locations/eu"
+        "/publishers/google/models/gemini-3.8-flash:generateContent"
+    )
+    assert build_writer(s)._url == sentiment._gemini._url
+
+    # Without the key, the service account as before.
+    path = write(tmp_path, json.dumps(sa_info()))
+    without = settings(
+        gemini_provider="vertex", vertex_project=PROJECT, vertex_credentials_file=str(path)
+    )
+    assert isinstance(gemini_credentials(without), VertexBackend)
+    # A blank key is no key.
+    blank = settings(
+        gemini_provider="vertex",
+        vertex_project=PROJECT,
+        vertex_api_key="  ",
+        vertex_credentials_file=str(path),
+    )
+    assert isinstance(gemini_credentials(blank), VertexBackend)
+    # The key of AI Studio is not the key of Vertex.
+    studio_key_only = settings(
+        gemini_provider="vertex",
+        vertex_project=PROJECT,
+        gemini_api_key=API_KEY,
+        vertex_credentials_file=str(path),
+    )
+    assert isinstance(gemini_credentials(studio_key_only), VertexBackend)
+
+
+def test_the_key_settings_are_checked_at_start_up():
+    # A key needs no project only on the global endpoint of the express mode.
+    express = settings(
+        gemini_provider="vertex", vertex_api_key=VERTEX_KEY, vertex_location="global"
+    )
+    backend = gemini_credentials(express)
+    assert isinstance(backend, VertexApiKeyBackend)
+    assert backend.url(MODEL) == EXPRESS_URL
+    # With the default location (eu) and no project: a clear stop, never global.
+    with pytest.raises(ValidationError, match="solo admite la ubicación global") as stop:
+        settings(gemini_provider="vertex", vertex_api_key=VERTEX_KEY)
+    assert VERTEX_KEY not in str(stop.value)
+    assert VERTEX_KEY not in repr(stop.value)
+    # Without a key, the project is still required, and the message says what else works.
+    with pytest.raises(ValidationError, match="FICHAITOR_VERTEX_PROJECT") as no_project:
+        settings(gemini_provider="vertex", gemini_api_key=API_KEY)
+    assert API_KEY not in str(no_project.value)
+    with pytest.raises(ValidationError, match="no puede estar vacía"):
+        settings(
+            gemini_provider="vertex",
+            vertex_api_key=VERTEX_KEY,
+            vertex_project=PROJECT,
+            vertex_location=" ",
+        )
+    # AI Studio ignores the key of Vertex.
+    assert gemini_credentials(settings(vertex_api_key=VERTEX_KEY)) is None
+
+
+def test_the_vertex_key_never_leaks(caplog, monkeypatch):
+    caplog.set_level(logging.DEBUG)
+    monkeypatch.setenv("FICHAITOR_GEMINI_PROVIDER", "vertex")
+    monkeypatch.setenv("FICHAITOR_VERTEX_PROJECT", PROJECT)
+    monkeypatch.setenv("FICHAITOR_VERTEX_API_KEY", VERTEX_KEY)
+    s = ScreenshotSettings(_env_file=None)
+    backend = gemini_credentials(s)
+    google = FakeGoogle()
+    client = GeminiClient(backend, MODEL, client=google.http())
+    generate(client)
+    google.model_status = 403
+    with pytest.raises(GeminiUnavailable) as refused:
+        generate(client)
+
+    def slow(request: httpx.Request) -> httpx.Response:
+        raise httpx.ReadTimeout(f"timed out {request.headers}", request=request)
+
+    timeout = GeminiClient(
+        backend, MODEL, client=httpx.AsyncClient(transport=httpx.MockTransport(slow))
+    )
+    with pytest.raises(GeminiUnavailable) as late:
+        generate(timeout)
+    assert late.value.__cause__ is None and late.value.__suppress_context__
+    for text in (
+        caplog.text,
+        str(refused.value),
+        str(late.value),
+        repr(backend),
+        repr(client._backend),
+        repr(s),
+        str(s),
+        repr(s.model_dump()),
+    ):
+        assert VERTEX_KEY not in text
