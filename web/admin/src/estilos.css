@@ -37,8 +37,8 @@ code { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; fo
 /* ── Marco ── */
 .cabecera { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 8px 20px; padding: 12px 20px; border-bottom: 2px solid var(--tinta); background: var(--papel); }
 .marca { display: flex; align-items: center; gap: 10px; font-weight: 900; font-stretch: 112%; }
-.marca .logo { display: grid; place-items: center; width: 30px; height: 30px; background: var(--tinta); color: var(--papel); font-weight: 900; }
-.marca .logo b, .marca .pt { color: var(--rojo); }
+.marca .logo { display: block; flex: none; width: 30px; height: 30px; }
+.marca .pt { color: var(--rojo); }
 .marca small { font-weight: 600; color: var(--gris); font-stretch: 100%; }
 .quien { display: flex; align-items: center; gap: 14px; }
 .rol { padding: 2px 8px; border: 2px solid var(--tinta); font-weight: 700; font-size: 0.85rem; }

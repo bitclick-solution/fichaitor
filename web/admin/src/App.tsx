@@ -2,7 +2,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { api, ErrorAdmin, olvidarCsrf, siHaceFaltaCodigo, siSePierdeLaSesion, type Rol, type Sesion } from "./api";
 import { Cargando, DialogoCodigo } from "./comun";
 import { Cuentas } from "./Cuentas";
-import { Alta, Entrar, nombreRol, Reenroll } from "./Entrar";
+import { Alta, Entrar, Marca, nombreRol, Reenroll } from "./Entrar";
 import { Espera, Metricas, Salud } from "./Paneles";
 import { Revision } from "./Revision";
 import { MiCuenta, Personas } from "./Personas";
@@ -140,14 +140,7 @@ export function App() {
   return (
     <>
       <header className="cabecera">
-        <p className="marca">
-          <span className="logo" aria-hidden="true">
-            F<b>.</b>
-          </span>
-          <span>
-            Fichaitor<span className="pt">.</span> <small>Backoffice</small>
-          </span>
-        </p>
+        <Marca />
         <div className="quien">
           <span>
             <strong>{sesion.username}</strong> <span className="rol">{nombreRol(sesion.role)}</span>

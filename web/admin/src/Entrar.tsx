@@ -5,12 +5,21 @@ import { CampoCodigo, CodigosRecuperacion, Error, mensajeDe, QRTotp } from "./co
 // Entrar (docs/contrato-backoffice.md, apartado 2): usuario y contraseña, después el código TOTP o, en su
 // lugar, un código de recuperación (que obliga a dar de alta un TOTP nuevo en ese momento).
 
-function Marca() {
+/** El logo de brand/logo.svg, copiado aquí para no depender de brand/ al compilar en Docker. */
+function Logo() {
+  return (
+    <svg className="logo" viewBox="0 0 120 120" aria-hidden="true" focusable="false">
+      <rect width="120" height="120" fill="#0b0b0b" />
+      <path d="M34 20H90V43H58V53H82V73H58V100H34Z" fill="#f4efe6" />
+      <circle cx="76" cy="90" r="9" fill="#ff3b30" />
+    </svg>
+  );
+}
+
+export function Marca() {
   return (
     <p className="marca">
-      <span className="logo" aria-hidden="true">
-        F<b>.</b>
-      </span>
+      <Logo />
       <span>
         Fichaitor<span className="pt">.</span> <small>Backoffice</small>
       </span>

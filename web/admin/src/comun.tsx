@@ -182,12 +182,29 @@ export function QR({ texto, etiqueta }: { texto: string; etiqueta: string }) {
 }
 
 /**
- * Los 10 códigos de recuperación: se enseñan una sola vez. Sin descarga (dejaría un archivo en este
- * ordenador): se copian para pegarlos en el gestor de contraseñas, o se apuntan en papel.
+ * Los 10 códigos de recuperación: se enseñan una sola vez. Se pueden copiar (para el gestor de
+ * contraseñas) o descargar en JSON; la descarga avisa de sacar el archivo de este ordenador.
  */
 export function CodigosRecuperacion({ codigos, usuario, onListo, etiquetaListo = "Ya los he guardado" }: { codigos: string[]; usuario: string; onListo: () => void; etiquetaListo?: string }) {
   const [guardados, setGuardados] = useState(false);
   const [copiados, setCopiados] = useState<boolean | null>(null);
+  const [descargado, setDescargado] = useState(false);
+  const descargar = () => {
+    const datos = {
+      servicio: "Fichaitor backoffice",
+      ...(usuario ? { usuario } : {}),
+      creados: new Date().toISOString(),
+      nota: "Códigos de recuperación. Cada uno sirve una sola vez. Guárdalos fuera de este ordenador.",
+      codigos,
+    };
+    const url = URL.createObjectURL(new Blob([JSON.stringify(datos, null, 2) + "\n"], { type: "application/json" }));
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `fichaitor-backoffice-recuperacion${usuario ? `-${usuario}` : ""}.json`;
+    a.click();
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
+    setDescargado(true);
+  };
   const copiar = () => {
     const texto = `Fichaitor · Backoffice: códigos de recuperación${usuario ? ` de ${usuario}` : ""} (cada uno sirve una sola vez)\n${codigos.join("\n")}`;
     navigator.clipboard.writeText(texto).then(
@@ -209,10 +226,18 @@ export function CodigosRecuperacion({ codigos, usuario, onListo, etiquetaListo =
         ))}
       </ol>
       <div className="acciones">
+        <button className="btn sec" type="button" onClick={descargar}>
+          Descargar en JSON
+        </button>
         <button className="btn sec" type="button" onClick={copiar}>
           Copiar para el gestor de contraseñas
         </button>
       </div>
+      {descargado && (
+        <p className="sec" role="status">
+          Descargado. Mueve el archivo a tu gestor de contraseñas o a un USB y bórralo de Descargas.
+        </p>
+      )}
       {copiados === true && (
         <p className="sec" role="status">
           Copiados. Pégalos en tu gestor de contraseñas y no los dejes en ningún archivo de este ordenador.
