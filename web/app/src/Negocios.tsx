@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { api, ApiError, type Location, type Me, type PlanFicha, type Precios } from "./api";
 import { Modal } from "./Ajustes";
+import { Paywall, type MotivoPaywall } from "./Paywall";
 
 // Multinegocio (docs/multinegocio.md, apartado 12): una cuenta con varias fichas activas a la vez.
 //  - SelectorNegocio: en la barra de arriba. Las fichas activas primero, con su plan, sus pendientes y
@@ -11,9 +12,9 @@ import { Modal } from "./Ajustes";
 
 export const esMultinegocio = (me: Me) => me.locations.some((l) => typeof l.active === "boolean");
 
-const NOMBRE_PLAN: Record<PlanFicha, string> = { gratis: "Gratis", pro: "Pro", pro_whatsapp: "Pro WhatsApp" };
+const NOMBRE_PLAN: Record<PlanFicha, string> = { gratis: "Gratis", pro: "Pro", pro_whatsapp: "Pro+" };
 
-/** «Gratis», «Pro» o «Pro WhatsApp»; mientras no hay cobro (beta), «Pro (beta)», sin precio. */
+/** «Gratis», «Pro» o «Pro+» (en la API, `pro_whatsapp`); mientras no hay cobro (beta), «Pro (beta)», sin precio. */
 function nombrePlan(plan: PlanFicha, precios: Precios | undefined): string {
   return plan !== "gratis" && precios && !precios.charging ? `${NOMBRE_PLAN[plan]} (beta)` : NOMBRE_PLAN[plan];
 }
@@ -183,6 +184,30 @@ export function SelectorNegocio({
 
 export type PreguntaNegocio = { n: "activar" | "desactivar"; id: string };
 
+/**
+ * Qué plan recibe una ficha al activarla sin elegir uno (docs/multinegocio.md, 5.3). Durante la beta (sin
+ * cobro), Pro mientras queden plazas, para que se pruebe todo; si no, Gratis primero y después los de pago.
+ */
+export function planAlActivar(me: Me): PlanFicha | null {
+  const planes = me.plans;
+  if (!planes) return null;
+  const enBeta = me.pricing ? !me.pricing.charging : false;
+  if (enBeta && planes.available.pro > 0) return "pro";
+  if (planes.free_available) return "gratis";
+  if (planes.available.pro > 0) return "pro";
+  if (planes.available.pro_whatsapp > 0) return "pro_whatsapp";
+  return null;
+}
+
+/**
+ * El plan que se envía al activar. Solo se pide de forma explícita Pro en la beta, para que la ficha quede
+ * en el plan que dice la pantalla aunque el servidor elija Gratis primero. En el resto de casos se deja
+ * elegir al servidor, que sabe pasar a un plan de pago si la ficha ya está en Gratis en otra cuenta.
+ */
+export function planPedido(me: Me): PlanFicha | undefined {
+  return me.pricing && !me.pricing.charging && planAlActivar(me) === "pro" ? "pro" : undefined;
+}
+
 // Texto fijado en docs/multinegocio.md, apartado 12.
 const AL_DESACTIVAR =
   "Dejaremos de leer esta ficha y de avisarte de ella. Las propuestas pendientes se cancelan. Si no la vuelves a activar en 30 días, borraremos lo que tenemos de ella. Para retirar el acceso de Fichaitor a tu cuenta de Google, usa Desconectar Google.";
@@ -204,45 +229,44 @@ export function TusNegocios({
   onVolver: (() => void) | null;
   onSinSesion: () => void;
 }) {
-  const [pregunta, setPregunta] = useState<PreguntaNegocio | null>(preguntaInicial ?? null);
+  // Si llega a activar una ficha (desde el selector) y no queda hueco en ningún plan, se abre el
+  // paywall en lugar de una confirmación sin salida.
+  const sinHuecoAlEntrar = preguntaInicial?.n === "activar" && planAlActivar(me) === null;
+  const [pregunta, setPregunta] = useState<PreguntaNegocio | null>(sinHuecoAlEntrar ? null : (preguntaInicial ?? null));
   const [enviando, setEnviando] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [sinHueco, setSinHueco] = useState(false);
-  const planes = me.plans;
+  // Paywall para una ficha: sin hueco al activarla, o para pasar una ficha Gratis a Pro.
+  const [paywall, setPaywall] = useState<{ id: string; motivo: MotivoPaywall } | null>(
+    sinHuecoAlEntrar && preguntaInicial ? { id: preguntaInicial.id, motivo: "no_seat" } : null,
+  );
+  const fichaPaywall = paywall ? me.locations.find((l) => l.id === paywall.id) : undefined;
   const precios = me.pricing;
   const ficha = pregunta ? me.locations.find((l) => l.id === pregunta.id) : undefined;
 
-  // Qué plan le tocaría al activar sin pedir uno: el mismo criterio que el servidor (5.3).
-  const planSiguiente: PlanFicha | null = !planes
-    ? null
-    : planes.free_available
-      ? "gratis"
-      : planes.available.pro > 0
-        ? "pro"
-        : planes.available.pro_whatsapp > 0
-          ? "pro_whatsapp"
-          : null;
+  const planSiguiente = planAlActivar(me);
 
   const cerrar = () => {
     setPregunta(null);
     setError(null);
-    setSinHueco(false);
   };
 
   const responder = async () => {
     if (!pregunta) return;
     setEnviando(true);
     setError(null);
-    setSinHueco(false);
     try {
-      const r = pregunta.n === "activar" ? await api.activarFicha(pregunta.id) : await api.desactivarFicha(pregunta.id);
+      const r = pregunta.n === "activar" ? await api.activarFicha(pregunta.id, planPedido(me)) : await api.desactivarFicha(pregunta.id);
       onCambio(r);
       cerrar();
     } catch (e) {
       if (e instanceof ApiError && e.status === 401) onSinSesion();
-      // 402: no queda hueco en el plan. Hasta el lanzamiento no hay cobro: se ofrece escribirnos.
-      // Los 409 (code free_taken, offboarding_pending) traen su `detail`, que se muestra tal cual.
-      else if (e instanceof ApiError && e.status === 402) setSinHueco(true);
+      // 402: no queda hueco en ningún plan. El paywall ofrece una plaza de pago para esa ficha.
+      // Los 409 (code free_taken, offboarding_pending, location_removed) traen su `detail`, que se muestra tal cual.
+      else if (e instanceof ApiError && e.status === 402) {
+        const id = pregunta.id;
+        cerrar();
+        setPaywall({ id, motivo: "no_seat" });
+      }
       else setError(e instanceof Error ? e.message : "No hemos podido cambiarlo. Prueba otra vez.");
     } finally {
       setEnviando(false);
@@ -268,7 +292,7 @@ export function TusNegocios({
             <strong>Pro:</strong> {importe(precios, precios.plans.pro.first)}; desde la segunda ficha de pago, {importe(precios, precios.plans.pro.additional)}.
           </p>
           <p>
-            <strong>Pro WhatsApp:</strong> {importe(precios, precios.plans.pro_whatsapp.first)}; desde la segunda ficha de pago,{" "}
+            <strong>Pro+ (con WhatsApp):</strong> {importe(precios, precios.plans.pro_whatsapp.first)}; desde la segunda ficha de pago,{" "}
             {importe(precios, precios.plans.pro_whatsapp.additional)}.
           </p>
           {precios.charging && (
@@ -294,13 +318,23 @@ export function TusNegocios({
                   <button className="btn sec" type="button" onClick={() => void onVer(l.id)}>
                     Ver su panel
                   </button>
+                  {l.plan === "gratis" && (
+                    <button className="btn" type="button" onClick={() => setPaywall({ id: l.id, motivo: "mejorar" })}>
+                      Pásate a Pro
+                    </button>
+                  )}
                   {/* También la última: la cuenta vuelve a «activa tu primera ficha». */}
                   <button className="enlace" type="button" onClick={() => setPregunta({ n: "desactivar", id: l.id })}>
                     Desactivar
                   </button>
                 </>
               ) : (
-                <button className="btn" type="button" onClick={() => setPregunta({ n: "activar", id: l.id })}>
+                <button
+                  className="btn"
+                  type="button"
+                  // Sin hueco en ningún plan, directamente el paywall: no hay nada que confirmar.
+                  onClick={() => (planSiguiente === null ? setPaywall({ id: l.id, motivo: "no_seat" }) : setPregunta({ n: "activar", id: l.id }))}
+                >
                   Activar
                 </button>
               )}
@@ -322,13 +356,8 @@ export function TusNegocios({
         <Modal titulo={pregunta.n === "activar" ? "Activar esta ficha" : "Desactivar esta ficha"} onCerrar={cerrar} bloqueado={enviando}>
           <p className="rotulo">{ficha.title}</p>
           {pregunta.n === "activar" ? (
-            sinHueco || planSiguiente === null ? (
-              <>
-                <p>Ya usas todas las fichas de tu plan.</p>
-                <p>
-                  Escríbenos para activar más fichas: <a href="mailto:soporte@fichaitor.es">soporte@fichaitor.es</a>.
-                </p>
-              </>
+            planSiguiente === null ? (
+              <p>Ya usas todas las fichas de tu plan.</p>
             ) : (
               <>
                 <p>Fichaitor empezará a leer esta ficha y a avisarte de ella, junto a las demás.</p>
@@ -357,16 +386,30 @@ export function TusNegocios({
             </p>
           )}
           <div className="acciones">
-            {!(pregunta.n === "activar" && (sinHueco || planSiguiente === null)) && (
+            {!(pregunta.n === "activar" && planSiguiente === null) && (
               <button className="btn" type="button" disabled={enviando} onClick={() => void responder()}>
                 {enviando ? "Guardando…" : pregunta.n === "activar" ? "Activar" : "Desactivar"}
               </button>
             )}
             <button className="btn sec" type="button" disabled={enviando} onClick={cerrar}>
-              {pregunta.n === "activar" && (sinHueco || planSiguiente === null) ? "Entendido" : "Cancelar"}
+              {pregunta.n === "activar" && planSiguiente === null ? "Entendido" : "Cancelar"}
             </button>
           </div>
         </Modal>
+      )}
+
+      {paywall && fichaPaywall && (
+        <Paywall
+          me={me}
+          ficha={fichaPaywall}
+          motivo={paywall.motivo}
+          onCerrar={() => setPaywall(null)}
+          onSinSesion={onSinSesion}
+          onActivada={(nuevo) => {
+            setPaywall(null);
+            onCambio(nuevo);
+          }}
+        />
       )}
     </section>
   );

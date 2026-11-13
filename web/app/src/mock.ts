@@ -11,6 +11,10 @@ interface Estado {
   baja?: { scope: string; delete_at: string } | null;
   /** Multinegocio: plan de cada ficha activa. */
   planes?: Record<string, string>;
+  /** Cobro: datos fiscales guardados, plazas pagadas y un pago en curso (vuelta de Stripe simulada). */
+  perfil?: { legal_name: string; tax_id: string; address: Record<string, string | null>; invoice_email: string } | null;
+  plazas?: { id: string; plan: string; location_id: string; status: string; renews_at: string; cancel_at_period_end: boolean; next_price: number; payment_method: string; collection: string }[];
+  pagoEnCurso?: { ficha: string; plan: string; vueltas: number } | null;
 }
 
 const FICHAS = [
@@ -53,6 +57,7 @@ let llamadasSentimiento = 0;
 // Canales: tras pedir un código, la segunda consulta ya lo ve conectado (como si se hubiera enviado).
 // Cada chat guarda su filtro de fichas (null = todas); la etiqueta se compone al responder, como el backend.
 const CANALES: { id: string; channel: string; address: string; linked_at: string; locations: string[] | null }[] = [];
+const PETICIONES: Record<string, { vueltas: number; ficha: string; plan: string }> = {};
 let codigoPendiente: { consultas: number; locations: string[] | null } | null = null;
 
 /** «A», «A y B», «A, B y C»; una ficha inactiva lleva « (desactivada)». */
@@ -133,13 +138,25 @@ let llamadasResumen = 0;
 let consultasCodigoBaja = 0;
 let llamadasDiagnostico = 0;
 
+/** Bloque `billing` de GET /me (docs/admin-facturacion.md, 4.7). */
+function cobroDe(e: Estado) {
+  const pagadas = (e.plazas ?? []).length;
+  return {
+    profile_complete: !!e.perfil,
+    blocked: null,
+    seats: e.plazas ?? [],
+    // Sin IVA y en céntimos; el 5 % desde la segunda ficha de pago.
+    new_seat_price: { pro: pagadas > 0 ? 3325 : 3500, pro_whatsapp: pagadas > 0 ? 5605 : 5900 },
+  };
+}
+
 const yo = (e: Estado) => {
   // Con la baja de la ficha efectiva, el backend responde sin fichas y con connected: false.
   const desconectada = escenario() === "desconectada";
   // «sin-acceso»: Google niega la ficha elegida; sigue elegida, pero desaparece de la lista.
   if (escenario() === "sin-acceso")
-    return { email: "dueno@example.com", locations: conPlanes(e, FICHAS.slice(1)), selected_location_id: FICHAS[0]!.id, pending_deletion: null, connected: true, plans: planesCuenta(e), pricing: precios(e) };
-  return { email: "dueno@example.com", plans: planesCuenta(e), pricing: precios(e), locations: desconectada ? [] : conPlanes(e, fichas()), selected_location_id: desconectada ? null : e.elegida, pending_deletion: e.baja ?? null, connected: !desconectada };
+    return { email: "dueno@example.com", locations: conPlanes(e, FICHAS.slice(1)), selected_location_id: FICHAS[0]!.id, pending_deletion: null, connected: true, plans: planesCuenta(e), pricing: precios(e), billing: cobroDe(e) };
+  return { email: "dueno@example.com", plans: planesCuenta(e), pricing: precios(e), billing: cobroDe(e), locations: desconectada ? [] : conPlanes(e, fichas()), selected_location_id: desconectada ? null : e.elegida, pending_deletion: e.baja ?? null, connected: !desconectada };
 };
 
 // Fechas clave (docs/contrato-web-api.md, «Fechas clave»). Se calculan desde hoy para que siempre estén
@@ -179,6 +196,13 @@ const sinVueltas = ({ vueltas: _v, ...f }: FechaSim) => f;
 // primera la activa en Gratis. El derecho beta da 3 fichas Pro; con ?mock=gratis no hay derecho.
 // Los precios del catálogo son los decididos por el propietario (apartado 15); el catálogo es una
 // propuesta de la web al backend.
+// Plan Gratis: 25 respuestas con IA por ficha, para siempre. Bar La Parra empieza en 23 para ver el tope en dos borradores.
+const LIMITE_GRATIS = 25;
+const USO_IA: Record<string, number> = { loc_3f2a: 23 };
+// La ficha que se está viendo: la del último ?location= de una lectura (los borradores y las fechas no lo llevan).
+let fichaVista: string | null = null;
+const planDe = (e: Estado, id: string | null) => (id ? (e.planes?.[id] ?? null) : null);
+
 const PENDIENTES: Record<string, { reviews: number; key_dates: number }> = {
   loc_3f2a: { reviews: 3, key_dates: 2 },
   loc_81bc: { reviews: 1, key_dates: 0 },
@@ -196,12 +220,15 @@ function conPlanes(e: Estado, lista: typeof FICHAS) {
       // La tercera, sin verificar, sale con error para ver el aviso del selector.
       status: plan ? (f.id === "loc_c07d" ? "error" : "ok") : null,
       pending: plan ? (PENDIENTES[f.id] ?? { reviews: 0, key_dates: 0 }) : null,
+      usage: plan ? { ai_replies: { used: USO_IA[f.id] ?? 0, limit: plan === "gratis" ? LIMITE_GRATIS : null, lifetime: plan === "gratis" } } : null,
+      features: plan ? { key_dates: plan !== "gratis", whatsapp: plan === "pro_whatsapp" } : null,
     };
   });
 }
 function planesCuenta(e: Estado) {
   const usados = Object.values(e.planes ?? {});
-  const beta = escenario() === "gratis" ? 0 : BETA_PRO;
+  // Con cobro («cobro») ya no hay plazas de la beta: las de pago se compran en el paywall.
+  const beta = escenario() === "gratis" || escenario() === "cobro" ? 0 : BETA_PRO;
   return {
     active: usados.length,
     free_available: !usados.includes("gratis"),
@@ -237,6 +264,7 @@ export async function mockFetch(method: string, path: string, body: unknown): Pr
   // Las lecturas llevan ?location= (multinegocio). El simulador sirve lo mismo para todas: se quita.
   {
     const u = new URL(path, "http://simulador");
+    if (u.searchParams.get("location")) fichaVista = u.searchParams.get("location");
     u.searchParams.delete("location");
     path = u.pathname + u.search;
   }
@@ -258,7 +286,64 @@ export async function mockFetch(method: string, path: string, body: unknown): Pr
   }
   if (!e.sesion) return json(401, { detail: "No has iniciado sesión." });
 
-  if (method === "GET" && path === "/api/v1/me") return json(200, yo(e));
+  if (method === "GET" && path === "/api/v1/me") {
+    // Vuelta de Stripe simulada: la plaza se activa a la segunda consulta, como si el webhook tardara.
+    if (e.pagoEnCurso && ++e.pagoEnCurso.vueltas >= 2) {
+      const { ficha, plan } = e.pagoEnCurso;
+      e.planes = { ...(e.planes ?? {}), [ficha]: plan };
+      const hoy = new Date();
+      e.plazas = [
+        ...(e.plazas ?? []),
+        {
+          id: `seat_${(e.plazas ?? []).length + 1}`,
+          plan,
+          location_id: ficha,
+          status: "active",
+          renews_at: new Date(hoy.getFullYear() + 1, hoy.getMonth(), hoy.getDate()).toISOString().slice(0, 10),
+          cancel_at_period_end: false,
+          next_price: plan === "pro" ? 3500 : 5900,
+          payment_method: "card",
+          collection: "auto",
+        },
+      ];
+      e.pagoEnCurso = null;
+    }
+    guardar(e);
+    return json(200, yo(e));
+  }
+
+  // ── Cobro (docs/admin-facturacion.md, 4.7). NIF válido en el simulador: 8 cifras y una letra (12345678Z) o B88994777.
+  if (path === "/api/v1/me/billing/profile") {
+    if (method === "GET") return json(200, e.perfil ?? { legal_name: null, tax_id: null, address: null, invoice_email: null });
+    const p = body as NonNullable<Estado["perfil"]>;
+    const pais = String(p.address?.["country"] ?? "");
+    if (pais !== "ES" && pais.length !== 2) return json(422, { detail: "Solo facturamos en España y en la Unión Europea.", code: "country_not_supported" });
+    if (pais === "ES" && !/^([0-9]{8}[A-Z]|[A-Z][0-9]{7}[0-9A-Z])$/.test(p.tax_id))
+      return json(422, { detail: "Ese NIF no es válido. Revísalo.", code: "tax_id_invalid" });
+    if (pais === "ES" && !/^[0-9]{5}$/.test(String(p.address?.["postal_code"] ?? "")))
+      return json(422, { detail: "El código postal debe tener 5 cifras.", code: "postal_code_invalid" });
+    e.perfil = p;
+    guardar(e);
+    return json(200, p);
+  }
+  if (method === "POST" && path === "/api/v1/me/billing/seats") {
+    if (!e.perfil) return json(409, { detail: "Faltan tus datos para la factura.", code: "profile_incomplete" });
+    const b = body as { plan: string; location_id: string };
+    const id = `req_${Date.now()}`;
+    PETICIONES[id] = { vueltas: 0, ficha: b.location_id, plan: b.plan };
+    return json(202, { request_id: id });
+  }
+  const peticion = /^\/api\/v1\/me\/billing\/requests\/([^/]+)$/.exec(path);
+  if (method === "GET" && peticion) {
+    const r = PETICIONES[peticion[1]!];
+    if (!r) return json(404, { detail: "No encontramos esa petición." });
+    if (escenario() === "falla") return json(200, { state: "fallida", code: "stripe_error", detail: "Stripe no responde ahora mismo. Prueba otra vez en un minuto." });
+    if (++r.vueltas < 2) return json(200, { state: "pendiente" });
+    // «Stripe Checkout» del simulador: vuelve directamente con el pago hecho.
+    e.pagoEnCurso = { ficha: r.ficha, plan: r.plan, vueltas: 0 };
+    guardar(e);
+    return json(200, { state: "lista", url: `/app/?mock=${escenario()}&pago=ok&ficha=${encodeURIComponent(r.ficha)}` });
+  }
 
   if (method === "POST" && path === "/api/v1/channels/link-code") {
     if (body && Object.keys(body as object).some((k) => k !== "locations")) return json(422, { detail: [{ msg: "Campo de más" }] });
@@ -281,7 +366,9 @@ export async function mockFetch(method: string, path: string, body: unknown): Pr
     if (method === "POST") {
       const p = planesCuenta(e);
       const pedido = (body as { plan?: string } | undefined)?.plan;
-      const plan = pedido ?? (p.free_available ? "gratis" : p.available.pro > 0 ? "pro" : null);
+      // Como el servidor: en la beta (sin cobro), Pro primero mientras queden plazas.
+      const beta = escenario() !== "cobro";
+      const plan = pedido ?? (beta && p.available.pro > 0 ? "pro" : p.free_available ? "gratis" : p.available.pro > 0 ? "pro" : null);
       const hueco = plan === "gratis" ? p.free_available : plan === "pro" ? p.available.pro > 0 : false;
       if (!plan || !hueco) return json(402, { detail: "No te quedan fichas libres en tu plan." });
       e.planes[id] = plan;
@@ -295,6 +382,8 @@ export async function mockFetch(method: string, path: string, body: unknown): Pr
   }
   if (method === "GET" && path.startsWith("/api/v1/me/key-dates")) {
     if (escenario() === "sin-fichas") return json(200, { dates: [] });
+    // En Gratis no hay propuestas de festivos: la lista sale vacía.
+    if (planDe(e, fichaVista ?? e.elegida) === "gratis") return json(200, { dates: [] });
     // Cada consulta avanza el envío a Google: en cola, enviándose y, a la tercera, enviado.
     for (const f of fechasClave()) {
       if (!f.action || f.action.status === "hecha") continue;
@@ -309,6 +398,12 @@ export async function mockFetch(method: string, path: string, body: unknown): Pr
   }
   const fecha = /^\/api\/v1\/me\/key-dates\/([^/]+)\/(answer|dismiss)$/.exec(path);
   if (method === "POST" && fecha) {
+    if (planDe(e, fichaVista ?? e.elegida) === "gratis")
+      return json(402, {
+        detail: "Los festivos y las fechas clave están en Pro. Pásate a Pro para que te preguntemos por ellos y cambiemos el horario en Google.",
+        code: "plan_required",
+        feature: "key_dates",
+      });
     const f = fechasClave().find((x) => x.id === fecha[1]);
     if (!f) return json(404, { detail: "No encontramos esa fecha." });
     if (f.status !== "pendiente") return json(409, { detail: "Esa fecha ya está resuelta." });
@@ -491,6 +586,14 @@ export async function mockFetch(method: string, path: string, body: unknown): Pr
     const r = RESENAS.find((x) => x.id === partes[5]);
     if (!r) return json(404, { detail: "Esa reseña ya no existe." });
     if (!r.text) return json(422, { detail: "Esta reseña no tiene texto. Escribe tú la respuesta." });
+    const vista = fichaVista ?? e.elegida;
+    if (vista && planDe(e, vista) === "gratis" && (USO_IA[vista] ?? 0) >= LIMITE_GRATIS)
+      return json(402, {
+        detail: "Has usado tus 25 respuestas con IA gratuitas. Pásate a Pro para tenerlas ilimitadas. Puedes seguir escribiendo tus respuestas.",
+        code: "plan_required",
+        feature: "ai_replies",
+      });
+    if (vista) USO_IA[vista] = (USO_IA[vista] ?? 0) + 1;
     await new Promise((ok) => setTimeout(ok, 900));
     const texto =
       r.stars <= 2

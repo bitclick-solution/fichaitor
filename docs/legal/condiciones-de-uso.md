@@ -43,9 +43,11 @@ Los precios son anuales, por ficha, y no incluyen IVA ni, en su caso, otros impu
 
 | Plan | Precio al año | Canal | Incluye |
 |---|---|---|---|
-| Gratis | 0 € | Web instalable, correo o Telegram | Diagnóstico, avisos de reseñas, 25 respuestas con IA al mes, QR básico |
+| Gratis | 0 € | Web instalable, correo o Telegram | Diagnóstico, avisos de reseñas, 25 respuestas con IA por ficha (una sola vez, no se recargan), QR básico |
 | Pro | 35 € | Web instalable, correo o Telegram | Respuestas ilimitadas, modo automático, festivos y fechas clave, QR imprimibles por empleado |
 | Pro WhatsApp | 59 € | WhatsApp | Lo mismo que Pro, por WhatsApp, con 80 mensajes de Fichaitor al mes |
+
+Las 25 respuestas con IA del plan Gratis son una sola vez por ficha de Google: no se recargan, no se acumulan y no se recuperan al borrar la cuenta ni al conectar la ficha desde otra cuenta de Google.
 
 En el plan Pro WhatsApp solo cuentan los mensajes que envía Fichaitor; un aviso que Meta clasifique como marketing puede descontar más de un mensaje. Al agotar los mensajes del mes, los avisos siguen llegando por correo, web o Telegram hasta el mes siguiente. El servicio no se corta.
 

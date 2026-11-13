@@ -169,7 +169,7 @@ export function Canales({
         </div>
         <div>
           <h3 className="rotulo">WhatsApp</h3>
-          <p className="sec">Con el plan Pro WhatsApp. Te escribe al WhatsApp de tu negocio.</p>
+          <p className="sec">Con el plan Pro+. Te escribe al WhatsApp de tu negocio.</p>
           <button className="btn sec" type="button" onClick={() => setVinculando("whatsapp")}>
             {hay("whatsapp") ? "Conectar otro WhatsApp" : "Conectar WhatsApp"}
           </button>
@@ -545,7 +545,7 @@ function ModalVincular({
         {estado.n === "no-disponible" && (
           <>
             <p className="lead">{canal === "whatsapp" ? "WhatsApp todavía no está disponible." : "Telegram todavía no está disponible."}</p>
-            <p>{canal === "whatsapp" ? "Llegará con el plan Pro WhatsApp. Mientras tanto, puedes recibir los avisos por Telegram." : "Vuelve a intentarlo más tarde."}</p>
+            <p>{canal === "whatsapp" ? "Llegará con el plan Pro+. Mientras tanto, puedes recibir los avisos por Telegram." : "Vuelve a intentarlo más tarde."}</p>
             <div className="acciones">
               <button className="btn sec" type="button" onClick={onCerrar}>
                 Entendido

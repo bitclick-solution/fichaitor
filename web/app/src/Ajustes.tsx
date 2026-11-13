@@ -414,7 +414,7 @@ export function Modal({ titulo, children, onCerrar, bloqueado }: { titulo: strin
         return;
       }
       if (e.key !== "Tab" || !caja.current) return;
-      const enfocables = Array.from(caja.current.querySelectorAll<HTMLElement>("button:not([disabled]), input:not([disabled]), a[href]"));
+      const enfocables = Array.from(caja.current.querySelectorAll<HTMLElement>("button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), a[href]"));
       const primero = enfocables[0];
       const ultimo = enfocables[enfocables.length - 1];
       if (!primero || !ultimo) return;

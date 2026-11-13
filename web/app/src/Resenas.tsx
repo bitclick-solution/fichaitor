@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { api, ApiError, OAUTH_START, type Action, type Review, type ReviewsResponse } from "./api";
+import { api, ApiError, faltaPlan, OAUTH_START, type Action, type Review, type ReviewsResponse } from "./api";
 import { Seccion } from "./movimiento";
 
 // Reseñas y respuestas. Contrato: docs/contrato-web-api.md, «Reseñas y respuestas».
@@ -24,8 +24,39 @@ function fecha(iso: string): string {
 type Filtro = "unanswered" | "all";
 type Carga = "cargando" | "leyendo" | "listo" | "agotado" | "error";
 
-export function Resenas({ fichaId, onSinSesion, onCambio }: { fichaId: string; onSinSesion: () => void; onCambio: () => void }) {
+/** Mensaje propio al ver el tope en GET /me, antes de que la API lo diga con su 402. */
+const TOPE = (limite: number) => `Has usado tus ${numero.format(limite)} respuestas con IA gratuitas. Puedes seguir escribiendo tus respuestas.`;
+
+export function Resenas({
+  fichaId,
+  usoIA,
+  onSinSesion,
+  onCambio,
+  onMejorar,
+}: {
+  fichaId: string;
+  /** Respuestas con IA del mes (GET /me). `limit` null: sin límite. */
+  usoIA: { used: number; limit: number | null } | null;
+  onSinSesion: () => void;
+  onCambio: () => void;
+  /** Abre el paywall («Pásate a Pro»). Sin él (backend sin planes), no hay botón. */
+  onMejorar?: (() => void) | undefined;
+}) {
   const [filtro, setFiltro] = useState<Filtro>("unanswered");
+  // El contador parte de GET /me y sube con cada borrador nuevo (uno ya guardado no cuenta).
+  const [usados, setUsados] = useState(usoIA?.used ?? 0);
+  // Texto del 402 `plan_required` de la API, si ha llegado; tiene prioridad sobre el propio.
+  const [topeAPI, setTopeAPI] = useState<string | null>(null);
+  const limite = usoIA?.limit ?? null;
+  const sinIA = topeAPI !== null || (limite !== null && usados >= limite);
+  // Al tope, el primer «Redactar respuesta» abre el paywall en lugar de pedir el borrador. Cerrado el
+  // paywall, «Redactar» queda desactivado y solo se puede escribir la respuesta.
+  const [paywallVisto, setPaywallVisto] = useState(false);
+  const abrirPaywall = () => {
+    setPaywallVisto(true);
+    onMejorar?.();
+  };
+  const avisoTope = topeAPI ?? (limite !== null ? TOPE(limite) : "Ya no te quedan respuestas con IA gratuitas. Puedes seguir escribiendo tus respuestas.");
   const [datos, setDatos] = useState<ReviewsResponse | null>(null);
   const [carga, setCarga] = useState<Carga>("cargando");
   const [mensaje, setMensaje] = useState<string | null>(null);
@@ -126,6 +157,22 @@ export function Resenas({ fichaId, onSinSesion, onCambio }: { fichaId: string; o
                   : `${numero.format(datos.total)} ${datos.total === 1 ? "reseña" : "reseñas"}.`}
                 {datos.reviews.length < datos.total && ` Se muestran ${numero.format(datos.reviews.length)}.`}
               </p>
+              {sinIA ? (
+                <div className="uso-ia" role="status">
+                  <p className="aviso">{avisoTope}</p>
+                  {onMejorar && (
+                    <button className="btn" type="button" onClick={abrirPaywall}>
+                      Pásate a Pro
+                    </button>
+                  )}
+                </div>
+              ) : (
+                limite !== null && (
+                  <p className="sec uso-ia" role="status">
+                    {numero.format(usados)} de {numero.format(limite)} respuestas con IA gratuitas.
+                  </p>
+                )
+              )}
               <ul className="lista-resenas">
                 {datos.reviews.map((r) => (
                   <Resena
@@ -137,6 +184,18 @@ export function Resenas({ fichaId, onSinSesion, onCambio }: { fichaId: string; o
                     onCerrar={() => setAbierta(null)}
                     onPublicada={alPublicar}
                     onSinSesion={onSinSesion}
+                    sinIA={sinIA}
+                    redactarAbrePaywall={sinIA && !paywallVisto && onMejorar !== undefined}
+                    onPaywall={abrirPaywall}
+                    onRedactada={(guardado) => {
+                      if (!guardado) setUsados((n) => n + 1);
+                    }}
+                    onTope={(texto) => {
+                      setTopeAPI(texto);
+                      if (limite !== null) setUsados(limite);
+                      // Al chocar con el tope, el paywall se abre solo. Se puede cerrar y escribir la respuesta.
+                      abrirPaywall();
+                    }}
                   />
                 ))}
               </ul>
@@ -180,6 +239,11 @@ function Resena({
   onCerrar,
   onPublicada,
   onSinSesion,
+  sinIA,
+  redactarAbrePaywall,
+  onPaywall,
+  onRedactada,
+  onTope,
 }: {
   resena: Review;
   abierta: boolean;
@@ -188,6 +252,15 @@ function Resena({
   onCerrar: () => void;
   onPublicada: () => void;
   onSinSesion: () => void;
+  /** Tope del mes alcanzado: solo se ofrece escribirla. */
+  sinIA: boolean;
+  /** Al tope y sin haber visto aún el paywall: «Redactar» lo abre. */
+  redactarAbrePaywall: boolean;
+  onPaywall: () => void;
+  /** Se ha pedido un borrador al modelo; `guardado` si ya estaba hecho (no cuenta). */
+  onRedactada: (guardado: boolean) => void;
+  /** 402 `plan_required` (ai_replies), con su texto. */
+  onTope: (texto: string) => void;
 }) {
   const [editor, setEditor] = useState<Editor>({ fase: "cerrado" });
   const [texto, setTexto] = useState("");
@@ -231,8 +304,19 @@ function Resena({
     onAbrir();
     try {
       const b = await api.borrador(resena.id);
+      onRedactada(b.cached);
       if (vivo.current) escribir(b.text);
     } catch (e) {
+      // El servidor cuenta la respuesta antes de llamar al modelo: un borrador descartado (422) o un fallo
+      // del modelo (503) también gastan una. El límite diario (429) y el tope del plan (402), no.
+      if (e instanceof ApiError && (e.status === 422 || e.status === 503)) onRedactada(false);
+      if (faltaPlan(e, "ai_replies")) {
+        onTope(e.message);
+        // El aviso ya sale encima de la lista y el paywall se abre: el editor no se abre.
+        if (vivo.current) setEditor({ fase: "cerrado" });
+        onCerrar();
+        return;
+      }
       if (!vivo.current) return;
       // Sin borrador válido (422), límite diario (429) o fallo: el dueño escribe la suya.
       escribir("", fallo(e, "No hemos podido redactar un borrador. Escribe tú la respuesta."));
@@ -310,10 +394,16 @@ function Resena({
             </button>
           ) : (
             <>
-              <button className="btn" type="button" disabled={bloqueada} onClick={() => void redactar()}>
+              {/* Al tope del mes sigue a la vista, desactivado: el aviso de arriba explica por qué. */}
+              <button
+                className={sinIA ? "btn sec" : "btn"}
+                type="button"
+                disabled={bloqueada || (sinIA && !redactarAbrePaywall)}
+                onClick={() => (redactarAbrePaywall ? onPaywall() : void redactar())}
+              >
                 Redactar respuesta
               </button>
-              <button className="btn sec" type="button" disabled={bloqueada} onClick={() => escribir("")}>
+              <button className={sinIA ? "btn" : "btn sec"} type="button" disabled={bloqueada} onClick={() => escribir("")}>
                 Escribirla yo
               </button>
             </>

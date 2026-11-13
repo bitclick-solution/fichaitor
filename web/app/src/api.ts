@@ -49,6 +49,10 @@ export interface Location {
   status?: "ok" | "pendiente" | "error" | "needs_reconnect" | null;
   /** Reseñas sin responder y fechas clave por contestar. Solo en las activas. */
   pending?: { reviews: number; key_dates: number } | null;
+  /** Respuestas con IA usadas. En Gratis, 25 por ficha para siempre (`lifetime: true`); `limit` null: sin límite. null si la ficha está inactiva. */
+  usage?: { ai_replies: { used: number; limit: number | null; lifetime?: boolean } } | null;
+  /** Qué incluye el plan de la ficha. null si está inactiva. */
+  features?: { key_dates: boolean; whatsapp: boolean } | null;
 }
 
 /** Uso de los planes de la cuenta (docs/multinegocio.md, 5.2). */
@@ -86,6 +90,58 @@ export interface Me {
   /** Multinegocio: uso de los planes. */
   plans?: PlanesCuenta;
   pricing?: Precios;
+  /** Cobro (docs/admin-facturacion.md, 4.7). Ausente mientras el backend no lo tenga. */
+  billing?: Cobro | null;
+}
+
+/** Plan de pago. En la interfaz, `pro_whatsapp` se llama «Pro+». */
+export type PlanPago = "pro" | "pro_whatsapp";
+
+/** Una plaza: un año pagado de un plan, asignado o no a una ficha. */
+export interface Plaza {
+  id: string;
+  plan: PlanPago;
+  location_id: string | null;
+  status: string;
+  renews_at: string;
+  cancel_at_period_end: boolean;
+  /** Precio de la siguiente renovación, en céntimos y sin IVA. */
+  next_price: number;
+  payment_method: string;
+  collection: string;
+}
+
+export interface Cobro {
+  profile_complete: boolean;
+  blocked: { since: string; reason: string } | null;
+  seats: Plaza[];
+  /** Lo que se paga hoy por una plaza nueva de cada plan: un año, en céntimos y sin IVA. */
+  new_seat_price: Record<PlanPago, number>;
+}
+
+export interface Direccion {
+  line1: string;
+  line2?: string | null;
+  postal_code: string;
+  city: string;
+  province?: string | null;
+  /** ISO 3166-1 alfa-2: ES, PT, FR… */
+  country: string;
+}
+
+export interface PerfilFiscal {
+  legal_name: string | null;
+  tax_id: string | null;
+  address: Direccion | null;
+  invoice_email: string | null;
+}
+
+/** Petición al proceso de cobro (plaza nueva, portal, pago…). Con `url`, se abre Stripe. */
+export interface PeticionCobro {
+  state: "pendiente" | "lista" | "fallida";
+  url?: string | null;
+  code?: string | null;
+  detail?: string | null;
 }
 
 /** Qué se da de baja: la ficha conectada o la cuenta entera. */
@@ -226,6 +282,12 @@ export class ApiError extends Error {
     message: string,
     /** Campo `status` del cuerpo del error, si lo trae (p. ej. «pendiente» en el 404 de /me/diagnosis). */
     readonly estado: string | null = null,
+    /** Campo `code` (p. ej. «plan_required», «location_inactive»), si lo trae. */
+    readonly codigo: string | null = null,
+    /** Campo `feature` del 402 `plan_required`: «ai_replies» o «key_dates». */
+    readonly funcion: string | null = null,
+    /** Campo `request_id` del 409 `seat_pending`: la petición de pago que ya existe para esa ficha. */
+    readonly peticion: string | null = null,
   ) {
     super(message);
     this.name = "ApiError";
@@ -261,16 +323,22 @@ async function pedir<T>(method: "GET" | "POST" | "PUT" | "DELETE", path: string,
   // En los 422 automáticos, `detail` puede ser una lista: se muestra un mensaje genérico.
   let detalle = GENERICO;
   let estado: string | null = null;
+  let codigo: string | null = null;
+  let funcion: string | null = null;
+  let peticion: string | null = null;
   try {
     const j: unknown = await r.json();
     if (typeof j === "object" && j !== null) {
       if ("detail" in j && typeof j.detail === "string") detalle = j.detail;
       if ("status" in j && typeof j.status === "string") estado = j.status;
+      if ("code" in j && typeof j.code === "string") codigo = j.code;
+      if ("feature" in j && typeof j.feature === "string") funcion = j.feature;
+      if ("request_id" in j && typeof j.request_id === "string") peticion = j.request_id;
     }
   } catch {
     /* sin cuerpo */
   }
-  throw new ApiError(r.status, detalle, estado);
+  throw new ApiError(r.status, detalle, estado, codigo, funcion, peticion);
 }
 
 /**
@@ -337,6 +405,13 @@ export const api = {
   activarFicha: (id: string, plan?: PlanFicha) =>
     pedir<Me>("POST", `/api/v1/me/locations/${encodeURIComponent(id)}/activation`, plan ? { plan } : {}),
   desactivarFicha: (id: string) => pedir<Me>("DELETE", `/api/v1/me/locations/${encodeURIComponent(id)}/activation`),
+  // ── Cobro (docs/admin-facturacion.md, 4.7)
+  perfilFiscal: () => pedir<PerfilFiscal>("GET", "/api/v1/me/billing/profile"),
+  guardarPerfilFiscal: (p: { legal_name: string; tax_id: string; address: Direccion; invoice_email: string }) =>
+    pedir<PerfilFiscal>("PUT", "/api/v1/me/billing/profile", p),
+  /** Plaza nueva para una ficha. Al cobrarse, el backend activa la ficha en ella. */
+  pedirPlaza: (plan: PlanPago, ficha: string) => pedir<{ request_id: string }>("POST", "/api/v1/me/billing/seats", { plan, location_id: ficha }),
+  peticionCobro: (id: string) => pedir<PeticionCobro>("GET", `/api/v1/me/billing/requests/${encodeURIComponent(id)}`),
   // ── Fechas clave. Con filter=all también las resueltas desde hoy, para enseñar el resultado.
   fechasClave: async (ficha: string) => (await leerFicha<{ dates: FechaClave[] }>("/api/v1/me/key-dates?filter=all", ficha)).dates ?? [],
   responderFecha: (id: string, r: RespuestaFecha) => pedir<FechaClave>("POST", `/api/v1/me/key-dates/${encodeURIComponent(id)}/answer`, r),
@@ -350,3 +425,8 @@ export const api = {
   /** Restauración desde el enlace del correo, sin sesión. 410 si el enlace no vale, está usado o ha caducado. */
   restaurarConToken: (token: string) => pedir<void>("POST", "/api/v1/public/offboarding/restore", { token }),
 };
+
+/** 402 por el plan de la ficha (`code: "plan_required"`), no por falta de hueco al activar. */
+export function faltaPlan(e: unknown, funcion: "ai_replies" | "key_dates"): e is ApiError {
+  return e instanceof ApiError && e.status === 402 && e.codigo === "plan_required" && e.funcion === funcion;
+}

@@ -1,5 +1,5 @@
 import { useEffect, useId, useRef, useState } from "react";
-import { api, ApiError, type FechaClave, type Franja, type RespuestaFecha } from "./api";
+import { api, ApiError, faltaPlan, type FechaClave, type Franja, type RespuestaFecha } from "./api";
 import { Seccion } from "./movimiento";
 
 // «Festivos»: Fichaitor pregunta con antelación si el negocio abre en una fecha clave y con qué horario.
@@ -35,9 +35,23 @@ const enMarcha = (f: FechaClave) => f.status === "en_curso" || f.action?.status 
 /** Las descartadas y las caducadas no se enseñan: no hay nada que hacer con ellas. */
 const visible = (f: FechaClave) => f.status !== "descartada" && f.status !== "caducada";
 
-export function Fechas({ fichaId, onSinSesion }: { fichaId: string; onSinSesion: () => void }) {
+export function Fechas({
+  fichaId,
+  incluidos,
+  onSinSesion,
+  onMejorar,
+}: {
+  fichaId: string;
+  /** Si el plan de la ficha incluye los festivos (`features.key_dates`). En Gratis, no. */
+  incluidos: boolean;
+  onSinSesion: () => void;
+  /** Abre el paywall («Pásate a Pro»). Sin él (backend sin planes), no hay botón. */
+  onMejorar?: (() => void) | undefined;
+}) {
   const [fechas, setFechas] = useState<FechaClave[] | null>(null);
   const [error, setError] = useState<string | null>(null);
+  // Texto del 402 `plan_required` (key_dates) al responder o descartar.
+  const [sinPlan, setSinPlan] = useState<string | null>(null);
   const vueltas = useRef(0);
 
   const cargar = async () => {
@@ -53,13 +67,14 @@ export function Fechas({ fichaId, onSinSesion }: { fichaId: string; onSinSesion:
   };
 
   useEffect(() => {
-    void cargar();
+    // En Gratis no hay festivos: no se piden (ni se sondean propuestas antiguas).
+    if (incluidos) void cargar();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [fichaId]);
+  }, [fichaId, incluidos]);
 
   // Sondeo del envío a Google: cada 3 s al principio y cada minuto pasados 20 intentos.
   // Con la pestaña oculta no se pregunta; al volver, el siguiente cambio de estado lo reprograma.
-  const hayEnvio = (fechas ?? []).some(enMarcha);
+  const hayEnvio = incluidos && !sinPlan && (fechas ?? []).some(enMarcha);
   useEffect(() => {
     if (!hayEnvio) {
       vueltas.current = 0;
@@ -78,6 +93,26 @@ export function Fechas({ fichaId, onSinSesion }: { fichaId: string; onSinSesion:
   }, [fechas, hayEnvio]);
 
   const lista = (fechas ?? []).filter(visible);
+
+  // En Gratis no hay festivos: en lugar de la lista, qué hace la función y cómo tenerla.
+  if (!incluidos || sinPlan) {
+    return (
+      <Seccion id="festivos" className="festivos">
+        <h2 className="rotulo">Festivos</h2>
+        <p className="lead">Disponible en Pro.</p>
+        <p className="sec">
+          {sinPlan ?? "Con Pro te preguntamos con antelación si abres en cada festivo y, cuando lo confirmas, cambiamos el horario en tu ficha de Google."}
+        </p>
+        {onMejorar && (
+          <div className="acciones">
+            <button className="btn" type="button" onClick={onMejorar}>
+              Pásate a Pro
+            </button>
+          </div>
+        )}
+      </Seccion>
+    );
+  }
   if (!error && lista.length === 0) return null;
 
   const cambiar = (nueva: FechaClave) => setFechas((xs) => (xs ?? []).map((x) => (x.id === nueva.id ? nueva : x)));
@@ -96,7 +131,7 @@ export function Fechas({ fichaId, onSinSesion }: { fichaId: string; onSinSesion:
           {lista.map((f) => (
             <li key={f.id}>
               {f.status === "pendiente" && f.answerable ? (
-                <Fecha fecha={f} onSinSesion={onSinSesion} onRespondida={cambiar} onCambio={() => void cargar()} />
+                <Fecha fecha={f} onSinSesion={onSinSesion} onRespondida={cambiar} onCambio={() => void cargar()} onSinPlan={setSinPlan} />
               ) : (
                 <Resuelta fecha={f} />
               )}
@@ -157,6 +192,7 @@ function Fecha({
   onSinSesion,
   onRespondida,
   onCambio,
+  onSinPlan,
 }: {
   fecha: FechaClave;
   onSinSesion: () => void;
@@ -164,6 +200,8 @@ function Fecha({
   onRespondida: (f: FechaClave) => void;
   /** La fecha ya no está pendiente (respondida por Telegram, descartada o pasada): se recarga la lista. */
   onCambio: () => void;
+  /** 402 `plan_required` (key_dates): el plan de la ficha ya no incluye los festivos. */
+  onSinPlan: (texto: string) => void;
 }) {
   const id = useId();
   const [opcion, setOpcion] = useState<Opcion | null>(null);
@@ -208,6 +246,7 @@ function Fecha({
       else onCambio();
     } catch (e) {
       if (e instanceof ApiError && e.status === 401) onSinSesion();
+      else if (faltaPlan(e, "key_dates")) onSinPlan(e.message);
       // 404 o 409: ya no está pendiente. No se reintenta: se recarga la lista.
       else if (e instanceof ApiError && (e.status === 404 || e.status === 409)) onCambio();
       // 422: el servidor no acepta las franjas. Se vuelve a los campos con su mensaje debajo.
@@ -230,6 +269,7 @@ function Fecha({
       onCambio();
     } catch (e) {
       if (e instanceof ApiError && e.status === 401) onSinSesion();
+      else if (faltaPlan(e, "key_dates")) onSinPlan(e.message);
       else if (e instanceof ApiError && (e.status === 404 || e.status === 409)) onCambio();
       else setError(e instanceof Error ? e.message : "No hemos podido descartarla.");
       setDescartando(false);

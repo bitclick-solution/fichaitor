@@ -5,8 +5,9 @@ import { Ajustes, AvisoBaja, cuando } from "./Ajustes";
 import { Canales } from "./Canales";
 import { Fechas } from "./Fechas";
 import { Indice } from "./Indice";
-import { esMultinegocio, SelectorNegocio, TusNegocios, type PreguntaNegocio } from "./Negocios";
+import { esMultinegocio, planPedido, SelectorNegocio, TusNegocios, type PreguntaNegocio } from "./Negocios";
 import { Instalar } from "./Instalar";
+import { marcarPagoEnCurso, NOMBRE_PAGO, Paywall, type MotivoPaywall } from "./Paywall";
 import { Tour } from "./Tour";
 import { Cuenta, Seccion, SelloEstrellas } from "./movimiento";
 import { Resumen } from "./Resumen";
@@ -45,16 +46,25 @@ const AVISOS: Record<string, string> = {
 };
 
 /** Lee ?google=, ?fichas= y ?restaurar= una vez y los quita de la barra de direcciones. */
-function leerVuelta(): { google: string | null; fichas: string | null; restaurar: string | null } {
+function leerVuelta(): { google: string | null; fichas: string | null; restaurar: string | null; pago: string | null; fichaPago: string | null } {
   const q = new URLSearchParams(location.search);
   // El enlace de restauración puede venir en el fragmento (#restaurar=...): el fragmento no se envía
   // al servidor, así que no queda en ningún registro. Se acepta también en la consulta.
   const fragmento = new URLSearchParams(location.hash.replace(/^#/, ""));
-  const vuelta = { google: q.get("google"), fichas: q.get("fichas"), restaurar: fragmento.get("restaurar") ?? q.get("restaurar") };
+  const vuelta = {
+    google: q.get("google"),
+    fichas: q.get("fichas"),
+    restaurar: fragmento.get("restaurar") ?? q.get("restaurar"),
+    // Vuelta de Stripe Checkout (docs/admin-facturacion.md, 4.7).
+    pago: q.get("pago"),
+    fichaPago: q.get("ficha"),
+  };
   if (fragmento.has("restaurar")) history.replaceState(null, "", location.pathname + location.search);
-  if (vuelta.google !== null || vuelta.fichas !== null || q.has("restaurar")) {
+  if (vuelta.google !== null || vuelta.fichas !== null || q.has("restaurar") || vuelta.pago !== null) {
     q.delete("google");
     q.delete("fichas");
+    q.delete("pago");
+    q.delete("ficha");
     // El token de restauración no debe quedarse en la barra de direcciones ni en el historial.
     q.delete("restaurar");
     const resto = q.toString();
@@ -83,6 +93,8 @@ function vistaDe(me: Me, fichasPendientes: boolean): Vista {
 export function App() {
   const [vista, setVista] = useState<Vista>({ tipo: "cargando" });
   const vuelta = useRef<ReturnType<typeof leerVuelta> | null>(null);
+  // Al volver de Stripe: qué se sabe del pago de esa ficha.
+  const [avisoPago, setAvisoPago] = useState<{ estado: "esperando" | "hecho" | "tarde" | "cancelado"; texto: string } | null>(null);
   const restaurando = useRef(false);
   // El token, solo en memoria mientras haga falta para reintentar: ni en la URL ni en localStorage.
   const tokenRestaurar = useRef<string | null>(null);
@@ -135,6 +147,61 @@ export function App() {
     else void cargar();
   }, [cargar, restaurar]);
 
+  // Vuelta de Stripe Checkout. El cobro lo confirma Stripe al backend por su cuenta: aquí solo se
+  // pregunta por la cuenta hasta ver la ficha en su plan nuevo (un minuto como mucho).
+  useEffect(() => {
+    // Sin guardia de «ya empezado»: en desarrollo React monta dos veces, y la limpieza del primer
+    // montaje para su sondeo; el segundo empieza otro.
+    const v = vuelta.current ?? (vuelta.current = leerVuelta());
+    if (!v.pago) return;
+    if (v.pago !== "ok") {
+      setAvisoPago({ estado: "cancelado", texto: "Has salido del pago sin terminarlo. No se ha cobrado nada." });
+      return;
+    }
+    const ficha = v.fichaPago;
+    const NEUTRO = "Si has completado el pago, tu plaza se activará en unos minutos y te llegará la factura por correo.";
+    if (!ficha) {
+      setAvisoPago({ estado: "tarde", texto: NEUTRO });
+      return;
+    }
+    marcarPagoEnCurso(ficha);
+    setAvisoPago({ estado: "esperando", texto: "Pago recibido. Estamos activando tu plaza…" });
+    let vivo = true;
+    let reloj: ReturnType<typeof setTimeout> | undefined;
+    const mirar = async (vez: number) => {
+      try {
+        const me = await api.me();
+        if (!vivo) return;
+        const l = me.locations.find((x) => x.id === ficha);
+        if (!l) {
+          // La ficha no es de esta cuenta (o la vuelta no es de verdad): nada que comprobar.
+          marcarPagoEnCurso(null);
+          setAvisoPago({ estado: "tarde", texto: NEUTRO });
+          return;
+        }
+        if (l.active && (l.plan === "pro" || l.plan === "pro_whatsapp")) {
+          marcarPagoEnCurso(null);
+          setAvisoPago({ estado: "hecho", texto: `Ya está: ${l.title} está en ${NOMBRE_PAGO[l.plan]}. La factura te llega por correo.` });
+          setVista(vistaDe(me, false));
+          return;
+        }
+      } catch {
+        /* se reintenta */
+      }
+      if (!vivo) return;
+      if (vez >= 20) {
+        setAvisoPago({ estado: "tarde", texto: "Pago recibido. Tu plaza se activará en unos minutos; te llegará la factura por correo." });
+        return;
+      }
+      reloj = setTimeout(() => void mirar(vez + 1), 3000);
+    };
+    void mirar(1);
+    return () => {
+      vivo = false;
+      if (reloj) clearTimeout(reloj);
+    };
+  }, []);
+
   /** Cambia la ficha que se ve. Las demás activas siguen vigiladas. */
   const verNegocio = useCallback(async (id: string) => {
     try {
@@ -182,6 +249,19 @@ export function App() {
       </header>
 
       <main className="caja">
+        {avisoPago && (
+          <div className="aviso-pago" data-estado={avisoPago.estado} role="status">
+            <p>
+              {avisoPago.estado === "esperando" && <span className="ojo" aria-hidden="true" />}
+              {avisoPago.texto}
+            </p>
+            {avisoPago.estado !== "esperando" && (
+              <button className="enlace" type="button" onClick={() => setAvisoPago(null)}>
+                Cerrar
+              </button>
+            )}
+          </div>
+        )}
         {vista.tipo === "cargando" && <Cargando texto="Abriendo tu ficha" />}
         {vista.tipo === "conectar" && <Conectar {...(vista.aviso ? { aviso: vista.aviso } : {})} />}
         {vista.tipo === "pendiente" && <Pendiente onReintentar={() => void cargar()} />}
@@ -195,6 +275,7 @@ export function App() {
             email={vista.me.email}
             onRecargar={() => void cargar()}
             onDespedida={(borrado) => setVista({ tipo: "despedida", borrado })}
+            me={vista.me}
             variasFichas={vista.me.locations.length > 1}
             negocios={esMultinegocio(vista.me) ? vista.me.locations.filter((l) => l.active) : []}
             // Con multinegocio, se cambia desde el selector de la barra.
@@ -441,16 +522,19 @@ function SinFichas({ email }: { email: string }) {
 function Elegir({ me, onElegida }: { me: Me; onElegida: (me: Me) => void }) {
   const [enviando, setEnviando] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [paywall, setPaywall] = useState<string | null>(null);
   const multi = esMultinegocio(me);
+  const fichaPaywall = paywall ? me.locations.find((l) => l.id === paywall) : undefined;
 
   const elegir = async (id: string) => {
     setEnviando(id);
     setError(null);
     try {
-      if (multi) await api.activarFicha(id);
+      if (multi) await api.activarFicha(id, planPedido(me));
       onElegida(await api.elegirFicha(id));
     } catch (e) {
-      if (e instanceof ApiError && e.status === 402) setError("Ya usas todas las fichas de tu plan. Escríbenos para activar más fichas: soporte@fichaitor.es.");
+      // 402: no queda hueco en ningún plan. El paywall ofrece una plaza de pago para esa ficha.
+      if (e instanceof ApiError && e.status === 402 && me.plans) setPaywall(id);
       else setError(e instanceof Error ? e.message : "No hemos podido elegir esa ficha.");
       setEnviando(null);
     }
@@ -490,6 +574,26 @@ function Elegir({ me, onElegida }: { me: Me; onElegida: (me: Me) => void }) {
         <p className="aviso" role="alert">
           {error}
         </p>
+      )}
+      {fichaPaywall && (
+        <Paywall
+          me={me}
+          ficha={fichaPaywall}
+          motivo="no_seat"
+          onCerrar={() => setPaywall(null)}
+          onSinSesion={() => {
+            setPaywall(null);
+            setError("Tu sesión ha caducado. Vuelve a entrar.");
+          }}
+          onActivada={(nuevo) => {
+            setPaywall(null);
+            // Beta: ya está activa en Pro. Se guarda como la preferida y se abre su panel.
+            void api
+              .elegirFicha(fichaPaywall.id)
+              .then(onElegida)
+              .catch(() => onElegida(nuevo));
+          }}
+        />
       )}
     </section>
   );
@@ -532,6 +636,7 @@ function Panel({
   email,
   onRecargar,
   onDespedida,
+  me,
   variasFichas,
   negocios,
   onCambiar,
@@ -544,6 +649,8 @@ function Panel({
   onRecargar: () => void;
   /** Tras confirmar el borrado de la cuenta, con el momento del borrado. */
   onDespedida: (borrado: string) => void;
+  /** La cuenta: precios, planes y cobro, para el paywall. */
+  me: Me;
   variasFichas: boolean;
   /** Multinegocio: fichas activas, para elegir qué negocios ve cada chat de «Avisos». Vacía sin multinegocio. */
   negocios: Location[];
@@ -560,6 +667,9 @@ function Panel({
     | { tipo: "error"; mensaje: string };
   const [estado, setEstado] = useState<Estado>({ tipo: "cargando" });
   const [intento, setIntento] = useState(0);
+  // Paywall abierto, y por qué. Solo en multinegocio (sin `plans`, el backend no vende planes).
+  const [paywall, setPaywall] = useState<MotivoPaywall | null>(null);
+  const mejorar = (motivo: MotivoPaywall) => (me.plans ? () => setPaywall(motivo) : undefined);
   const cargar = useCallback(() => setIntento((n) => n + 1), []);
 
   // Mientras el servidor lee la ficha, la API responde 404 con `status: "pendiente"`:
@@ -645,9 +755,23 @@ function Panel({
 
       <Sentimiento fichaId={ficha.id} version={version} onSinSesion={onSinSesion} />
 
-      <Resenas fichaId={ficha.id} onSinSesion={onSinSesion} onCambio={alCambiar} />
+      <Resenas fichaId={ficha.id} usoIA={ficha.usage?.ai_replies ?? null} onSinSesion={onSinSesion} onCambio={alCambiar} onMejorar={mejorar("ai_replies")} />
 
-      <Fechas fichaId={ficha.id} onSinSesion={onSinSesion} />
+      <Fechas fichaId={ficha.id} incluidos={ficha.features?.key_dates !== false} onSinSesion={onSinSesion} onMejorar={mejorar("key_dates")} />
+
+      {paywall && (
+        <Paywall
+          me={me}
+          ficha={ficha}
+          motivo={paywall}
+          onCerrar={() => setPaywall(null)}
+          onSinSesion={onSinSesion}
+          onActivada={() => {
+            setPaywall(null);
+            onRecargar();
+          }}
+        />
+      )}
 
       {estado.tipo === "cargando" && <Cargando texto="Analizando tu ficha" />}
 
