@@ -18,7 +18,7 @@ Nada de código de producto. El objetivo es eliminar los riesgos que pueden tumb
 | 0.3 | **WhatsApp:** Cloud API directa o proveedor, categorías y aprobación de plantillas, precio por mensaje en España, límites de botones, número único o por cliente | Documentación de Meta y una plantilla de prueba | Decisión de acceso y coste por negocio y mes |
 | 0.4 | **Calendario de festivos locales:** fuente oficial por municipio y forma de actualizarlo cada año | Buscar fuentes abiertas por comunidad autónoma | Fuente elegida y plan de carga |
 | 0.5 | **RGPD:** base legal, encargados (Google, Meta, proveedor del modelo), datos de autores de reseñas, alojamiento, textos legales | Revisión con las plantillas de privacidad del despacho | Registro de tratamiento y lista de contratos |
-| 0.6 | **Canal de captación:** coste por diagnóstico y por contacto con TikTok Ads | Página con diagnóstico (puede ser sobre lo que ya existe) y 200–300 € de anuncios | Coste por contacto medido |
+| 0.6 | **Canal de captación:** contactos por contenido orgánico en TikTok (decisión 2026-11-13: sin anuncios por ahora) | Vídeos orgánicos que llevan a fichaitor.es | Contactos y altas por vídeo medidos; los anuncios, más adelante |
 | 0.7 | **Disposición a pagar y precio** | 10 conversaciones con dueños (clientes actuales, Juncaril) | Precio de salida y objeciones |
 | 0.8 | **Respuesta real del dueño** a las propuestas | PubliExpe en modo aprobación en GBP Autopilot | Porcentaje de respuesta, tiempo y ediciones |
 | 0.9 | Nombre, dominio y marca | — | Nombre y dominio registrados |
@@ -105,7 +105,7 @@ Orden propuesto, a confirmar con lo que pidan los clientes:
 5. Competencia y comparativa mensual.
 6. Informe mensual.
 7. Carta del restaurante a partir de una foto.
-8. Varias fichas por cuenta.
+8. Varias fichas por cuenta. **Hecho** (2026-11-12): pasos 1 a 9 de [multinegocio.md](multinegocio.md).
 
 ## Ideas para después del MVP
 

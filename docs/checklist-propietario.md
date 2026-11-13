@@ -19,14 +19,16 @@ Lo que solo puedes hacer tú: cuentas, consolas, servidor, decisiones y pruebas 
 
 ## Ahora (sin el producto en marcha)
 
-- [ ] Certificado propio para el host de redirección `www.fichaitor.es` en Nginx Proxy Manager. Hoy sirve el de `fichaitor.es` y el navegador avisa.
-- [ ] Comprobar que no queda el registro `AAAA` de `fichaitor.es` y `www` apuntando a IONOS.
-- [ ] Search Console: enviar el mapa del sitio `https://fichaitor.es/sitemap.xml`.
-- [ ] En el cliente OAuth de Fichaitor, añadir la URI de producción `https://fichaitor.es/api/v1/google/oauth/callback`, si no está.
-- [ ] Volver a conectar en n8n las credenciales de Google del proyecto de Bitclick. Con la app en producción, el token nuevo ya no caduca a los 7 días; el antiguo sí.
-- [ ] Decidir qué hacer con el proyecto nuevo de Google Cloud (`266363689710`), que Google rechazó por duplicado: borrarlo o dejarlo sin uso.
-- [ ] Clave de Places: poner un límite de cuota diaria en Google Cloud (Places API (New)). El tope de la aplicación es de 500 diagnósticos al día.
-- [ ] Revisar en GitHub que el entorno `production` solo admite la rama `main` y las etiquetas `v*`, y tiene revisores obligatorios (tú).
+- [x] Certificado propio para el host de redirección `www.fichaitor.es` en Nginx Proxy Manager. Hoy sirve el de `fichaitor.es` y el navegador avisa.
+- [x] Comprobar que no queda el registro `AAAA` de `fichaitor.es` y `www` apuntando a IONOS.
+- [x] Search Console: enviar el mapa del sitio `https://fichaitor.es/sitemap.xml`.
+- [x] En el cliente OAuth de Fichaitor, añadir la URI de producción `https://fichaitor.es/api/v1/google/oauth/callback`, si no está.
+- [x] Volver a conectar en n8n las credenciales de Google del proyecto de Bitclick. Con la app en producción, el token nuevo ya no caduca a los 7 días; el antiguo sí.
+- [x] Decidir qué hacer con el proyecto nuevo de Google Cloud (`266363689710`), que Google rechazó por duplicado: borrarlo o dejarlo sin uso.
+- [ ] Clave de Places, cuotas por día en Google Cloud (APIs y servicios > Places API (New) > Cuotas): `SearchTextRequest per day` = 600 y `GetPlaceRequest per day` = 600; `per minute` de las dos = 30; el resto de cuotas de Places a 0 (no se usan).
+- [ ] Clave de Places, restricciones: solo «Places API (New)» y, en producción, solo la IP del VPS.
+- [ ] Alerta de presupuesto en Facturación (aviso, no tope): por ejemplo 50 € al mes.
+- [x] Revisar en GitHub que el entorno `production` solo admite la rama `main` y las etiquetas `v*`, y tiene revisores obligatorios (tú).
 
 ## Pruebas reales en local (`http://localhost:8080/app`)
 
