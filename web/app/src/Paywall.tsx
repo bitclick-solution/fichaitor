@@ -107,6 +107,13 @@ const EURO = new Set([
 ]);
 export const usaEuro = (pais: string | null | undefined) => !pais || EURO.has(pais);
 
+/**
+ * « + IVA» detrás de un precio, solo si se suma el IVA español del 21 %: sin datos fiscales (lo normal en
+ * España) o con `iva_21`. A la UE (inversión del sujeto pasivo), Canarias, Ceuta, Melilla y fuera de la UE
+ * no se les suma IVA español: el precio va sin el añadido.
+ */
+export const masIva = (perfil: Pick<PerfilFiscal, "tax_treatment"> | null | undefined) => (!perfil?.tax_treatment || perfil.tax_treatment === "iva_21" ? " + IVA" : "");
+
 const nombresPais = (() => {
   try {
     return new Intl.DisplayNames(["es"], { type: "region" });
@@ -184,6 +191,21 @@ export function Paywall({
       vivo.current = false;
     };
   }, []);
+
+  // Los datos fiscales ya guardados deciden si al precio se le suma el IVA español y si hay que avisar del euro.
+  const [fiscal, setFiscal] = useState<PerfilFiscal | null>(null);
+  useEffect(() => {
+    if (!me.billing?.profile_complete) return;
+    let sigue = true;
+    api
+      .perfilFiscal()
+      .then((p) => sigue && setFiscal(p))
+      .catch(() => undefined);
+    return () => {
+      sigue = false;
+    };
+  }, [me.billing?.profile_complete]);
+  const iva = masIva(fiscal);
 
   const precio = (p: PlanPago): number | null => me.billing?.new_seat_price?.[p] ?? me.pricing?.plans[p]?.first ?? null;
   // El 5 % se anuncia solo si el precio de hoy es exactamente el de «segunda ficha y siguientes».
@@ -304,7 +326,7 @@ export function Paywall({
                             <>
                               <span className="plan-cifra">
                                 {euros(me, euro)}
-                                <small> + IVA al año</small>
+                                <small>{iva} al año</small>
                               </span>
                               {conDescuento(p) && <small className="plan-precio">5 % menos por ser tu segunda ficha de pago o siguientes</small>}
                               {hastaCuando && <small className="plan-precio plan-prueba">No pagas nada hasta el {hastaCuando}</small>}
@@ -333,19 +355,21 @@ export function Paywall({
               </div>
             </fieldset>
 
+            {cobro && fiscal?.address && !usaEuro(fiscal.address.country) && <p className="sec">Precios en euros. Tu banco hace la conversión.</p>}
             {cobro ? (
               precio(plan) !== null && (
                 <p className="sec">
                   {hastaCuando ? (
                     <>
-                      Esta ficha necesita una plaza {NOMBRE_PAGO[plan]}: {euros(me, precio(plan)!)} + IVA por un año. Como estás en la beta, no pagas nada hasta el{" "}
-                      {hastaCuando}: hoy solo guardas la tarjeta en Stripe, ese día se cobra el primer año y puedes cancelarla antes sin coste. Te avisamos 7 días antes.
-                      Después se renueva sola cada año salvo que la canceles. No se devuelven importes.
+                      Esta ficha necesita una plaza {NOMBRE_PAGO[plan]}: {euros(me, precio(plan)!)}
+                      {iva} por un año. Como estás en la beta, no pagas nada hasta el {hastaCuando}: hoy solo guardas la tarjeta en Stripe, ese día se cobra el primer año
+                      y puedes cancelarla antes sin coste. Te avisamos 7 días antes. Después se renueva sola cada año salvo que la canceles. No se devuelven importes.
                     </>
                   ) : (
                     <>
-                      Esta ficha necesita una plaza {NOMBRE_PAGO[plan]}: {euros(me, precio(plan)!)} + IVA por un año desde hoy. Se renueva sola salvo que la canceles. No
-                      se devuelven importes. Pagas con tarjeta en Stripe; el periodo exacto va en la factura.
+                      Esta ficha necesita una plaza {NOMBRE_PAGO[plan]}: {euros(me, precio(plan)!)}
+                      {iva} por un año desde hoy. Se renueva sola salvo que la canceles. No se devuelven importes. Pagas con tarjeta en Stripe; el periodo exacto va en la
+                      factura.
                     </>
                   )}
                 </p>

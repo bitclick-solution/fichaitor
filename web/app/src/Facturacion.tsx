@@ -3,7 +3,7 @@ import { api, ApiError, type Factura, type Me, type PerfilFiscal, type Plaza } f
 import { Ajustes, Modal } from "./Ajustes";
 import { esperarPeticion, euros, TARDA, urlDePago } from "./cobro";
 import { Seccion } from "./movimiento";
-import { DatosFiscales, NOMBRE_PAGO, nombrePais, usaEuro } from "./Paywall";
+import { DatosFiscales, masIva, NOMBRE_PAGO, nombrePais, usaEuro } from "./Paywall";
 
 // «Facturación» (docs/contrato-web-api.md, «Cobro y paywall»): las plazas pagadas con su renovación,
 // cancelar o reanudar, cambiar la tarjeta, los datos fiscales y las facturas de Odoo.
@@ -21,18 +21,18 @@ function fecha(iso: string): string {
   return Number.isNaN(d.getTime()) ? iso : fechaLarga.format(d);
 }
 
-function estadoPlaza(p: Plaza, moneda: string): string {
+function estadoPlaza(p: Plaza, moneda: string, iva: string): string {
   const fin = p.renews_at ? ` el ${fecha(p.renews_at)}` : "";
   if (p.status === "payment_failed" || p.status === "action_required" || p.status === "disputed") return "Tiene un pago pendiente.";
   // Contratada en la ventana de la beta: aún no se ha cobrado nada.
   if (p.trial_ends_at) {
     if (p.cancel_at_period_end || p.status === "canceled") return `Cancelada: no se cobrará nada. Sigue hasta el ${fecha(p.trial_ends_at)}.`;
-    return `Primer cobro el ${fecha(p.trial_ends_at)}${p.next_price !== null ? `: ${euros(p.next_price, moneda)} + IVA` : ""}. Puedes cancelarla antes sin coste.`;
+    return `Primer cobro el ${fecha(p.trial_ends_at)}${p.next_price !== null ? `: ${euros(p.next_price, moneda)}${iva}` : ""}. Puedes cancelarla antes sin coste.`;
   }
   if (p.status === "canceled" || p.cancel_at_period_end) return `No se renueva: termina${fin}.`;
   // Sin ficha (o sin precio de renovación) no se renueva ni se cobra; se puede asignar una ficha antes.
   if (p.location_id === null || p.next_price === null) return `Sin ficha asignada: no se renueva ni se cobra. Termina${fin}, salvo que actives una ficha en ella antes.`;
-  return `Se renueva${fin} por ${euros(p.next_price, moneda)} + IVA.`;
+  return `Se renueva${fin} por ${euros(p.next_price, moneda)}${iva}.`;
 }
 
 type Accion = { n: "nada" } | { n: "enviando"; que: string } | { n: "error"; mensaje: string };
@@ -152,7 +152,7 @@ export function Facturacion({
                   <p className="rotulo">
                     {NOMBRE_PAGO[p.plan]} · {ficha ?? "Sin ficha asignada"}
                   </p>
-                  <p className="sec">{estadoPlaza(p, moneda)}</p>
+                  <p className="sec">{estadoPlaza(p, moneda, masIva(perfil))}</p>
                 </div>
                 <div className="acciones">
                   {puedeCancelar && (
