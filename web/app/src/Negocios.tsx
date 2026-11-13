@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { api, ApiError, type Location, type Me, type PlanFicha, type Precios } from "./api";
 import { Modal } from "./Ajustes";
 import { Paywall, type MotivoPaywall } from "./Paywall";
+import { Facturacion } from "./Facturacion";
 
 // Multinegocio (docs/multinegocio.md, apartado 12): una cuenta con varias fichas activas a la vez.
 //  - SelectorNegocio: en la barra de arriba. Las fichas activas primero, con su plan, sus pendientes y
@@ -219,6 +220,7 @@ export function TusNegocios({
   onVer,
   onVolver,
   onSinSesion,
+  aFacturacion = false,
 }: {
   me: Me;
   preguntaInicial?: PreguntaNegocio | undefined;
@@ -228,6 +230,8 @@ export function TusNegocios({
   onVer: (id: string) => Promise<void>;
   onVolver: (() => void) | null;
   onSinSesion: () => void;
+  /** Viene de /app#facturacion: se baja hasta Facturación. */
+  aFacturacion?: boolean;
 }) {
   // Si llega a activar una ficha (desde el selector) y no queda hueco en ningún plan, se abre el
   // paywall en lugar de una confirmación sin salida.
@@ -244,6 +248,13 @@ export function TusNegocios({
   const ficha = pregunta ? me.locations.find((l) => l.id === pregunta.id) : undefined;
 
   const planSiguiente = planAlActivar(me);
+
+  // Desde /app#facturacion: al entrar se baja hasta Facturación.
+  useEffect(() => {
+    if (!aFacturacion) return;
+    const t = setTimeout(() => document.getElementById("facturacion")?.scrollIntoView({ block: "start" }), 60);
+    return () => clearTimeout(t);
+  }, [aFacturacion]);
 
   const cerrar = () => {
     setPregunta(null);
@@ -266,8 +277,7 @@ export function TusNegocios({
         const id = pregunta.id;
         cerrar();
         setPaywall({ id, motivo: "no_seat" });
-      }
-      else setError(e instanceof Error ? e.message : "No hemos podido cambiarlo. Prueba otra vez.");
+      } else setError(e instanceof Error ? e.message : "No hemos podido cambiarlo. Prueba otra vez.");
     } finally {
       setEnviando(false);
     }
@@ -300,6 +310,15 @@ export function TusNegocios({
               Pagas hoy: <strong>{importe(precios, precios.total)}</strong>
             </p>
           )}
+
+          {/* El cobro es por ficha: Facturación vive aquí, con los precios y las fichas. */}
+          <Facturacion
+            me={me}
+            onSinSesion={onSinSesion}
+            onRecargar={async () => {
+              onCambio(await api.me());
+            }}
+          />
         </div>
       )}
 
@@ -362,8 +381,7 @@ export function TusNegocios({
               <>
                 <p>Fichaitor empezará a leer esta ficha y a avisarte de ella, junto a las demás.</p>
                 <p>
-                  Se activa en el plan <strong>{nombrePlan(planSiguiente, precios)}</strong>.
-                  {/* Con cobro, el total resultante lo da la API (if_activate). */}
+                  Se activa en el plan <strong>{nombrePlan(planSiguiente, precios)}</strong>.{/* Con cobro, el total resultante lo da la API (if_activate). */}
                   {precios?.charging && planSiguiente !== "gratis" && precios.if_activate[planSiguiente] !== undefined && (
                     <> Tu total pasará a {importe(precios, precios.if_activate[planSiguiente]!)}.</>
                   )}

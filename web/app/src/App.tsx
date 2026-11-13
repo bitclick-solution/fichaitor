@@ -3,7 +3,7 @@ import logo from "../../../brand/logo.svg";
 import { api, ApiError, EVENTO_BLOQUEO, OAUTH_START, type BajaPendiente, type Diagnosis, type Location, type Me, type Summary } from "./api";
 import { Ajustes, AvisoBaja, cuando } from "./Ajustes";
 import { Canales } from "./Canales";
-import { CuentaEnPausa, Facturacion } from "./Facturacion";
+import { CuentaEnPausa } from "./Facturacion";
 import { Fechas } from "./Fechas";
 import { Indice } from "./Indice";
 import { esMultinegocio, planPedido, SelectorNegocio, TusNegocios, type PreguntaNegocio } from "./Negocios";
@@ -23,7 +23,7 @@ type Vista =
   | { tipo: "elegir"; me: Me }
   | { tipo: "panel"; me: Me; ficha: Location }
   // Multinegocio (docs/multinegocio.md, 12): activar y desactivar fichas; puede llegar con una pregunta abierta.
-  | { tipo: "negocios"; me: Me; pregunta?: PreguntaNegocio }
+  | { tipo: "negocios"; me: Me; pregunta?: PreguntaNegocio; aFacturacion?: boolean }
   // Baja programada: solo el aviso con la fecha y «Restaurar». No se piden datos (la API responde 409).
   | { tipo: "baja"; baja: BajaPendiente }
   // La baja de la ficha ya es efectiva y la cuenta sigue: solo un estado vacío, sin pedir datos.
@@ -100,6 +100,8 @@ export function App() {
   // Al volver de Stripe: qué se sabe del pago de esa ficha.
   const [avisoPago, setAvisoPago] = useState<{ estado: "esperando" | "hecho" | "tarde" | "cancelado"; texto: string } | null>(null);
   const restaurando = useRef(false);
+  // Los correos y la vuelta de Stripe enlazan a /app#facturacion: Facturación está en «Tus negocios».
+  const irAFacturacion = useRef(location.hash === "#facturacion");
   // El token, solo en memoria mientras haga falta para reintentar: ni en la URL ni en localStorage.
   const tokenRestaurar = useRef<string | null>(null);
 
@@ -107,7 +109,10 @@ export function App() {
     setVista({ tipo: "cargando" });
     try {
       const me = await api.me();
-      setVista(vistaDe(me, vuelta.current?.fichas === "pendiente"));
+      const v = vistaDe(me, vuelta.current?.fichas === "pendiente");
+      // Sin apagar aquí el aviso: en desarrollo React carga dos veces y la segunda lo pisaría. Se apaga al llegar.
+      if (irAFacturacion.current && (v.tipo === "panel" || v.tipo === "elegir")) setVista({ tipo: "negocios", me, aFacturacion: true });
+      else setVista(v);
     } catch (e) {
       if (e instanceof ApiError && e.status === 401) setVista({ tipo: "conectar" });
       else setVista({ tipo: "error", mensaje: e instanceof Error ? e.message : "Algo ha fallado." });
@@ -136,6 +141,14 @@ export function App() {
       removeEventListener("pageshow", alVolver);
     };
   }, [refrescar]);
+
+  // Ya en «Tus negocios» desde /app#facturacion: se quita el fragmento y no se vuelve a hacer.
+  useEffect(() => {
+    if (vista.tipo === "negocios" && vista.aFacturacion && irAFacturacion.current) {
+      irAFacturacion.current = false;
+      history.replaceState(null, "", location.pathname + location.search);
+    }
+  }, [vista]);
 
   const restaurar = useCallback(() => {
     const token = tokenRestaurar.current;
@@ -309,7 +322,6 @@ export function App() {
             ficha={vista.ficha}
             email={vista.me.email}
             onRecargar={() => void cargar()}
-            onRefrescar={refrescar}
             onDespedida={(borrado) => setVista({ tipo: "despedida", borrado })}
             me={vista.me}
             variasFichas={vista.me.locations.length > 1}
@@ -328,6 +340,7 @@ export function App() {
           <TusNegocios
             me={vista.me}
             preguntaInicial={vista.pregunta}
+            aFacturacion={vista.aFacturacion ?? false}
             onCambio={(me) => setVista({ tipo: "negocios", me })}
             onVer={verNegocio}
             onVolver={() => void cargar()}
@@ -686,7 +699,6 @@ const SECCIONES = [
   { id: "festivos", nombre: "Festivos" },
   { id: "mejoras", nombre: "Mejoras" },
   { id: "avisos", nombre: "Avisos" },
-  { id: "facturacion", nombre: "Facturación" },
   { id: "ajustes", nombre: "Ajustes" },
 ];
 
@@ -697,7 +709,6 @@ function Panel({
   ficha,
   email,
   onRecargar,
-  onRefrescar,
   onDespedida,
   me,
   variasFichas,
@@ -710,8 +721,6 @@ function Panel({
   email: string;
   /** Vuelve a pedir la cuenta tras una baja o una restauración. */
   onRecargar: () => void;
-  /** Vuelve a leer la cuenta sin quitar el panel. */
-  onRefrescar: () => Promise<boolean>;
   /** Tras confirmar el borrado de la cuenta, con el momento del borrado. */
   onDespedida: (borrado: string) => void;
   /** La cuenta: precios, planes y cobro, para el paywall. */
@@ -924,8 +933,6 @@ function Panel({
       />
 
       <Instalar />
-
-      <Facturacion me={me} onRecargar={onRefrescar} onSinSesion={onSinSesion} />
 
       <Ajustes
         email={email}

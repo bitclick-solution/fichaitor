@@ -69,18 +69,22 @@ export function Facturacion({
     };
   }, []);
 
-  const visible = !!cobro && (me.pricing?.charging === true || (cobro.seats ?? []).length > 0);
+  // Durante la beta (sin cobro y sin plazas) se enseña una versión reducida: solo los datos de facturación,
+  // para dejarlos rellenos antes de que acabe. Las plazas, las facturas y la tarjeta, solo cuando existan.
+  const beta = me.pricing?.charging !== true && plazas.length === 0;
+  const [guardados, setGuardados] = useState(false);
+  const completo = !!cobro?.profile_complete || guardados;
   useEffect(() => {
-    // En la beta, sin plazas, la sección no se enseña: no se pide nada.
-    if (!cobro || !visible) return;
-    api
-      .facturas()
-      .then((f) => vivo.current && setFacturas(f))
-      .catch((e: unknown) => {
-        if (!vivo.current) return;
-        if (e instanceof ApiError && e.status === 401) onSinSesion();
-        else setFacturas([]);
-      });
+    if (!cobro) return;
+    if (!beta)
+      api
+        .facturas()
+        .then((f) => vivo.current && setFacturas(f))
+        .catch((e: unknown) => {
+          if (!vivo.current) return;
+          if (e instanceof ApiError && e.status === 401) onSinSesion();
+          else setFacturas([]);
+        });
     if (cobro.profile_complete)
       api
         .perfilFiscal()
@@ -89,9 +93,9 @@ export function Facturacion({
           /* el resumen de datos no se enseña */
         });
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [cobro?.profile_complete, visible]);
+  }, [cobro?.profile_complete, beta]);
 
-  if (!cobro || !visible) return null;
+  if (!cobro) return null;
 
   const nombreFicha = (id: string | null) => (id === null ? null : (me.locations.find((l) => l.id === id)?.title ?? null));
   const ocupado = accion.n === "enviando";
@@ -126,7 +130,11 @@ export function Facturacion({
   return (
     <Seccion id="facturacion" className="facturacion">
       <h2 className="rotulo">Facturación</h2>
-      <p className="sec">Pagas con tarjeta, por años completos desde que activas cada ficha. Cada plaza se renueva sola en su fecha salvo que la canceles.</p>
+      {beta ? (
+        <p className="sec">Durante la beta no cobramos. Si dejas ya tus datos de facturación, al acabar la beta solo tendrás que elegir plan.</p>
+      ) : (
+        <p className="sec">Pagas con tarjeta, por años completos desde que activas cada ficha. Cada plaza se renueva sola en su fecha salvo que la canceles.</p>
+      )}
 
       {/* Con el modal de cancelar abierto, el error sale solo dentro del modal. */}
       {accion.n === "error" && !cancelando && (
@@ -189,8 +197,15 @@ export function Facturacion({
         )}
         <div>
           <h3 className="rotulo">Datos de facturación</h3>
-          {!cobro.profile_complete ? (
-            <p className="sec">Te los pedimos al pagar por primera vez.</p>
+          {!completo ? (
+            <>
+              <p className="sec">
+                {beta ? "País, empresa, identificación fiscal y dirección. Puedes cambiarlos cuando quieras." : "Te los pedimos al pagar por primera vez, o déjalos ya."}
+              </p>
+              <button className="btn sec" type="button" disabled={ocupado} onClick={() => setEditando(true)}>
+                Dejar mis datos de facturación
+              </button>
+            </>
           ) : perfil ? (
             <>
               <p className="sec datos-guardados">
@@ -227,8 +242,8 @@ export function Facturacion({
         </div>
       </div>
 
-      <h3 className="rotulo">Facturas</h3>
-      {facturas === null ? (
+      {!beta && <h3 className="rotulo">Facturas</h3>}
+      {beta ? null : facturas === null ? (
         <p className="sec">Abriendo tus facturas…</p>
       ) : facturas.length === 0 ? (
         <p className="sec">Todavía no hay facturas. Con cada cobro te llega también una por correo.</p>
@@ -307,17 +322,29 @@ export function Facturacion({
           <DatosFiscales
             email={me.email}
             etiqueta="Guardar"
-            intro="Se usan en las próximas facturas. Las ya emitidas no cambian."
+            intro={
+              beta
+                ? "Los usaremos en tus facturas cuando acabe la beta. Hasta entonces no se cobra nada."
+                : completo
+                  ? "Se usan en las próximas facturas. Las ya emitidas no cambian."
+                  : "Los necesitamos para hacerte la factura."
+            }
             onGuardando={setGuardandoDatos}
             onSinSesion={onSinSesion}
             onVolver={() => setEditando(false)}
             onGuardado={() => {
               setEditando(false);
-              setHecho("Hecho: tus datos de facturación están guardados. Se usan desde la próxima factura.");
+              setGuardados(true);
+              setHecho(
+                beta
+                  ? "Hecho: tus datos de facturación están guardados. Al acabar la beta solo tendrás que elegir plan."
+                  : "Hecho: tus datos de facturación están guardados. Se usan desde la próxima factura.",
+              );
               api
                 .perfilFiscal()
                 .then((p) => vivo.current && setPerfil(p))
                 .catch(() => undefined);
+              void onRecargar();
             }}
           />
         </Modal>
