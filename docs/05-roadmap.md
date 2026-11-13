@@ -96,7 +96,12 @@ Se mide:
 
 ## Fase 6. Plan Pro (por rebanadas, según datos de la beta)
 
+> **Decisión del propietario (2026-11-13):** las publicaciones, las fotos, el modo automático y la edición de la información del negocio desde «Qué mejorar» van **después del MVP**. Mientras tanto no se anuncian en la web.
+
+
 Orden propuesto, a confirmar con lo que pidan los clientes:
+
+0. Información del negocio desde «Qué mejorar»: descripción, web, horario normal y categorías secundarias, con confirmación del dueño.
 
 1. Fotos por WhatsApp: ajuste, texto alternativo, pie y "¿post o solo foto?".
 2. Post a partir de un brief por texto o audio.

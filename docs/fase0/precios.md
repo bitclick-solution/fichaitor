@@ -5,7 +5,7 @@ Decidido por el propietario el 2026-11-11. Precios anuales, por ficha. Se revisa
 | Plan | Precio al año | Canal | Incluye |
 |---|---|---|---|
 | Gratis | 0 € | Web instalable, correo o Telegram | Diagnóstico, avisos de reseñas, 25 respuestas con IA al mes, QR básico |
-| Pro | 35 € | Web instalable, correo o Telegram | Respuestas ilimitadas, modo automático, festivos y fechas clave, QR imprimibles por empleado |
+| Pro | 35 € | Web instalable, correo o Telegram | Respuestas ilimitadas con IA, festivos y fechas clave. Después del MVP: modo automático y QR por empleado |
 | Pro WhatsApp | 59 € | WhatsApp | Lo mismo que Pro, por WhatsApp, con 80 mensajes nuestros al mes |
 | Agencias | Por definir, tras el lanzamiento | — | Con clave propia del modelo de IA |
 
