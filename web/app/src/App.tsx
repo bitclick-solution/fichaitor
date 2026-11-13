@@ -208,7 +208,15 @@ export function App() {
         }
         if (l.active && (l.plan === "pro" || l.plan === "pro_whatsapp")) {
           marcarPagoEnCurso(null);
-          setAvisoPago({ estado: "hecho", texto: `Ya está: ${l.title} está en ${NOMBRE_PAGO[l.plan]}. La factura te llega por correo.` });
+          // Plaza contratada en la ventana de la beta: hoy no se ha cobrado nada.
+          const prueba = me.billing?.seats.find((s) => s.location_id === l.id && s.trial_ends_at)?.trial_ends_at;
+          const cuando = prueba ? new Intl.DateTimeFormat("es-ES", { day: "numeric", month: "long", year: "numeric", timeZone: "UTC" }).format(new Date(`${prueba}T00:00:00Z`)) : null;
+          setAvisoPago({
+            estado: "hecho",
+            texto: cuando
+              ? `Ya está: ${l.title} está en ${NOMBRE_PAGO[l.plan]}. No se cobra nada hasta el ${cuando}; te avisaremos 7 días antes.`
+              : `Ya está: ${l.title} está en ${NOMBRE_PAGO[l.plan]}. La factura te llega por correo.`,
+          });
           setVista(vistaDe(me, false));
           return;
         }

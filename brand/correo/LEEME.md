@@ -186,7 +186,7 @@ Todas las variables llegan **ya formateadas** y se escapan como las demás:
 | Variable | Ejemplo |
 |---|---|
 | `${numero}`, `${numero_original}` | `FCH/2027/00042` (número de Odoo) |
-| `${fecha}`, `${fecha_renovacion}`, `${fecha_fin}` | `14 de marzo de 2027` (sin hora) |
+| `${fecha}`, `${fecha_renovacion}`, `${fecha_fin}`, `${fecha_lanzamiento}`, `${fecha_cobro}` | `14 de marzo de 2027` (sin hora) |
 | `${importe}` | `42,35 €` (total con IVA; en Canarias, Ceuta y Melilla, sin IVA) |
 | `${plan}` | `Pro` o `Pro+` (el plan `pro_whatsapp`: Pro con avisos por WhatsApp) |
 | `${ficha}` | `Bar La Parra` |
@@ -379,21 +379,21 @@ Te llega este correo porque hemos devuelto un importe cobrado en tu cuenta de Fi
 
 ### 10. Fin de la beta (`beta_ending`)
 
-30 días antes de que termine la beta. `${oferta}` es **opcional**: si hay oferta para las cuentas beta, se añade el bloque `destacado` entre el primer párrafo y el botón; si no, no se añade nada.
+A las cuentas de la beta, antes del lanzamiento de la versión 1 (`${fecha_lanzamiento}`). Esas cuentas tienen 30 días más, hasta `${fecha_fin}`, para elegir plan; las cuentas nuevas desde el lanzamiento no reciben este correo. `${oferta}` es **opcional**: si hay oferta para las cuentas beta, se añade el bloque `destacado` entre el primer párrafo y el botón; si no, no se añade nada.
 
 | Campo | Valor |
 |---|---|
-| Asunto | La beta de Fichaitor termina el ${fecha_fin} |
-| Preencabezado | Elige el plan de cada ficha antes de esa fecha. |
+| Asunto | Fichaitor se lanza el ${fecha_lanzamiento}: elige tu plan antes del ${fecha_fin} |
+| Preencabezado | La beta sigue gratis hasta el lanzamiento y 30 días más. |
 | Titular | Fin de la beta |
 | Motivo (pie) | Te llega este correo porque tienes una cuenta de Fichaitor en la beta. |
 
 Cuerpo, en este orden:
 
-1. `parrafo`: «Gracias por probar Fichaitor durante la beta. Termina el ${fecha_fin} y, desde ese día, las fichas de pago se cobran. Elige en Facturación el plan de cada ficha.»
+1. `parrafo`: «Gracias por probar Fichaitor durante la beta. El ${fecha_lanzamiento} lanzamos la versión 1 y, desde ese día, las fichas de pago se cobran. Como estás en la beta, tienes 30 días más, hasta el ${fecha_fin}, para elegir en Facturación el plan de cada ficha. Hasta entonces todo sigue como ahora.»
 2. `destacado`: «${oferta}» (solo si hay oferta)
 3. `boton`: «Elegir los planes», ${enlace}
-4. `parrafo`: «Cada ficha de pago se cobra con tarjeta por años completos desde su activación y se renueva sola cada año, salvo que canceles la renovación. Lo cobrado no se devuelve, así que elige con calma.»
+4. `parrafo`: «Cada ficha de pago se cobra con tarjeta por años completos y se renueva sola cada año, salvo que canceles la renovación. Si eliges un plan antes del ${fecha_fin}, guardamos tu tarjeta pero no cobramos nada hasta ese día. Lo cobrado no se devuelve, así que elige con calma.»
 5. `parrafo`: «Si no eliges plan antes del ${fecha_fin}, tu ficha más antigua pasará al plan Gratis y las demás se desactivarán: dejaremos de leerlas y de avisarte de ellas, y si no las vuelves a activar en 30 días, borraremos lo que tenemos de ellas. No te cobraremos nada que no hayas pedido.»
 
 Texto plano (la línea de la oferta y la línea en blanco que la sigue solo van si hay oferta):
@@ -401,15 +401,49 @@ Texto plano (la línea de la oferta y la línea en blanco que la sigue solo van 
 ```text
 FIN DE LA BETA
 
-Gracias por probar Fichaitor durante la beta. Termina el ${fecha_fin} y, desde ese día, las fichas de pago se cobran. Elige en Facturación el plan de cada ficha.
+Gracias por probar Fichaitor durante la beta. El ${fecha_lanzamiento} lanzamos la versión 1 y, desde ese día, las fichas de pago se cobran. Como estás en la beta, tienes 30 días más, hasta el ${fecha_fin}, para elegir en Facturación el plan de cada ficha. Hasta entonces todo sigue como ahora.
 
 ${oferta}
 
 Elegir los planes: ${enlace}
 
-Cada ficha de pago se cobra con tarjeta por años completos desde su activación y se renueva sola cada año, salvo que canceles la renovación. Lo cobrado no se devuelve, así que elige con calma.
+Cada ficha de pago se cobra con tarjeta por años completos y se renueva sola cada año, salvo que canceles la renovación. Si eliges un plan antes del ${fecha_fin}, guardamos tu tarjeta pero no cobramos nada hasta ese día. Lo cobrado no se devuelve, así que elige con calma.
 
 Si no eliges plan antes del ${fecha_fin}, tu ficha más antigua pasará al plan Gratis y las demás se desactivarán: dejaremos de leerlas y de avisarte de ellas, y si no las vuelves a activar en 30 días, borraremos lo que tenemos de ellas. No te cobraremos nada que no hayas pedido.
 
 Te llega este correo porque tienes una cuenta de Fichaitor en la beta.
+```
+
+### 11. Fin de la prueba de la beta (`trial_ending`)
+
+7 días antes del primer cobro de una plaza contratada durante la ventana de la beta (hasta 30 días después del lanzamiento). La tarjeta ya está guardada y `${fecha_cobro}` es el día del primer cobro. `${importe}` va con IVA.
+
+| Campo | Valor |
+|---|---|
+| Asunto | El ${fecha_cobro} cobraremos el plan ${plan} de ${ficha} |
+| Preencabezado | Primer cobro: ${importe}. Si no quieres seguir, cancélalo antes. |
+| Titular | Termina tu beta |
+| Motivo (pie) | Te avisamos 7 días antes del primer cobro de una plaza contratada durante la beta, como dicen las condiciones de uso. |
+
+Cuerpo, en este orden:
+
+1. `parrafo`: «Tu periodo de la beta termina el ${fecha_cobro}. Ese día cobraremos ${importe} (IVA incluido) con la tarjeta que guardaste por el primer año del plan ${plan} de ${ficha}.»
+2. `parrafo`: «Si quieres seguir, no tienes que hacer nada. Si no, cancela la plaza desde Facturación antes del ${fecha_cobro} y no te cobraremos nada. Una vez cobrado el año, no se devuelve.»
+3. `boton`: «Ir a Facturación», ${enlace}
+4. `parrafo`: «Después, el plan se renueva solo cada año, salvo que canceles la renovación. Te avisaremos 30 días antes de cada renovación.»
+
+Texto plano:
+
+```text
+TERMINA TU BETA
+
+Tu periodo de la beta termina el ${fecha_cobro}. Ese día cobraremos ${importe} (IVA incluido) con la tarjeta que guardaste por el primer año del plan ${plan} de ${ficha}.
+
+Si quieres seguir, no tienes que hacer nada. Si no, cancela la plaza desde Facturación antes del ${fecha_cobro} y no te cobraremos nada. Una vez cobrado el año, no se devuelve.
+
+Ir a Facturación: ${enlace}
+
+Después, el plan se renueva solo cada año, salvo que canceles la renovación. Te avisaremos 30 días antes de cada renovación.
+
+Te avisamos 7 días antes del primer cobro de una plaza contratada durante la beta, como dicen las condiciones de uso.
 ```

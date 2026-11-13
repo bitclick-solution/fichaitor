@@ -249,53 +249,76 @@ CORREOS = {
         "Te llega este correo porque hemos devuelto un importe cobrado en tu cuenta de Fichaitor.",
     ),
     "10-fin-beta": correo(
-        "La beta de Fichaitor termina el 1 de marzo de 2027",
-        "Elige el plan de cada ficha antes de esa fecha.",
+        "Fichaitor se lanza el 1 de marzo de 2027: elige tu plan antes del 31 de marzo de 2027",
+        "La beta sigue gratis hasta el lanzamiento y 30 días más.",
         "Fin de la beta",
         [
             b(
                 "parrafo",
-                texto="Gracias por probar Fichaitor durante la beta. Termina el 1 de marzo de 2027 y, desde ese día, las fichas de pago se cobran. "
-                "Elige en Facturación el plan de cada ficha.",
+                texto="Gracias por probar Fichaitor durante la beta. El 1 de marzo de 2027 lanzamos la versión 1 y, desde ese día, las fichas d"
+                "e pago se cobran. Como estás en la beta, tienes 30 días más, hasta el 31 de marzo de 2027, para elegir en Facturación el plan de cada ficha. Hasta entonces todo sigue como ahora.",
             ),
             b("boton", etiqueta="Elegir los planes", enlace=FACTURACION),
             b(
                 "parrafo",
-                texto="Cada ficha de pago se cobra con tarjeta por años completos desde su activación y se renueva sola cada año, salvo que canceles "
-                "la renovación. Lo cobrado no se devuelve, así que elige con calma.",
+                texto="Cada ficha de pago se cobra con tarjeta por años completos y se renueva sola cada año, salvo que canceles la renovación."
+                " Si eliges un plan antes del 31 de marzo de 2027, guardamos tu tarjeta pero no cobramos nada hasta ese día. Lo cobrado no se devuelve, así que elige con calma.",
             ),
             b(
                 "parrafo",
-                texto="Si no eliges plan antes del 1 de marzo de 2027, tu ficha más antigua pasará al plan Gratis y las demás se desactivarán"
+                texto="Si no eliges plan antes del 31 de marzo de 2027, tu ficha más antigua pasará al plan Gratis y las demás se desactivarán"
                 ": dejaremos de leerlas y de avisarte de ellas, y si no las vuelves a activar en 30 días, borraremos lo que tenemos de ellas. No te cobraremos nada que no hayas pedido.",
             ),
         ],
         "Te llega este correo porque tienes una cuenta de Fichaitor en la beta.",
     ),
     "10-fin-beta-oferta": correo(
-        "La beta de Fichaitor termina el 1 de marzo de 2027",
-        "Elige el plan de cada ficha antes de esa fecha.",
+        "Fichaitor se lanza el 1 de marzo de 2027: elige tu plan antes del 31 de marzo de 2027",
+        "La beta sigue gratis hasta el lanzamiento y 30 días más.",
         "Fin de la beta",
         [
             b(
                 "parrafo",
-                texto="Gracias por probar Fichaitor durante la beta. Termina el 1 de marzo de 2027 y, desde ese día, las fichas de pago se cobran. "
-                "Elige en Facturación el plan de cada ficha.",
+                texto="Gracias por probar Fichaitor durante la beta. El 1 de marzo de 2027 lanzamos la versión 1 y, desde ese día, las fichas d"
+                "e pago se cobran. Como estás en la beta, tienes 30 días más, hasta el 31 de marzo de 2027, para elegir en Facturación el plan de cada ficha. Hasta entonces todo sigue como ahora.",
             ),
             b("destacado", texto="Texto de ejemplo de la oferta para las cuentas de la beta, todavía sin decidir."),
             b("boton", etiqueta="Elegir los planes", enlace=FACTURACION),
             b(
                 "parrafo",
-                texto="Cada ficha de pago se cobra con tarjeta por años completos desde su activación y se renueva sola cada año, salvo que canceles "
-                "la renovación. Lo cobrado no se devuelve, así que elige con calma.",
+                texto="Cada ficha de pago se cobra con tarjeta por años completos y se renueva sola cada año, salvo que canceles la renovación."
+                " Si eliges un plan antes del 31 de marzo de 2027, guardamos tu tarjeta pero no cobramos nada hasta ese día. Lo cobrado no se devuelve, así que elige con calma.",
             ),
             b(
                 "parrafo",
-                texto="Si no eliges plan antes del 1 de marzo de 2027, tu ficha más antigua pasará al plan Gratis y las demás se desactivarán"
+                texto="Si no eliges plan antes del 31 de marzo de 2027, tu ficha más antigua pasará al plan Gratis y las demás se desactivarán"
                 ": dejaremos de leerlas y de avisarte de ellas, y si no las vuelves a activar en 30 días, borraremos lo que tenemos de ellas. No te cobraremos nada que no hayas pedido.",
             ),
         ],
         "Te llega este correo porque tienes una cuenta de Fichaitor en la beta.",
+    ),
+    "11-fin-prueba": correo(
+        f"El 31 de marzo de 2027 cobraremos el plan Pro de {FICHA}",
+        "Primer cobro: 42,35 €. Si no quieres seguir, cancélalo antes.",
+        "Termina tu beta",
+        [
+            b(
+                "parrafo",
+                texto=f"Tu periodo de la beta termina el 31 de marzo de 2027. Ese día cobraremos 42,35 € (IVA incluido) con la tarjeta que guardaste "
+                f"por el primer año del plan Pro de {FICHA}.",
+            ),
+            b(
+                "parrafo",
+                texto="Si quieres seguir, no tienes que hacer nada. Si no, cancela la plaza desde Facturación antes del 31 de marzo de 2027 y no te "
+                "cobraremos nada. Una vez cobrado el año, no se devuelve.",
+            ),
+            b("boton", etiqueta="Ir a Facturación", enlace=FACTURACION),
+            b(
+                "parrafo",
+                texto="Después, el plan se renueva solo cada año, salvo que canceles la renovación. Te avisaremos 30 días antes de cada renovación.",
+            ),
+        ],
+        "Te avisamos 7 días antes del primer cobro de una plaza contratada durante la beta, como dicen las condiciones de uso.",
     ),
 }
 

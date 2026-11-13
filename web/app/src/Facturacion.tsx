@@ -21,10 +21,14 @@ function fecha(iso: string): string {
 function estadoPlaza(p: Plaza, moneda: string): string {
   const fin = p.renews_at ? ` el ${fecha(p.renews_at)}` : "";
   if (p.status === "payment_failed" || p.status === "action_required" || p.status === "disputed") return "Tiene un pago pendiente.";
+  // Contratada en la ventana de la beta: aún no se ha cobrado nada.
+  if (p.trial_ends_at) {
+    if (p.cancel_at_period_end || p.status === "canceled") return `Cancelada: no se cobrará nada. Sigue hasta el ${fecha(p.trial_ends_at)}.`;
+    return `Primer cobro el ${fecha(p.trial_ends_at)}${p.next_price !== null ? `: ${euros(p.next_price, moneda)} + IVA` : ""}. Puedes cancelarla antes sin coste.`;
+  }
   if (p.status === "canceled" || p.cancel_at_period_end) return `No se renueva: termina${fin}.`;
   // Sin ficha (o sin precio de renovación) no se renueva ni se cobra; se puede asignar una ficha antes.
-  if (p.location_id === null || p.next_price === null)
-    return `Sin ficha asignada: no se renueva ni se cobra. Termina${fin}, salvo que actives una ficha en ella antes.`;
+  if (p.location_id === null || p.next_price === null) return `Sin ficha asignada: no se renueva ni se cobra. Termina${fin}, salvo que actives una ficha en ella antes.`;
   return `Se renueva${fin} por ${euros(p.next_price, moneda)} + IVA.`;
 }
 
@@ -150,11 +154,16 @@ export function Facturacion({
                 <div className="acciones">
                   {puedeCancelar && (
                     <button className="enlace" type="button" disabled={ocupado} onClick={() => setCancelando(p)}>
-                      Cancelar la renovación
+                      {p.trial_ends_at ? "Cancelar la plaza" : "Cancelar la renovación"}
                     </button>
                   )}
                   {puedeReanudar && (
-                    <button className="btn sec" type="button" disabled={ocupado} onClick={() => void lanzar(`reanudar-${p.id}`, () => api.reanudarPlaza(p.id), "Hecho: la plaza vuelve a renovarse en su fecha.")}>
+                    <button
+                      className="btn sec"
+                      type="button"
+                      disabled={ocupado}
+                      onClick={() => void lanzar(`reanudar-${p.id}`, () => api.reanudarPlaza(p.id), "Hecho: la plaza vuelve a renovarse en su fecha.")}
+                    >
                       {accion.n === "enviando" && accion.que === `reanudar-${p.id}` ? "Reanudando…" : "Reanudar la renovación"}
                     </button>
                   )}
@@ -231,7 +240,7 @@ export function Facturacion({
 
       {cancelando && (
         <Modal
-          titulo="Cancelar la renovación"
+          titulo={cancelando.trial_ends_at ? "Cancelar la plaza" : "Cancelar la renovación"}
           onCerrar={() => {
             setCancelando(null);
             setAccion({ n: "nada" });
@@ -243,21 +252,29 @@ export function Facturacion({
               {NOMBRE_PAGO[cancelando.plan]} · {nombreFicha(cancelando.location_id) ?? "Sin ficha asignada"}
             </strong>
           </p>
-          <p>
-            Sigue como hasta ahora{cancelando.renews_at ? ` hasta el ${fecha(cancelando.renews_at)}` : " hasta el final del año pagado"}. Después no se renovará ni se cobrará. Lo ya pagado no se devuelve, y puedes
-            reanudar la renovación antes de esa fecha.
-          </p>
+          {cancelando.trial_ends_at ? (
+            <p>Todavía no se ha cobrado nada y no se cobrará. Sigue como hasta ahora hasta el {fecha(cancelando.trial_ends_at)}. Puedes reanudarla antes de esa fecha.</p>
+          ) : (
+            <p>
+              Sigue como hasta ahora{cancelando.renews_at ? ` hasta el ${fecha(cancelando.renews_at)}` : " hasta el final del año pagado"}. Después no se renovará ni se
+              cobrará. Lo ya pagado no se devuelve, y puedes reanudar la renovación antes de esa fecha.
+            </p>
+          )}
           {accion.n === "error" && (
             <p className="aviso" role="alert">
               {accion.mensaje}
             </p>
           )}
           <div className="acciones">
-            <button className="btn" type="button" disabled={ocupado} onClick={() =>
+            <button
+              className="btn"
+              type="button"
+              disabled={ocupado}
+              onClick={() =>
                 void lanzar(`cancelar-${cancelando.id}`, () => api.cancelarPlaza(cancelando.id), "Hecho: la plaza no se renovará. Puedes reanudarla antes de su fecha.")
               }
             >
-              {ocupado ? "Cancelando…" : "Cancelar la renovación"}
+              {ocupado ? "Cancelando…" : cancelando.trial_ends_at ? "Cancelar la plaza" : "Cancelar la renovación"}
             </button>
             <button
               className="btn sec"
@@ -376,12 +393,10 @@ export function CuentaEnPausa({
         Cuenta en pausa<span className="pt">.</span>
       </h1>
       {/* La misma frase que el bot, la API y el correo. */}
-      <p className="lead">
-        Tu cuenta está en pausa porque no hemos podido cobrar. {bloqueo && MOTIVO[bloqueo.reason]}
-      </p>
+      <p className="lead">Tu cuenta está en pausa porque no hemos podido cobrar. {bloqueo && MOTIVO[bloqueo.reason]}</p>
       <p>
-        Hasta que se pague, Fichaitor no lee ninguna de tus fichas, tampoco la del plan Gratis, no te envía avisos ni aplica cambios. No se ha
-        borrado nada y la pausa no borra nada: en cuanto se pague, todo vuelve a funcionar.
+        Hasta que se pague, Fichaitor no lee ninguna de tus fichas, tampoco la del plan Gratis, no te envía avisos ni aplica cambios. No se ha borrado nada y la pausa no
+        borra nada: en cuanto se pague, todo vuelve a funcionar.
       </p>
       {error && (
         <p className="aviso" role="alert">

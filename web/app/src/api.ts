@@ -70,6 +70,11 @@ export interface Precios {
   currency: string;
   period: "month" | "year";
   charging: boolean;
+  /**
+   * Días que le quedan a una cuenta de la beta para elegir plan sin pagar (30 desde el lanzamiento).
+   * null en cualquier otro caso: una cuenta nueva no tiene prueba y no se le anuncia ninguna.
+   */
+  trial_days?: number | null;
   plans: Record<"pro" | "pro_whatsapp", { first: number; additional: number }>;
   /** Lo que paga hoy la cuenta por sus fichas activas. */
   total: number;
@@ -110,6 +115,8 @@ export interface Plaza {
   next_price: number | null;
   payment_method: string;
   collection: string;
+  /** Plaza contratada en la ventana de la beta: fecha del primer cobro. null en las demás. */
+  trial_ends_at?: string | null;
 }
 
 export interface Cobro {

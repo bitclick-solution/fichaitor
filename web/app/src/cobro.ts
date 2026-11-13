@@ -31,6 +31,15 @@ export async function esperarPeticion(id: string, sigue: () => boolean): Promise
   return null;
 }
 
+const fechaLarga = new Intl.DateTimeFormat("es-ES", { day: "numeric", month: "long", year: "numeric" });
+
+/** El día en que acaba la ventana de la beta, a partir de los días que quedan («31 de marzo de 2027»). */
+export function finDePrueba(dias: number): string {
+  const d = new Date();
+  d.setDate(d.getDate() + dias);
+  return fechaLarga.format(d);
+}
+
 export const TARDA = "Está tardando más de lo normal. Prueba otra vez en un minuto.";
 
 /** Importe en euros a partir de céntimos: «35 €», «33,25 €». */

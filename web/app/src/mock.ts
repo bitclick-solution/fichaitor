@@ -15,7 +15,18 @@ interface Estado {
   pagado?: boolean;
   /** Cobro: datos fiscales guardados, plazas pagadas y un pago en curso (vuelta de Stripe simulada). */
   perfil?: { legal_name: string; tax_id: string; address: Record<string, string | null>; invoice_email: string } | null;
-  plazas?: { id: string; plan: string; location_id: string; status: string; renews_at: string; cancel_at_period_end: boolean; next_price: number; payment_method: string; collection: string }[];
+  plazas?: {
+    id: string;
+    plan: string;
+    location_id: string;
+    status: string;
+    renews_at: string;
+    cancel_at_period_end: boolean;
+    next_price: number;
+    payment_method: string;
+    collection: string;
+    trial_ends_at?: string | null;
+  }[];
   pagoEnCurso?: { ficha: string; plan: string; vueltas: number } | null;
 }
 
@@ -60,6 +71,9 @@ let llamadasSentimiento = 0;
 // Cada chat guarda su filtro de fichas (null = todas); la etiqueta se compone al responder, como el backend.
 const CANALES: { id: string; channel: string; address: string; linked_at: string; locations: string[] | null }[] = [];
 // Peticiones al proceso de cobro: plaza nueva, cancelar, reanudar, pagar lo pendiente o el portal de Stripe.
+/** «AAAA-MM-DD» en la hora local (toISOString la pasaría a UTC y podría restar un día). */
+const fechaLocal = (d: Date) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+
 const PETICIONES: Record<string, { vueltas: number; tipo: "plaza" | "cancelar" | "reanudar" | "pagar" | "portal"; ficha?: string; plan?: string; plaza?: string }> = {};
 const nuevaPeticion = (p: Omit<(typeof PETICIONES)[string], "vueltas">) => {
   const id = `req_${Date.now()}_${Object.keys(PETICIONES).length}`;
@@ -237,7 +251,7 @@ function conPlanes(e: Estado, lista: typeof FICHAS) {
 function planesCuenta(e: Estado) {
   const usados = Object.values(e.planes ?? {});
   // Con cobro («cobro») ya no hay plazas de la beta: las de pago se compran en el paywall.
-  const beta = ["gratis", "cobro", "bloqueada"].includes(escenario()) ? 0 : BETA_PRO;
+  const beta = ["gratis", "cobro", "bloqueada", "lanzamiento"].includes(escenario()) ? 0 : BETA_PRO;
   return {
     active: usados.length,
     free_available: !usados.includes("gratis"),
@@ -259,7 +273,9 @@ function precios(e: Estado) {
   return {
     currency: "EUR",
     period: "year",
-    charging: escenario() === "cobro" || escenario() === "bloqueada",
+    charging: ["cobro", "bloqueada", "lanzamiento"].includes(escenario()),
+    // «lanzamiento»: cuenta de la beta con 18 días de su ventana para elegir plan sin pagar.
+    trial_days: escenario() === "lanzamiento" ? 18 : null,
     plans: TARIFAS,
     total: totalDe(usados),
     if_activate: { pro: totalDe([...usados, "pro"]), pro_whatsapp: totalDe([...usados, "pro_whatsapp"]) },
@@ -313,6 +329,9 @@ export async function mockFetch(method: string, path: string, body: unknown): Pr
           next_price: plan === "pro" ? 3500 : 5900,
           payment_method: "card",
           collection: "auto",
+          // En la ventana de la beta, el primer cobro llega al terminarla.
+          trial_ends_at:
+            escenario() === "lanzamiento" ? fechaLocal(new Date(hoy.getFullYear(), hoy.getMonth(), hoy.getDate() + 18)) : null,
         },
       ];
       e.pagoEnCurso = null;

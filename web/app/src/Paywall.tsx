@@ -1,7 +1,7 @@
 import { useEffect, useId, useRef, useState } from "react";
 import { api, ApiError, type Location, type Me, type PerfilFiscal, type PlanPago } from "./api";
 import { Modal } from "./Ajustes";
-import { urlDePago } from "./cobro";
+import { finDePrueba, urlDePago } from "./cobro";
 
 // Paywall: «Pásate a Pro». Contrato: docs/admin-facturacion.md, 4.7.
 //  - Compara Pro y Pro+ (en la API, `pro_whatsapp`) con los precios de la API: nunca escritos aquí.
@@ -97,14 +97,16 @@ export function Paywall({
 }) {
   const id = useId();
   const cobro = me.pricing?.charging === true;
+  // Cuenta de la beta dentro de su ventana tras el lanzamiento: contrata ahora y no paga hasta el final.
+  // Solo con `trial_days` de la API: a una cuenta nueva nunca se le anuncia una prueba.
+  const diasPrueba = cobro && typeof me.pricing?.trial_days === "number" && me.pricing.trial_days > 0 ? me.pricing.trial_days : null;
+  const hastaCuando = diasPrueba !== null ? finDePrueba(diasPrueba) : null;
   const libres = me.plans?.available ?? { pro: 0, pro_whatsapp: 0 };
   // En la beta solo hay plazas Pro; con cobro, los dos planes se pueden comprar.
   const disponible = (p: PlanPago) => cobro || libres[p] > 0;
   // Planes que se ofrecen: para WhatsApp, solo Pro+ (Pro no lo incluye).
   const planes: PlanPago[] = motivo === "whatsapp" ? ["pro_whatsapp"] : ["pro", "pro_whatsapp"];
-  const [plan, setPlan] = useState<PlanPago>(
-    motivo === "whatsapp" ? "pro_whatsapp" : disponible("pro") || !disponible("pro_whatsapp") ? "pro" : "pro_whatsapp",
-  );
+  const [plan, setPlan] = useState<PlanPago>(motivo === "whatsapp" ? "pro_whatsapp" : disponible("pro") || !disponible("pro_whatsapp") ? "pro" : "pro_whatsapp");
   const [paso, setPaso] = useState<Paso>({ n: "elegir" });
   // Mientras se guardan los datos fiscales, el modal no se cierra: después sale la petición de pago.
   const [guardandoDatos, setGuardandoDatos] = useState(false);
@@ -234,7 +236,15 @@ export function Paywall({
                       <input type="radio" name={`${id}-plan`} checked={plan === p} disabled={!disponible(p) || ocupado} onChange={() => setPlan(p)} />
                       <span>
                         {/* Nombre del plan grande; el «+» de Pro+ en rojo, como el punto de la marca. */}
-                        <span className="plan-nombre">{p === "pro_whatsapp" ? <>Pro<span className="mas">+</span></> : NOMBRE_PAGO[p]}</span>
+                        <span className="plan-nombre">
+                          {p === "pro_whatsapp" ? (
+                            <>
+                              Pro<span className="mas">+</span>
+                            </>
+                          ) : (
+                            NOMBRE_PAGO[p]
+                          )}
+                        </span>
                         {/* El precio, lo primero que se mira: grande, con «+ IVA al año» al lado. */}
                         {cobro ? (
                           euro !== null && (
@@ -244,6 +254,7 @@ export function Paywall({
                                 <small> + IVA al año</small>
                               </span>
                               {conDescuento(p) && <small className="plan-precio">5 % menos por ser tu segunda ficha de pago o siguientes</small>}
+                              {hastaCuando && <small className="plan-precio plan-prueba">No pagas nada hasta el {hastaCuando}</small>}
                             </>
                           )
                         ) : disponible(p) ? (
@@ -272,8 +283,18 @@ export function Paywall({
             {cobro ? (
               precio(plan) !== null && (
                 <p className="sec">
-                  Esta ficha necesita una plaza {NOMBRE_PAGO[plan]}: {euros(me, precio(plan)!)} + IVA por un año desde hoy. Se renueva sola salvo que la canceles. No se
-                  devuelven importes. Pagas con tarjeta en Stripe; el periodo exacto va en la factura.
+                  {hastaCuando ? (
+                    <>
+                      Esta ficha necesita una plaza {NOMBRE_PAGO[plan]}: {euros(me, precio(plan)!)} + IVA por un año. Como estás en la beta, no pagas nada hasta el{" "}
+                      {hastaCuando}: hoy solo guardas la tarjeta en Stripe, ese día se cobra el primer año y puedes cancelarla antes sin coste. Te avisamos 7 días antes.
+                      Después se renueva sola cada año salvo que la canceles. No se devuelven importes.
+                    </>
+                  ) : (
+                    <>
+                      Esta ficha necesita una plaza {NOMBRE_PAGO[plan]}: {euros(me, precio(plan)!)} + IVA por un año desde hoy. Se renueva sola salvo que la canceles. No
+                      se devuelven importes. Pagas con tarjeta en Stripe; el periodo exacto va en la factura.
+                    </>
+                  )}
                 </p>
               )
             ) : !disponible(plan) ? (
@@ -304,7 +325,9 @@ export function Paywall({
                   : paso.n === "activando"
                     ? "Activando…"
                     : cobro
-                      ? "Continuar al pago"
+                      ? hastaCuando
+                        ? "Guardar la tarjeta"
+                        : "Continuar al pago"
                       : `Activar ${NOMBRE_PAGO[plan]} (beta)`}
               </button>
               <button className="btn sec" type="button" disabled={ocupado} onClick={onCerrar}>

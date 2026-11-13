@@ -446,3 +446,4 @@ html.lenis, html.lenis body { height: auto; }
 /* Nombre del plan en el paywall: grande, como un cartel; el «+» de Pro+ en rojo. Sin la caja de `.opcion span`. */
 .planes-pago .opcion .plan-nombre { display: block; height: auto; padding: 0; border: 0; background: transparent; font-weight: 900; font-stretch: 125%; text-transform: uppercase; letter-spacing: -0.03em; font-size: clamp(1.5rem, 4vw, 2rem); line-height: 1; }
 .planes-pago .opcion .plan-nombre .mas { display: inline; padding: 0; border: 0; background: transparent; color: var(--rojo); }
+.plan-prueba { color: inherit; font-weight: 700; }

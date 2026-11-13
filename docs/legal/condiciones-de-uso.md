@@ -55,6 +55,7 @@ Los precios y el contenido vigentes de cada plan son los publicados en `https://
 
 ## 7. Pago, renovación y cambios de precio
 
+- **Beta y lanzamiento.** La beta de Fichaitor es gratuita hasta el lanzamiento de la versión 1. Las cuentas creadas antes del lanzamiento disponen de 30 días desde esa fecha para elegir plan y conservan mientras tanto las fichas de la beta. Si durante ese plazo contratas una plaza de pago, guardamos tu tarjeta y el primer cobro anual se realiza al terminar el plazo; puedes cancelarla antes sin coste. Te avisaremos por correo 7 días antes de ese cobro. Las cuentas creadas a partir del lanzamiento no tienen periodo gratuito: cada plaza se cobra el día de su contratación. Lo cobrado no se devuelve y no hay prorrateo.
 - **Pago.** Se paga por adelantado con tarjeta (incluidos Apple Pay y Google Pay), a través de Stripe. Por cada cobro emitimos una factura, en la que figura el nombre de la ficha a la que corresponde.
 - **Años completos.** Cada ficha de pago se cobra por años completos desde su activación y se renueva sola salvo que la canceles antes de la fecha de renovación. Activar una ficha a mitad de año no se prorratea: se cobra un año completo desde ese día, con su propia fecha de renovación.
 - **Plazas sin ficha.** Si desactivas una ficha de pago, el año que pagaste por ella sigue vigente hasta su fecha de renovación. Si en esa fecha no tiene ninguna ficha asignada, no se renueva ni se cobra; te lo avisamos con el correo de renovación.
