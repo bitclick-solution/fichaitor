@@ -97,9 +97,11 @@ Es la pieza más útil: contesta sola cuando alguien escribe «FICHA» o pulsa u
 
 | Palabras clave | Respuesta automática |
 |---|---|
-| `ficha`, `FICHA`, `nota` | Perfecto. Dinos el nombre de tu negocio y la localidad, y te mandamos su nota y tres cosas que se pueden mejorar. Lo mira una persona del equipo, así que puede tardar unas horas. |
-| `precio`, `cuánto`, `cuanto` | En beta, el plan Pro es gratis hasta la versión definitiva. Después cuesta 35 € al año por ficha, y tienes 30 días para decidir si sigues. |
-| `beta` | La beta es para bares, restaurantes y negocios locales. El plan Pro es gratis hasta la versión definitiva. Dinos tu negocio y la localidad y te contamos cómo entrar. |
+| `ficha`, `FICHA`, `nota` | Dinos el nombre de tu negocio y la localidad, y te mandamos su nota y tres cosas que mejorar. Es gratis. Lo mira una persona: puede tardar unas horas. |
+| `precio`, `cuánto`, `cuanto` | En beta, el plan Pro es gratis hasta la versión definitiva. Después, 35 € al año por ficha, con 30 días para decidir si sigues. |
+| `beta` | Es para bares, restaurantes y negocios locales: Pro gratis hasta la versión definitiva. Dinos tu negocio y localidad y te contamos cómo entrar. |
+
+Cada respuesta admite 150 caracteres como máximo. Las de arriba tienen 150, 127 y 143.
 
 #### Preguntas recomendadas
 
