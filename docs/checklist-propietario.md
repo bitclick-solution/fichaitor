@@ -52,9 +52,22 @@ Lo que solo puedes hacer tú: cuentas, consolas, servidor, decisiones y pruebas 
 - [ ] Tras desplegar, comprobar en el servidor que el usuario de la API no puede crear tablas temporales:
   `SELECT has_database_privilege('fichaitor_api_prod', current_database(), 'TEMPORARY');` debe dar `f`.
 
+## Beta y lanzamiento (decidido 2026-11-13)
+
+- [x] Beta gratis hasta la v1; desde la v1, 30 días de prueba (una sola por ficha).
+- [ ] Dos bares entran en la beta: preparar su alta cuando esté el despliegue completo.
+- [ ] Despliegue completo cuando todo esté probado en local.
+
+## WhatsApp (número propio, sin Tech Provider)
+
+- [ ] Número de WhatsApp de Fichaitor dado de alta en la WABA de Bitclick (Cloud API).
+- [ ] Usuario del sistema con token permanente (`whatsapp_business_messaging`) y el *app secret* de la app de Meta, solo en los archivos del servidor.
+- [ ] Enviar a aprobación las plantillas de utilidad que prepare el agente de WhatsApp.
+- [ ] Verificación del negocio en Meta, si todavía no está, para subir los límites de envío.
+
 ## Decisiones pendientes
 
-- [ ] Gemini: seguir en AI Studio o pasar a Vertex AI en la UE (`eu`). En Vertex, `gemini-3.6-flash` se retira el 2026-11-19 y hay que usar `gemini-3.8-flash`. Pasos en `docs/despliegue.md`, «Gemini en Vertex AI».
+- [x] Gemini: en producción por Vertex AI (decidido 2026-11-13).
 - [ ] Si Vertex con clave de API de Agent Platform: la clave tiene que estar **vinculada a una cuenta de servicio** (no la del modo exprés). Comprobar con una llamada real que funciona en la ubicación `eu`; si `eu` da 401/403, usar la cuenta de servicio, nunca `global`. Variables en `api.env`, `worker.env` y `conversation.env`: `FICHAITOR_GEMINI_PROVIDER=vertex`, `FICHAITOR_GEMINI_MODEL=gemini-3.8-flash`, `FICHAITOR_VERTEX_PROJECT`, `FICHAITOR_VERTEX_LOCATION=eu` y `FICHAITOR_VERTEX_API_KEY` (`docs/despliegue.md`, «Gemini en Vertex AI»).
 - [ ] Al pasar a Vertex: avisar a la sesión de interfaz para cambiar en la política la fila de Gemini (Vertex AI en la UE).
 - [ ] Pasarela de pago para cuando acabe la beta: proveedor y fecha.
@@ -62,8 +75,8 @@ Lo que solo puedes hacer tú: cuentas, consolas, servidor, decisiones y pruebas 
 ## Cobro con Stripe y factura en Odoo (`docs/admin-facturacion.md`, sección 8)
 
 - [x] Cuenta de Stripe de Bitclick: alta, verificación y modo de prueba. Pásame solo que está lista; las claves nunca por el chat.
-- [ ] Gestoría: confirmar los puntos marcados «(gestoría)» del documento, sobre todo la fecha de VERI\*FACTU y la serie de facturas de Fichaitor en Odoo.
-- [ ] Alta en el ROI (operadores intracomunitarios), para vender a la UE con NIF-IVA, y presentar el modelo 349 cuando toque.
+- [x] Gestoría: confirmar los puntos marcados «(gestoría)» del documento, sobre todo la fecha de VERI\*FACTU y la serie de facturas de Fichaitor en Odoo.
+- [x] Alta en el ROI (operadores intracomunitarios), para vender a la UE con NIF-IVA, y presentar el modelo 349 cuando toque.
 - [ ] Odoo de Bitclick (sin módulos nuevos), valores en `billing.env` del servidor:
   - [ ] Usuario técnico «Fichaitor facturación» solo con permisos de facturación y su clave de API: `FICHAITOR_ODOO_URL` (https), `FICHAITOR_ODOO_DB`, `FICHAITOR_ODOO_API_KEY`.
   - [ ] Diario de ventas «Fichaitor», prefijo FTR, con secuencia propia de rectificativas RFTR: `FICHAITOR_ODOO_JOURNAL_ID`.
@@ -77,14 +90,14 @@ Lo que solo puedes hacer tú: cuentas, consolas, servidor, decisiones y pruebas 
 - [ ] Webhook de prueba en Stripe hacia `/api/v1/webhooks/stripe` con los eventos del contrato; su secreto `whsec_…` en `api.env` con `FICHAITOR_STRIPE_LIVEMODE=false`.
 - [ ] En Stripe: desactivar los reintentos automáticos de cobro, dejar solo tarjeta y el portal solo para cambiar el método de pago.
 - [ ] Antes de activar el cobro: avisar a la sesión de interfaz para pasar Stripe a proveedores activos en la política de privacidad.
-- [ ] Decidir si hay oferta para las cuentas de la beta al terminarla (cupón de un solo uso, porcentaje y fechas).
+- [x] Decidir si hay oferta para las cuentas de la beta al terminarla (cupón de un solo uso, porcentaje y fechas).
 
 ## Externo y legal
 
 - [ ] Meta: respuesta a la solicitud de proveedor de tecnología para WhatsApp. Cuando llegue, número y plantillas.
-- [ ] Revisión profesional de `docs/legal/privacidad.md` y `docs/legal/condiciones-de-uso.md`, con los puntos de `docs/legal/notas-revision.md`.
-- [ ] Contrato de encargado del tratamiento (DPA) con Google para Gemini (AI Studio de pago o Google Cloud).
-- [ ] Registro de actividades de tratamiento con Fichaitor dado de alta.
+- [ ] Revisión profesional de `docs/legal/privacidad.md` y `docs/legal/condiciones-de-uso.md`, con los puntos de `docs/legal/notas-revision.md`. Solo falta la revisión de los textos: Bitclick es empresa real, factura desde Odoo y está en el ROI.
+- [x] Contrato de encargado del tratamiento (DPA) con Google para Gemini (AI Studio de pago o Google Cloud).
+- [x] Registro de actividades de tratamiento con Fichaitor dado de alta.
 
 ## Recordatorios
 
