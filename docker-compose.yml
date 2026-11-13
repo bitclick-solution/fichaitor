@@ -31,6 +31,12 @@ services:
       - path: .env
         required: false
     environment:
+      # Correo en local: a Mailpit, nunca al SMTP real de .env.
+      FICHAITOR_SMTP_HOST: mailpit
+      FICHAITOR_SMTP_PORT: "1025"
+      FICHAITOR_SMTP_USER: ""
+      FICHAITOR_SMTP_PASSWORD: ""
+      FICHAITOR_SMTP_PLAINTEXT_LOCAL: "true"
       FICHAITOR_FAKE_PLACES: ${FICHAITOR_FAKE_PLACES:-true}
       FICHAITOR_DATABASE_URL: ${FICHAITOR_DATABASE_URL:-postgresql://fichaitor_api_dev:dev@db:5432/fichaitor}
       # La API va detrás del nginx de `web`, que fija X-Forwarded-For. Sin esto todos los
@@ -59,6 +65,12 @@ services:
       - path: ../fichaitor-secretos/worker.env
         required: false
     environment:
+      # Correo en local: a Mailpit, nunca al SMTP real de .env.
+      FICHAITOR_SMTP_HOST: mailpit
+      FICHAITOR_SMTP_PORT: "1025"
+      FICHAITOR_SMTP_USER: ""
+      FICHAITOR_SMTP_PASSWORD: ""
+      FICHAITOR_SMTP_PLAINTEXT_LOCAL: "true"
       FICHAITOR_WORKER_DATABASE_URL: ${FICHAITOR_WORKER_DATABASE_URL:-postgresql://fichaitor_worker_dev:dev@db:5432/fichaitor}
     depends_on:
       db:
@@ -127,6 +139,15 @@ services:
       - /tmp
     stop_grace_period: 250s
     restart: on-failure:3
+
+  # Mailpit: recoge todo el correo en local (http://127.0.0.1:8025). La API y el worker
+  # envían aquí, sin TLS (FICHAITOR_SMTP_PLAINTEXT_LOCAL, solo válido con este host);
+  # en local nunca sale un correo real.
+  mailpit:
+    image: axllent/mailpit:v1.21
+    ports:
+      - "127.0.0.1:8025:8025"
+    restart: unless-stopped
 
   # Backoffice (docs/contrato-backoffice.md): solo en 127.0.0.1:8090, como en producción
   # por el túnel. Sin env_file: de .env solo recibe su clave de TOTP, su pimienta y su

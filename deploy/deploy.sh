@@ -118,6 +118,12 @@ prohibir_modos_falsos() {
             *) die "$(basename "${archivo}") activa ${variable}: en producción no hay modos de ejemplo." ;;
         esac
     done
+    # SMTP sin TLS a Mailpit: solo para desarrollo.
+    valor="$(valor_env "${archivo}" FICHAITOR_SMTP_PLAINTEXT_LOCAL)"
+    case "${valor,,}" in
+        "" | false | 0 | no | off) ;;
+        *) die "$(basename "${archivo}") activa FICHAITOR_SMTP_PLAINTEXT_LOCAL: solo vale en desarrollo." ;;
+    esac
 }
 
 # I10: los secretos de Telegram, con longitud mínima. El pimiento de los códigos de

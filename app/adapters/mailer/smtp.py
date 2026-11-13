@@ -64,6 +64,7 @@ class SmtpMailer:
         smtp: Callable[..., smtplib.SMTP] = smtplib.SMTP,
         smtp_ssl: Callable[..., smtplib.SMTP] = smtplib.SMTP_SSL,
         context: ssl.SSLContext | None = None,
+        plaintext_local: bool = False,
     ) -> None:
         self._host = host
         self._port = port
@@ -77,6 +78,9 @@ class SmtpMailer:
         self._smtp_ssl = smtp_ssl
         # Verifies the certificate and the host name.
         self._context = context or ssl.create_default_context()
+        # Development only (Mailpit): no STARTTLS. MailSettings allows it only for a
+        # local host.
+        self._plaintext_local = plaintext_local
 
     async def send(self, email: Email) -> None:
         message = build_message(
@@ -93,7 +97,7 @@ class SmtpMailer:
             else:
                 server = self._smtp(self._host, self._port, timeout=self._timeout)
             with server:
-                if self._port != IMPLICIT_TLS_PORT:
+                if self._port != IMPLICIT_TLS_PORT and not self._plaintext_local:
                     server.ehlo()
                     if not server.has_extn("starttls"):
                         raise MailRejected("el servidor de correo no ofrece TLS")

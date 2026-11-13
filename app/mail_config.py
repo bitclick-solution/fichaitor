@@ -3,8 +3,10 @@ only needs to know whether mail is available at all, and the public URL of the w
 
 from urllib.parse import urlsplit
 
-from pydantic import Field, field_validator
+from pydantic import Field, ValidationInfo, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+LOCAL_SMTP_HOSTS = frozenset({"mailpit", "localhost", "127.0.0.1"})
 
 
 class MailSettings(BaseSettings):
@@ -28,6 +30,20 @@ class MailSettings(BaseSettings):
     public_base_url: str = "http://localhost:8080"
     # true: nothing is sent; the code and the restore link are written to the log.
     fake_mail: bool = False
+    # Development only: SMTP without TLS to a local catcher (Mailpit). Refused for any
+    # host but these, and deploy.sh refuses the variable in production.
+    smtp_plaintext_local: bool = False
+
+    @field_validator("smtp_plaintext_local")
+    @classmethod
+    def _only_local(cls, value: bool, info: ValidationInfo) -> bool:
+        host = (info.data.get("smtp_host") or "").strip().lower()
+        if value and host not in LOCAL_SMTP_HOSTS:
+            raise ValueError(
+                "FICHAITOR_SMTP_PLAINTEXT_LOCAL solo vale con un servidor local: "
+                + ", ".join(sorted(LOCAL_SMTP_HOSTS))
+            )
+        return value
 
     @field_validator("public_base_url")
     @classmethod

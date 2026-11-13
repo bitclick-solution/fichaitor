@@ -110,6 +110,7 @@ def build_mailer(settings: MailSettings) -> Mailer | None:
         user=settings.smtp_user,
         password=settings.smtp_password,
         timeout=settings.smtp_timeout_seconds,
+        plaintext_local=settings.smtp_plaintext_local,
     )
 
 
