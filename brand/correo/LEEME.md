@@ -394,6 +394,7 @@ Cuerpo, en este orden:
 2. `destacado`: «${oferta}» (solo si hay oferta)
 3. `boton`: «Elegir los planes», ${enlace}
 4. `parrafo`: «Cada ficha de pago se cobra con tarjeta por años completos desde su activación y se renueva sola cada año, salvo que canceles la renovación. Lo cobrado no se devuelve, así que elige con calma.»
+5. `parrafo`: «Si no eliges plan antes del ${fecha_fin}, tu ficha más antigua pasará al plan Gratis y las demás se desactivarán: dejaremos de leerlas y de avisarte de ellas, y si no las vuelves a activar en 30 días, borraremos lo que tenemos de ellas. No te cobraremos nada que no hayas pedido.»
 
 Texto plano (la línea de la oferta y la línea en blanco que la sigue solo van si hay oferta):
 
@@ -407,6 +408,8 @@ ${oferta}
 Elegir los planes: ${enlace}
 
 Cada ficha de pago se cobra con tarjeta por años completos desde su activación y se renueva sola cada año, salvo que canceles la renovación. Lo cobrado no se devuelve, así que elige con calma.
+
+Si no eliges plan antes del ${fecha_fin}, tu ficha más antigua pasará al plan Gratis y las demás se desactivarán: dejaremos de leerlas y de avisarte de ellas, y si no las vuelves a activar en 30 días, borraremos lo que tenemos de ellas. No te cobraremos nada que no hayas pedido.
 
 Te llega este correo porque tienes una cuenta de Fichaitor en la beta.
 ```

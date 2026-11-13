@@ -264,6 +264,11 @@ CORREOS = {
                 texto="Cada ficha de pago se cobra con tarjeta por años completos desde su activación y se renueva sola cada año, salvo que canceles "
                 "la renovación. Lo cobrado no se devuelve, así que elige con calma.",
             ),
+            b(
+                "parrafo",
+                texto="Si no eliges plan antes del 1 de marzo de 2027, tu ficha más antigua pasará al plan Gratis y las demás se desactivarán"
+                ": dejaremos de leerlas y de avisarte de ellas, y si no las vuelves a activar en 30 días, borraremos lo que tenemos de ellas. No te cobraremos nada que no hayas pedido.",
+            ),
         ],
         "Te llega este correo porque tienes una cuenta de Fichaitor en la beta.",
     ),
@@ -283,6 +288,11 @@ CORREOS = {
                 "parrafo",
                 texto="Cada ficha de pago se cobra con tarjeta por años completos desde su activación y se renueva sola cada año, salvo que canceles "
                 "la renovación. Lo cobrado no se devuelve, así que elige con calma.",
+            ),
+            b(
+                "parrafo",
+                texto="Si no eliges plan antes del 1 de marzo de 2027, tu ficha más antigua pasará al plan Gratis y las demás se desactivarán"
+                ": dejaremos de leerlas y de avisarte de ellas, y si no las vuelves a activar en 30 días, borraremos lo que tenemos de ellas. No te cobraremos nada que no hayas pedido.",
             ),
         ],
         "Te llega este correo porque tienes una cuenta de Fichaitor en la beta.",
