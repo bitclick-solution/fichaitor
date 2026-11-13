@@ -43,6 +43,7 @@ Lo que solo puedes hacer tú: cuentas, consolas, servidor, decisiones y pruebas 
 - [ ] Generar el par de claves de los tokens (`uv run python scripts/gen_token_keys.py`): la pública va en `api.env`, la privada en `worker.env` y en una copia en tu gestor de contraseñas.
 - [ ] Crear en el servidor `db.env`, `api.env`, `worker.env` y `conversation.env` a partir de `deploy/env.*.example`, con modo 600.
 - [ ] Generar con `openssl rand -hex 32` el pimiento de los códigos de vinculación (`FICHAITOR_LINK_CODE_PEPPER`, el mismo valor en `api.env` y `conversation.env`) y el secreto del webhook de Telegram (`FICHAITOR_TELEGRAM_WEBHOOK_SECRET`).
+- [ ] Generar con `openssl rand -hex 32` el pimiento de las respuestas gratuitas (`FICHAITOR_ALLOWANCE_PEPPER`), el mismo en `api.env` y `conversation.env`. **No cambiarlo nunca:** si cambia, cada ficha vuelve a tener sus 25 respuestas con IA.
 - [ ] SMTP de IONOS en `worker.env` (contraseña de `avisos@`). En `api.env`, solo el host y el remitente.
 - [ ] Clave de Gemini en `api.env`, `worker.env` y `conversation.env`, o Vertex AI (punto siguiente).
 - [ ] Registrar el webhook de Telegram en producción con su `secret_token`, siguiendo `docs/despliegue.md`, «Webhook de Telegram».
@@ -69,6 +70,10 @@ Lo que solo puedes hacer tú: cuentas, consolas, servidor, decisiones y pruebas 
   - [ ] Productos de servicio «Fichaitor Pro» (`FICHAITOR_ODOO_PRODUCT_PRO`) y «Fichaitor Pro WhatsApp» (`FICHAITOR_ODOO_PRODUCT_PRO_WHATSAPP`).
   - [ ] Redondeo de impuestos por línea en la compañía.
   - [ ] Opcional: posiciones fiscales (`FICHAITOR_ODOO_FPOS_*`) y el campo de estado de VERI\*FACTU (`FICHAITOR_ODOO_VERIFACTU_FIELD`), según la gestoría.
+- [ ] Stripe en modo de prueba: clave restringida `rk_test_…` con los permisos mínimos de `docs/contrato-web-api.md` («Cobro y paywall»), solo en `billing.env`.
+- [ ] Ejecutar `scripts/stripe_bootstrap.py` (primero con `--dry-run`) para crear productos, precios y Tax Rates en modo de prueba.
+- [ ] Webhook de prueba en Stripe hacia `/api/v1/webhooks/stripe` con los eventos del contrato; su secreto `whsec_…` en `api.env` con `FICHAITOR_STRIPE_LIVEMODE=false`.
+- [ ] En Stripe: desactivar los reintentos automáticos de cobro, dejar solo tarjeta y el portal solo para cambiar el método de pago.
 - [ ] Antes de activar el cobro: avisar a la sesión de interfaz para pasar Stripe a proveedores activos en la política de privacidad.
 - [ ] Decidir si hay oferta para las cuentas de la beta al terminarla (cupón de un solo uso, porcentaje y fechas).
 
