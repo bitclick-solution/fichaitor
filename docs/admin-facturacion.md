@@ -927,3 +927,17 @@ Límite asumido: la contraseña y el TOTP se comprueban en el proceso `fichaitor
 **Decidido (2026-11-13): avisos en el panel como banner discreto** (no modal) en `/app`, creados desde el backoffice con inicio y fin, por ejemplo para invitar a una newsletter o anunciar una novedad.
 - Opinión del PM: útil para anunciar novedades y pedir opiniones durante la beta. Con condiciones: que se pueda cerrar y no vuelva a salir, con un tope de frecuencia, nunca bloqueante, y sin datos personales en el texto. Si se usa para una newsletter, el alta tiene que ser un consentimiento expreso aparte (casilla sin marcar, con su base y su texto en la política), nunca implícito al cerrar el aviso.
 - Formato: banner discreto, no modal (decisión del propietario).
+
+## Anexo: comunicaciones por correo desde el backoffice (petición del propietario, 2026-11-13)
+
+**Decidido:** desde el backoffice se podrán enviar correos de comunicación a los clientes, con la plantilla de Fichaitor (la diseña la sesión de interfaz en `brand/correo/`, correo «comunicacion»).
+
+Diseño del PM (lo construye un agente cuando termine el trabajo de métricas y manual del backoffice):
+
+- **Dos tipos, con reglas distintas (LSSI art. 21 y RGPD):**
+  - **Servicio** (cambios en el producto, en las condiciones, incidencias, fin de la beta): a todas las cuentas del público elegido; sin enlace de baja de comunicaciones, porque no son comerciales.
+  - **Comercial** (ofertas, novedades con intención de venta, newsletter): solo a cuentas que no se hayan dado de baja de comunicaciones comerciales; cada correo lleva un enlace de baja de un clic y la cabecera `List-Unsubscribe` / `List-Unsubscribe-Post`. Como clientes con contrato, se les puede escribir sobre productos similares si se les ofreció oponerse (art. 21.2 LSSI); la oposición se ofrece al alta y en cada correo.
+- **Público:** todas las cuentas activas, solo beta, por plan (Gratis, Pro, Pro+) o una cuenta concreta (por id, para un caso de soporte). Nunca la lista de espera (su consentimiento solo cubre el aviso de lanzamiento) ni direcciones escritas a mano.
+- **Flujo en el backoffice:** redactar (asunto, preencabezado, titular, párrafos y un botón opcional con enlace a fichaitor.es) → vista previa con la plantilla → envío de prueba a la propia dirección del administrador → confirmar con el número de destinatarios → envío en cola por el worker, con ritmo limitado. Rol propietario y TOTP repetido. Auditoría de quién envió qué, a cuántos y cuándo; sin listas de correos exportables.
+- **Datos:** se guarda la comunicación (texto, tipo, público, recuentos y fechas), no la lista de direcciones. La baja de comunicaciones comerciales se guarda por cuenta. Retención: la comunicación, 12 meses; la baja, mientras exista la cuenta.
+- **Privacidad:** la política tiene que recoger las comunicaciones de servicio y las comerciales a clientes, con la oposición.
