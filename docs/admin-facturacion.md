@@ -25,7 +25,7 @@ Diseño e implementación del cobro de Fichaitor con Stripe, de la factura legal
 | Suscripciones | **Una suscripción de Stripe por plaza**, y cada plaza con su propia fecha de renovación. Un solo `Customer` por cuenta | Es la única forma de cumplir P2: Stripe pone una sola fecha de facturación a todos los elementos de una suscripción |
 | Plaza y ficha | Una plaza es un año pagado de un plan. Una ficha activa ocupa una plaza. Si la ficha se desactiva, la plaza sigue pagada y libre hasta su renovación | Encaja con `plan_entitlement` (una fila por plaza) y con P2 |
 | Descuento del 5 % | 4 precios (`*_first` y `*_additional`). El precio de cada plaza **se fija al cobrarla**, con la regla del propietario sobre las plazas vigentes en ese momento. Se congela en el aviso de renovación a 30 días | Reproduce `plans.price_lines` sin prorrateos, y cumple los 30 días de aviso de cambio de precio (cláusula 7 de las condiciones) |
-| IVA | Lo calcula nuestro dominio, con 3 Tax Rates fijos en Stripe y la posición fiscal equivalente en Odoo. **Sin Stripe Tax** | Venta solo B2B con NIF y pocos casos. Así Stripe y Odoo no pueden discrepar |
+| IVA | Lo calcula nuestro dominio, con 4 Tax Rates fijos en Stripe (`iva_21`, `no_sujeto`, `isp_ue` y `extracomunitario`) y la posición fiscal equivalente en Odoo. **Sin Stripe Tax** | Venta solo B2B con identificación fiscal y pocos casos. Así Stripe y Odoo no pueden discrepar |
 | Puente con Odoo | Un módulo propio y pequeño, `fichaitor_bridge`, con un único método idempotente que crea, valida y cobra la factura y devuelve el número y el PDF | Una llamada atómica e idempotente, en vez de 6 llamadas sueltas a JSON-2 |
 | Bloqueo | Una fila en `account_billing_block`. Todas las barreras (API, worker y conversación) consultan la misma condición en SQL | Mismo patrón que «baja programada» (`_NO_OPEN_LEAVE`) |
 | Procesos nuevos | `fichaitor-billing` (rol `fichaitor_billing`, con la clave de Stripe y la de Odoo) y `fichaitor-admin` (rol `fichaitor_admin`, sin claves externas) | Mínimo privilegio. La API solo tiene el secreto de firma del webhook |
@@ -34,9 +34,9 @@ Diseño e implementación del cobro de Fichaitor con Stripe, de la factura legal
 
 ### 2.1 A quién se vende y con qué IVA
 
-Las condiciones de uso (cláusula 3) dicen que Fichaitor solo se vende a empresas y a profesionales. Los precios no incluyen IVA (cláusula 6). De ahí salen tres reglas:
+Las condiciones de uso (cláusula 3) dicen que Fichaitor solo se vende a empresas y a profesionales. Los precios no incluyen IVA (cláusula 6). Desde la decisión del propietario del 2026-11-13 ([9.0, 12](#90-decisiones-del-propietario-sobre-las-preguntas-abiertas-2026-11-13)), se vende con tarjeta **en todo el mundo**, y fuera de la UE **solo a empresas**. De ahí salen tres reglas:
 
-1. **El NIF es obligatorio para pagar.** Toda venta es B2B, así que no aplica la ventanilla única (OSS) de ventas a consumidores de la UE.
+1. **La identificación fiscal es obligatoria para pagar:** NIF en España, NIF-IVA en la UE y la identificación fiscal de la empresa en el resto del mundo. Toda venta es B2B, así que no aplica la ventanilla única (OSS) de ventas a consumidores de la UE.
 2. **Siempre se emite factura completa**, nunca simplificada. La simplificada se admite hasta 400 € con IVA incluido (art. 4.1.a del RD 1619/2012), pero el cliente es empresario y necesita su NIF y su domicilio en la factura para deducir el IVA.
 3. **Tratamiento fiscal por cliente.** Lo decide la función pura `tax_treatment` de `app/domain/billing.py`:
 
@@ -45,7 +45,33 @@ Las condiciones de uso (cláusula 3) dicen que Fichaitor solo se vende a empresa
 | Península o Baleares, con NIF | `ES`, código postal que no empieza por 35, 38, 51 ni 52 | IVA del 21 % | — | `iva_21` | Régimen nacional |
 | Canarias, con NIF | Código postal 35 o 38 | No sujeta a IVA: un servicio B2B se localiza donde está el destinatario (art. 69.Uno.1.º LIVA), y Canarias está fuera del territorio del IVA (art. 3 LIVA). El destinatario liquida el IGIC por inversión del sujeto pasivo **(gestoría)** | «Operación no sujeta a IVA (arts. 3 y 69 de la Ley 37/1992)» | `no_sujeto` (0 %) | Canarias o extracomunitario |
 | Ceuta y Melilla, con NIF | Código postal 51 o 52 | No sujeta a IVA. El tratamiento del IPSI lo confirma la gestoría **(gestoría)** | La misma mención | `no_sujeto` (0 %) | Extracomunitario |
-| Otro país de la UE | — | **No se vende al lanzar** ([pregunta 9](#9-riesgos-y-preguntas-abiertas)) | — | — | — |
+| Otro país de la UE (y Mónaco), con NIF-IVA | País de la UE. Mónaco está en el territorio IVA de la UE como parte de Francia (art. 7.1 de la Directiva 2006/112/CE) y usa NIF-IVA francés (`FR…`) | No sujeta a IVA en España e inversión del sujeto pasivo ([decisión 9.0, 9](#90-decisiones-del-propietario-sobre-las-preguntas-abiertas-2026-11-13)) | «Operación no sujeta a IVA en España (art. 69.Uno.1.º de la Ley 37/1992). Inversión del sujeto pasivo (art. 196 de la Directiva 2006/112/CE)» | `isp_ue` (0 %) | Intracomunitario |
+| **Resto del mundo, solo empresas**, con su identificación fiscal | Cualquier otro código ISO 3166-1 alfa-2, salvo los excluidos (más abajo) | **No sujeta al IVA español por reglas de localización:** un servicio B2B se localiza donde está establecido el destinatario (art. 69.Uno.1.º LIVA), fuera del territorio de aplicación del impuesto. Cuota 0 | «Operación no sujeta al IVA español por reglas de localización (art. 69 Ley 37/1992)» | `extracomunitario` (0 %) | Extracomunitario (la misma que Ceuta y Melilla; el impuesto de la línea las distingue) |
+
+#### Venta fuera de la UE (decisión 9.0, 12)
+
+Por qué así:
+
+- **Solo empresas.** Con un consumidor fuera de la UE, la regla de localización es otra (art. 69.Uno.2.º LIVA) y muchos países cobran su IVA o su GST al proveedor extranjero desde el primer euro. Pedir la identificación fiscal de la empresa mantiene la venta dentro del art. 69.Uno.1.º, igual que en España y en la UE. El cliente declara que es una empresa al darla; la exactitud del dato es responsabilidad suya (condiciones).
+- **Identificación fiscal sin validar por país.** Hay más de 190 formatos y cambian. El dominio solo comprueba los caracteres y la longitud (`validate_foreign_tax_id`): de 3 a 32 caracteres, letras, números, `-`, `.`, `/` y espacio, con al menos una cifra, en mayúsculas y con los espacios unificados. Admite también `Ñ` y `&`, que aparecen en el RFC de México. Se guarda tal como la escribe su país (`12-3456789`, `CHE-123.456.789 MWST`) y así sale en la factura. No se consulta ningún registro.
+- **Nada de identificación en Stripe.** Stripe valida el formato de los tipos que conoce (`us_ein`, `mx_rfc`, `ch_vat`…) y rechazaría una que nosotros aceptamos sin validar: el cliente se quedaría sin poder pagar. Fuera de la UE, el cliente va a Stripe sin `tax_id` (`billing_customer.tax_id_type` vacío). La identificación se guarda en nuestra base y en Odoo, que es donde está la factura legal; el documento de cobro de Stripe no es una factura ([2.3](#23-series-y-numeración)).
+- **Código postal opcional y con validación laxa** fuera de la UE: de 2 a 12 letras, números, espacios o guiones, que empiecen y acaben por letra o número. Hay países sin código postal. En España sigue siendo obligatorio y de 5 cifras; en la UE, obligatorio y con la misma validación laxa.
+- **Moneda: EUR para todos**, como hasta ahora. El banco del cliente convierte. Los precios en USD u otras monedas quedan para después: exigen un precio por moneda en Stripe y cuadrar el total en Odoo con el tipo de cambio.
+- **Canarias, Ceuta y Melilla**, como siempre: país `ES` y su código postal. Los códigos `IC` y `EA` no se aceptan.
+
+**Países.** Se acepta cualquier código ISO 3166-1 alfa-2 asignado (249) y `XK` (Kosovo, el que usan Stripe, la UE y Odoo). La lista está en el código (`ISO_COUNTRIES` en `app/domain/billing.py`), sin dependencias nuevas, y la API la da al formulario en `GET /api/v1/me/billing/countries`. **Excluidos** (`BLOCKED_COUNTRIES`): Cuba, Irán, Corea del Norte y Siria (sanciones generales; Stripe no los atiende), Rusia y Bielorrusia (sanciones de la UE que prohíben vender software de gestión a empresas de allí).
+
+> **Precaución:** Las regiones ocupadas de Ucrania (Crimea, Sebastopol, Donetsk, Lugansk, Zaporiyia y Jersón) están sancionadas, pero no tienen código ISO propio: son `UA`, así que el formulario no puede distinguirlas. Stripe filtra la tarjeta y el pago con sus controles de sanciones. Si aparece un cliente con dirección en esas regiones, no lo factures y reembolsa. Revisa la lista de exclusiones con la gestoría o el banco cuando cambien las sanciones; añadir un país es una línea en `BLOCKED_COUNTRIES`.
+
+> **Importante: riesgo fiscal en el país del cliente (para el propietario y su gestor).** Que la operación no esté sujeta al IVA español no significa que no tribute en ningún sitio. Varios países gravan el software como servicio **también entre empresas**, o exigen darse de alta al pasar un umbral de ventas:
+>
+> - **Estados Unidos:** el *sales tax* de algunos estados grava el SaaS (por ejemplo, Texas, Nueva York, Washington o Pensilvania) y obliga al vendedor extranjero por **nexo económico** al pasar el umbral de ventas del estado (habitualmente 100 000 USD o 200 operaciones al año).
+> - **Australia:** el GST se aplica a los servicios digitales importados. Entre empresas registradas suele recaer en el cliente, pero el proveedor puede tener que registrarse por encima de 75 000 AUD de ventas a no registrados.
+> - **India:** el GST de los servicios digitales (OIDAR) y, entre empresas, inversión del sujeto pasivo con requisitos propios.
+> - **Suiza y Noruega:** Suiza exige el alta del proveedor extranjero con ventas en el país por encima de 100 000 CHF al año; Noruega, el registro VOEC o su IVA por encima de 50 000 NOK.
+> - Otros (Canadá, Japón, Corea del Sur, Sudáfrica, Arabia Saudí, México…) tienen reglas parecidas para servicios digitales.
+>
+> **No impide lanzar.** Con ventas pequeñas y solo a empresas, lo normal es que no haya que hacer nada. Revisa con el gestor cada país al pasar sus umbrales: las facturas de Odoo con la posición fiscal «Extracomunitario», por país del cliente, dan las ventas acumuladas. Si un país lo exige, la salida es darse de alta allí o activar Stripe Tax para ese país, y es otra decisión. Las cifras de umbral son orientativas a 2026-11-13 **(gestoría)**.
 
 ### 2.2 Factura completa
 
@@ -117,13 +143,16 @@ No actives Stripe Tax. Crea estos Tax Rates con `tax_behavior = exclusive`:
 
 - `iva_21` (21 %);
 - `no_sujeto` (0 %);
-- `isp_ue` (0 %), reservado para cuando se venda a la UE.
+- `isp_ue` (0 %), para la UE;
+- `extracomunitario` (0 %), «No sujeto (extracomunitario)», para las empresas de fuera de la UE. Si el catálogo de Stripe se creó antes del 2026-11-13, vuelve a ejecutar `scripts/stripe_bootstrap.py`: solo añade este.
 
 Asígnalos a cada suscripción según `billing_customer.tax_treatment`. Odoo aplica la posición fiscal equivalente y vuelve a calcular. Una comprobación ([sección 4.3](#43-de-un-pago-correcto-a-la-factura-en-odoo)) exige que los dos totales coincidan al céntimo.
 
 ### 2.7 Validación del NIF
 
 - **NIF, NIE o CIF español:** el dominio comprueba el formato y el dígito de control. Stripe no valida el tipo `es_cif` (su tabla de identificadores lo marca sin validación).
+- **NIF-IVA de la UE:** el dominio comprueba el formato de cada país. Su existencia, en VIES, en otro paso ([9.0, 9](#90-decisiones-del-propietario-sobre-las-preguntas-abiertas-2026-11-13)).
+- **Identificación fiscal de fuera de la UE:** solo caracteres y longitud ([2.1](#venta-fuera-de-la-ue-decisión-90-12)). No se envía a Stripe; va a Odoo en el campo `vat` del contacto. Si Odoo comprueba los NIF (`base_vat`) y rechaza el de ese país, la factura queda pendiente y la cola de revisión lo avisa: corrígelo a mano en Odoo o desactiva esa comprobación.
 - **Comprobación censal en la AEAT:** exige certificado. Queda para cuando aparezcan NIF erróneos. Que el dato sea exacto es responsabilidad del cliente: añádelo a las condiciones.
 
 ## 3. Modelo en Stripe
@@ -797,6 +826,7 @@ Mandan sobre las recomendaciones de la sección 9.
 | 9 | Mercados | **España (península, Baleares, Canarias, Ceuta y Melilla) y la UE desde el inicio**, siempre con NIF o NIF-IVA. Antes de cobrar a la UE: alta en el ROI, modelo 349 y verificación en VIES |
 | 10 | Oferta para las cuentas beta | Sin decidir. Aviso de 30 días antes del lanzamiento (`beta_ending`) |
 | 11 | Paso de la beta al cobro (2026-11-13, corregida el mismo día) | **La beta es gratis hasta el lanzamiento de la v1** (`launch_at`). **Solo las cuentas que ya existen al lanzar** tienen una ventana de **30 días desde `launch_at`** para elegir plan, con sus plazas beta: `beta_ends_at = launch_at + 30 días`. Si contratan una plaza en ese plazo, su primer cobro llega al acabar la ventana (`trial_end = beta_ends_at`, la tarjeta se pide en el Checkout), sin días de más. Pasado el plazo, `enforce_after_beta`. **Nadie más tiene prueba gratis**: una cuenta creada desde el lanzamiento paga la plaza el día que la compra. Sin regla anti-abuso, porque una cuenta nueva no puede tener la ventana. Correo `trial_ending` 7 días antes del primer cobro. Sin prorrateo ni reembolsos, como siempre ([sección 4.6](#46-fin-de-la-beta-y-launch_at)) |
+| 12 | Mercados fuera de la UE (2026-11-13, amplía la 9) | **Se cobra con tarjeta en todo el mundo.** Fuera de la UE, **solo empresas**, con su identificación fiscal obligatoria y sin validar por país. Tratamiento `extracomunitario`: no sujeto al IVA español por reglas de localización (art. 69.Uno.1.º LIVA), cuota 0. EUR para todos. Excluidos los países sancionados o que Stripe no atiende. Riesgo fiscal en el país del cliente, a revisar con el gestor al pasar umbrales ([2.1](#venta-fuera-de-la-ue-decisión-90-12)) |
 
 ## 9. Riesgos y preguntas abiertas
 

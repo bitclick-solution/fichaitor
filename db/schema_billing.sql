@@ -692,3 +692,41 @@ GRANT EXECUTE ON FUNCTION billing_purge() TO fichaitor_billing;
 --     END IF;
 -- END
 -- $$;
+
+-- ---------------------------------------------------------------------------
+-- Venta en todo el mundo (decisión del propietario de 2026-11-13; docs/admin-facturacion.md,
+-- 2.1 y 9.0, 12). Fuera de la UE, solo empresas, con su identificación fiscal sin validar
+-- por país: tratamiento 'extracomunitario' (no sujeto al IVA español por reglas de
+-- localización), territorio 'fuera_ue' y tipo de identificación 'foreign'. Esa
+-- identificación no va a Stripe (tax_id_type vacío) y el código postal es opcional.
+-- Idempotente: se recrean las restricciones en cada aplicación, y aceptan todo lo que
+-- aceptaban las de la tabla de arriba.
+ALTER TABLE billing_customer ALTER COLUMN tax_id_type DROP NOT NULL;
+ALTER TABLE billing_customer ALTER COLUMN postal_code DROP NOT NULL;
+
+ALTER TABLE billing_customer DROP CONSTRAINT IF EXISTS billing_customer_tax_id_type_check;
+ALTER TABLE billing_customer ADD CONSTRAINT billing_customer_tax_id_type_check
+    CHECK (tax_id_type IN ('es_cif', 'eu_vat'));
+ALTER TABLE billing_customer DROP CONSTRAINT IF EXISTS billing_customer_tax_id_kind_check;
+ALTER TABLE billing_customer ADD CONSTRAINT billing_customer_tax_id_kind_check
+    CHECK (tax_id_kind IN ('nif', 'nie', 'cif', 'eu_vat', 'foreign'));
+ALTER TABLE billing_customer DROP CONSTRAINT IF EXISTS billing_customer_tax_id_check;
+ALTER TABLE billing_customer ADD CONSTRAINT billing_customer_tax_id_check
+    CHECK (CASE WHEN tax_id_kind = 'foreign'
+                THEN tax_id ~ '^[A-Z0-9Ñ&./ -]{3,32}$' AND tax_id ~ '[0-9]'
+                ELSE tax_id ~ '^[A-Z0-9+*]{4,20}$' END);
+ALTER TABLE billing_customer DROP CONSTRAINT IF EXISTS billing_customer_territory_check;
+ALTER TABLE billing_customer ADD CONSTRAINT billing_customer_territory_check
+    CHECK (territory IN ('peninsula_baleares', 'canarias', 'ceuta', 'melilla', 'ue',
+                         'fuera_ue'));
+ALTER TABLE billing_customer DROP CONSTRAINT IF EXISTS billing_customer_tax_treatment_check;
+ALTER TABLE billing_customer ADD CONSTRAINT billing_customer_tax_treatment_check
+    CHECK (tax_treatment IN ('iva_21', 'no_sujeto', 'isp_ue', 'extracomunitario'));
+-- Fuera de la UE va todo junto: territorio, tratamiento, tipo de identificación y sin
+-- identificación en Stripe. Solo ahí puede faltar el código postal.
+ALTER TABLE billing_customer DROP CONSTRAINT IF EXISTS billing_customer_fuera_ue;
+ALTER TABLE billing_customer ADD CONSTRAINT billing_customer_fuera_ue
+    CHECK ((territory = 'fuera_ue') = (tax_treatment = 'extracomunitario')
+           AND (territory = 'fuera_ue') = (tax_id_kind = 'foreign')
+           AND (territory = 'fuera_ue') = (tax_id_type IS NULL)
+           AND (postal_code IS NOT NULL OR territory = 'fuera_ue'));

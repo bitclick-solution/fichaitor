@@ -1586,7 +1586,7 @@ Reglas de fondo, que la web cuenta al usuario:
 - Desde la segunda plaza de pago, un 5 % menos. La API da el precio exacto: la web no lo calcula.
 - Un impago **bloquea toda la cuenta** hasta que se pague, sin límite de tiempo. No se borra nada.
 - Una plaza que llega a su renovación sin ficha no se cobra: se cancela sola.
-- España (península, Baleares, Canarias, Ceuta y Melilla) y la UE, siempre con NIF o NIF-IVA.
+- España (península, Baleares, Canarias, Ceuta y Melilla) y la UE, siempre con NIF o NIF-IVA. **Desde el 2026-11-13, también el resto del mundo, solo empresas**, con la identificación fiscal de la empresa ([Fuera de la UE](#fuera-de-la-ue-2026-11-13)). Siempre en euros.
 - **Ventana beta** (decisión del propietario, 2026-11-13): la beta es gratis hasta el lanzamiento (`billing_setting.launch_at`). Las cuentas que ya existían antes del lanzamiento tienen **30 días más** (hasta `launch_at` + 30 días) para elegir plan, con sus fichas Pro de la beta. Si compran una plaza en esos días, Stripe guarda la tarjeta pero **no cobra nada hasta que acaba su ventana**: el primer año empieza ese día, sin días de más. **Nadie más tiene prueba gratis**: una cuenta creada desde el lanzamiento paga la plaza el día que la compra.
 
 ### Cómo funciona
@@ -1609,6 +1609,7 @@ Todas llevan sesión y funcionan **también con la cuenta bloqueada**: pagar es 
 
 | Ruta | Cuerpo | Respuesta |
 |---|---|---|
+| `GET /api/v1/me/billing/countries` | — | 200 `{"countries": [{"code": "AD", "region": "fuera_ue"}, …]}`: los países a los que se factura, ordenados por código ([Fuera de la UE](#fuera-de-la-ue-2026-11-13)) |
 | `GET /api/v1/me/billing/profile` | — | 200 con el perfil fiscal; sin perfil, 200 con los campos a `null` y `complete: false` (nunca 404) |
 | `PUT /api/v1/me/billing/profile` | `{legal_name, tax_id, address, invoice_email}` | 200 con el perfil guardado, o 422 con `code` |
 | `POST /api/v1/me/billing/seats` | `{"plan": "pro" o "pro_whatsapp", "location_id": "loc_…"}` | 202 `{request_id}`. Al pagarse, la ficha se activa sola en ese plan |
@@ -1654,15 +1655,34 @@ El PDF se descarga con `Content-Disposition: attachment; filename="<numero>.pdf"
 }
 ```
 
-- `address`: `{line1, line2?, postal_code, city, province?, country}`, con `country` en ISO 3166-1 alfa-2 (`ES`, `FR`…).
-- La respuesta trae además `tax_treatment` (`iva_21`; `no_sujeto` en Canarias, Ceuta y Melilla; `isp_ue` en otro país de la UE) y `complete`. `tax_id` vuelve normalizado: mayúsculas, sin espacios ni guiones.
-- El 422 lleva `code` y un `detail` listo para mostrar:
+- `address`: `{line1, line2?, postal_code?, city, province?, country}`, con `country` en ISO 3166-1 alfa-2 (`ES`, `FR`, `US`…). `postal_code` es obligatorio en España y en la UE; fuera de la UE puede ir vacío, `null` o sin enviar.
+- La respuesta trae además `tax_treatment` (`iva_21`; `no_sujeto` en Canarias, Ceuta y Melilla; `isp_ue` en otro país de la UE o en Mónaco; `extracomunitario` en el resto del mundo) y `complete`. `tax_id` vuelve normalizado: en España y la UE, en mayúsculas y sin espacios ni guiones; fuera de la UE, en mayúsculas y con sus separadores (`12-3456789`). `postal_code` vuelve normalizado (en mayúsculas; en España, solo las 5 cifras) o `null`.
+- El 422 lleva `code` y un `detail` listo para mostrar, con el texto de la región del país (por ejemplo, «Ese NIF no es válido…» en España y «Esa identificación fiscal no es válida…» fuera de la UE):
 
 | `code` | Cuándo |
 |---|---|
-| `tax_id_invalid` | El NIF, NIE, CIF o NIF-IVA no es válido (la letra o el dígito de control) |
-| `postal_code_invalid` | El código postal español no existe |
-| `country_not_supported` | El país no es España ni de la UE |
+| `tax_id_invalid` | España: el NIF, NIE o CIF no es válido (la letra o el dígito de control). UE: el NIF-IVA no tiene el formato de ese país. Fuera de la UE: no tiene de 3 a 32 caracteres, lleva caracteres distintos de letras, números, `-`, `.`, `/` y espacio (se admiten `Ñ` y `&`) o no tiene ninguna cifra |
+| `postal_code_invalid` | España: el código postal no existe (5 cifras). UE: falta. Cualquier país de fuera de España: no tiene de 2 a 12 letras, números, espacios o guiones, o empieza o acaba por espacio o guion |
+| `country_not_supported` | El código no es un país ISO 3166-1, o es uno al que no se factura (Cuba, Irán, Corea del Norte, Siria, Rusia y Bielorrusia) |
+
+#### Fuera de la UE (2026-11-13)
+
+Decisión del propietario: se cobra con tarjeta **en todo el mundo**. Fuera de la UE, **solo empresas**: la identificación fiscal es obligatoria y no se valida por país. La operación no está sujeta al IVA español (cuota 0) y la factura lo dice. El precio es el mismo y en euros; el banco del cliente convierte. El detalle fiscal está en [admin-facturacion.md](admin-facturacion.md), sección 2.1.
+
+Qué cambia en el formulario de datos de facturación:
+
+- **Lista de países:** la de `GET /api/v1/me/billing/countries`, no una propia. Cada país trae su `region`; el nombre lo pone el navegador (`new Intl.DisplayNames(["es"], {type: "region"}).of(code)`), ordenado por ese nombre. Canarias, Ceuta y Melilla son `ES`, como siempre (elige el país España y el código postal hace el resto).
+
+| `region` | Etiqueta del campo `tax_id` | Código postal |
+|---|---|---|
+| `es` | «NIF» (NIF, NIE o CIF) | Obligatorio, 5 cifras |
+| `ue` | «NIF-IVA» (con el prefijo del país, por ejemplo `FR40303265045`; en Mónaco, el francés) | Obligatorio |
+| `fuera_ue` | «Identificación fiscal de tu empresa (Tax ID / EIN / RFC…)» | Opcional: la web no lo marca como obligatorio |
+
+- **Fuera de la UE, solo empresas.** Junto al campo, un texto corto como «Solo facturamos a empresas. Escribe la identificación fiscal de tu empresa tal como aparece en tus documentos». La API no lo puede comprobar: es una declaración del cliente.
+- **Precio:** el mismo «€ + IVA» de siempre. Para un cliente de fuera de la UE el IVA es 0; la web puede decir «sin IVA» cuando `tax_treatment` es `extracomunitario` o `isp_ue`, pero no calcula nada: los importes los da la API.
+- **Errores:** los mismos tres `code` de arriba; el `detail` ya viene con el texto de la región. La web enseña el `detail` junto al campo: `tax_id_invalid` en la identificación fiscal, `postal_code_invalid` en el código postal y `country_not_supported` en el país.
+- **Qué no cambia:** las rutas, los cuerpos (salvo `postal_code` opcional), las peticiones y Checkout. Stripe recibe a ese cliente sin identificación fiscal; la factura de Odoo la lleva.
 
 Un 422 sin `code` (con `detail` en lista) es un cuerpo mal formado: un campo que falta o sobra.
 

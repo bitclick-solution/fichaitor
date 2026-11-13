@@ -67,10 +67,10 @@ class FiscalProfile:
 
     legal_name: str = field(repr=False)
     tax_id: str = field(repr=False)
-    tax_id_type: str  # es_cif or eu_vat
-    tax_id_kind: str  # nif, nie, cif or eu_vat
+    tax_id_type: str | None  # es_cif, eu_vat, or None outside the EU (not sent to Stripe)
+    tax_id_kind: str  # nif, nie, cif, eu_vat or foreign
     address_line1: str = field(repr=False)
-    postal_code: str = field(repr=False)
+    postal_code: str | None = field(repr=False)  # None only outside the EU
     city: str = field(repr=False)
     country: str
     territory: Territory

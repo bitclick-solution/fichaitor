@@ -9,9 +9,10 @@ Idempotent: it looks each thing up first and only creates what is missing.
   amounts are those of `app.domain.plans` (35,00 and 33,25; 59,00 and 56,05). A price of
   the right key with another amount is reported and left alone: Stripe prices do not
   change, and moving a `lookup_key` is a decision of the owner.
-- Three Tax Rates, found by their metadata `fichaitor_tax`: iva_21 (21 %), no_sujeto
-  (0 %, Canarias, Ceuta and Melilla) and isp_ue (0 %, reverse charge in the EU). No
-  Stripe Tax.
+- Four Tax Rates, found by their metadata `fichaitor_tax`: iva_21 (21 %), no_sujeto
+  (0 %, Canarias, Ceuta and Melilla), isp_ue (0 %, reverse charge in the EU) and
+  extracomunitario (0 %, a business outside the EU: not subject by the place of supply).
+  No Stripe Tax. Run again on a catalogue made before, it only adds the missing one.
 
 Test mode only, unless asked otherwise on purpose: a live key (`sk_live_`, `rk_live_`)
 needs `--live` and FICHAITOR_STRIPE_LIVEMODE=true. The key is read from
@@ -47,6 +48,10 @@ TAX_NAMES: Mapping[TaxTreatment, tuple[str, str]] = {
     TaxTreatment.IVA_21: ("IVA", "IVA 21 %"),
     TaxTreatment.NO_SUJETO: ("No sujeto", "Operación no sujeta a IVA (Canarias, Ceuta y Melilla)"),
     TaxTreatment.ISP_UE: ("ISP UE", "Inversión del sujeto pasivo (UE)"),
+    TaxTreatment.EXTRACOMUNITARIO: (
+        "No sujeto (extracomunitario)",
+        "Operación no sujeta al IVA español por reglas de localización (art. 69 Ley 37/1992)",
+    ),
 }
 
 

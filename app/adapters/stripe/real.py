@@ -336,7 +336,7 @@ class StripePayments:
             "address": {
                 "line1": address.line1,
                 "line2": address.line2 or "",
-                "postal_code": address.postal_code,
+                "postal_code": address.postal_code or "",
                 "city": address.city,
                 "state": address.state or "",
                 "country": address.country,
@@ -350,9 +350,11 @@ class StripePayments:
         params = {
             **self._customer_params(details),
             "metadata": {"account_id": account_id},
-            # In the same call: a tax id Stripe refuses leaves no customer behind.
-            "tax_id_data": [{"type": details.tax_id_type, "value": details.tax_id}],
         }
+        if details.tax_id_type is not None:
+            # In the same call: a tax id Stripe refuses leaves no customer behind. Outside
+            # the EU there is none: it stays in our database and in Odoo (section 2.7).
+            params["tax_id_data"] = [{"type": details.tax_id_type, "value": details.tax_id}]
         options = self._options(idempotency_key)
         customer = await self._do(
             "customers.create",
@@ -364,7 +366,7 @@ class StripePayments:
         self, customer_id: str, details: CustomerDetails, *, idempotency_key: str
     ) -> None:
         """The new tax id is added before the old ones go: one Stripe refuses leaves the
-        customer as it was (Conectores ERP)."""
+        customer as it was (Conectores ERP). A customer now outside the EU keeps none."""
         ids = self._client.v1.customers.tax_ids
         current = await self._do(
             "tax_ids.list", lambda: ids.list_async(customer_id, params={"limit": 20})
@@ -377,7 +379,7 @@ class StripePayments:
             ),
             None,
         )
-        if keep is None:
+        if keep is None and details.tax_id_type is not None:
             options = self._options(f"{idempotency_key}:tax_id")
             created = await self._do(
                 "tax_ids.create",

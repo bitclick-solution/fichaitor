@@ -17,9 +17,9 @@ DB = "bitclick_test"
 URL = "https://erp.example.test"
 SALE_JOURNAL = 30
 STRIPE_JOURNAL = 31
-TAXES = {101: 21, 102: 0, 103: 0}  # iva_21, no_sujeto, isp_ue
+TAXES = {101: 21, 102: 0, 103: 0, 104: 0}  # iva_21, no_sujeto, isp_ue, extracomunitario
 PRODUCTS = {201: "Fichaitor Pro", 202: "Fichaitor Pro WhatsApp"}
-COUNTRIES = {"ES": 68, "FR": 75}
+COUNTRIES = {"ES": 68, "FR": 75, "US": 233}
 PDF = b"%PDF-1.7\n% invoice\n%%EOF\n"
 
 
@@ -124,7 +124,7 @@ class FakeOdoo:
         if model == "res.company":
             return {1: {"id": 1, "tax_calculation_rounding_method": self.rounding}}
         if model == "account.fiscal.position":
-            return {401: {"id": 401}, 402: {"id": 402}}
+            return {401: {"id": 401}, 402: {"id": 402}, 403: {"id": 403}}
         raise KeyError(model)
 
     # --- generic ORM ---------------------------------------------------------------

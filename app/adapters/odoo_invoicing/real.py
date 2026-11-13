@@ -436,7 +436,7 @@ class OdooInvoicing:
             "email": customer.email or False,
             "street": customer.line1,
             "street2": customer.line2 or False,
-            "zip": customer.postal_code,
+            "zip": customer.postal_code or False,
             "city": customer.city,
             "country_id": int(country["id"]),
         }
@@ -653,11 +653,13 @@ class OdooInvoicing:
 
 def _vat_variants(customer: InvoiceCustomer) -> list[str]:
     """How Odoo may hold the NIF: as typed and with the country prefix. The last one is
-    the one written."""
-    vat = customer.tax_id.replace(" ", "").upper()
-    if customer.country == "ES" and not vat.startswith("ES"):
-        return [vat, "ES" + vat]
-    return [vat]
+    the one written. Outside Spain it is the one we keep, already normalised (a tax id
+    outside the EU keeps its separators: it is printed as the customer's country writes
+    it)."""
+    if customer.country == "ES":
+        vat = customer.tax_id.replace(" ", "").upper()
+        return [vat] if vat.startswith("ES") else [vat, "ES" + vat]
+    return [customer.tax_id.strip().upper()]
 
 
 def _odoo_error_name(resp: httpx.Response) -> str | None:

@@ -31,7 +31,10 @@ from app.domain import plans
 from app.domain.billing import (
     RENEWAL_NOTICE_DAYS,
     BillingInputError,
+    CountryRegion,
     SeatStatus,
+    countries_for_form,
+    country_region,
     new_seat_prices,
     price_cents,
     seat_price,
@@ -68,8 +71,28 @@ PLAN_NAMES = {Plan.PRO: "Pro", Plan.PRO_WHATSAPP: "Pro+"}
 
 MSG_PROFILE_INVALID = {
     "tax_id_invalid": "Ese NIF no es válido. Revisa las letras y los números.",
-    "country_not_supported": "De momento solo facturamos a empresas de España y de la UE.",
+    "country_not_supported": "No podemos facturar a empresas de ese país.",
     "postal_code_invalid": "Ese código postal no es válido.",
+}
+# The same codes, with the words of each region (GET /me/billing/countries).
+MSG_TAX_ID_INVALID = {
+    CountryRegion.ES: MSG_PROFILE_INVALID["tax_id_invalid"],
+    CountryRegion.UE: (
+        "Ese número de IVA no es válido para ese país. Escríbelo con su prefijo, como "
+        "FR40303265045."
+    ),
+    CountryRegion.FUERA_UE: (
+        "Esa identificación fiscal no es válida. Usa de 3 a 32 letras y números; puedes "
+        "separarlos con guiones, puntos, barras o espacios."
+    ),
+}
+MSG_POSTAL_CODE_INVALID = {
+    CountryRegion.ES: "Ese código postal no es válido. En España tiene 5 cifras.",
+    CountryRegion.UE: "Escribe el código postal de la dirección fiscal.",
+    CountryRegion.FUERA_UE: (
+        "Ese código postal no es válido. Usa letras, números, espacios o guiones, o déjalo "
+        "vacío si tu país no tiene."
+    ),
 }
 MSG_BETA_NO_CHARGE = (
     "Durante la beta no se cobra. Activa la ficha en Pro desde «Tus negocios»: usa una de "
@@ -211,7 +234,9 @@ class AddressIn(BaseModel):
 
     line1: str = Field(min_length=1, max_length=200)
     line2: str | None = Field(default=None, max_length=200)
-    postal_code: str = Field(min_length=1, max_length=20)
+    # Required in Spain and the EU; optional elsewhere (None or ""). Checked by country in
+    # billing.tax_treatment.
+    postal_code: str | None = Field(default=None, max_length=20)
     city: str = Field(min_length=1, max_length=100)
     province: str | None = Field(default=None, max_length=100)
     country: str = Field(pattern=r"^[A-Za-z]{2}$")  # ISO 3166-1 alpha-2
@@ -221,7 +246,9 @@ class ProfileIn(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     legal_name: str = Field(min_length=1, max_length=200)
-    tax_id: str = Field(min_length=4, max_length=30)
+    # NIF, VAT number or the tax id of a business outside the EU: billing.tax_treatment
+    # checks it by country and answers `tax_id_invalid`.
+    tax_id: str = Field(min_length=1, max_length=64)
     address: AddressIn
     invoice_email: str = Field(min_length=3, max_length=254, pattern=r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
 
@@ -240,9 +267,19 @@ class ProfileOut(BaseModel):
     tax_id: str | None = None
     address: AddressOut = AddressOut()
     invoice_email: str | None = None
-    # iva_21, no_sujeto (Canarias, Ceuta, Melilla) or isp_ue; None without a profile.
+    # iva_21, no_sujeto (Canarias, Ceuta, Melilla), isp_ue (EU) or extracomunitario (any
+    # other country); None without a profile.
     tax_treatment: str | None = None
     complete: bool = False
+
+
+class CountryOut(BaseModel):
+    code: str  # ISO 3166-1 alpha-2
+    region: str  # es, ue or fuera_ue
+
+
+class CountriesOut(BaseModel):
+    countries: list[CountryOut]
 
 
 class SeatIn(BaseModel):
@@ -316,6 +353,15 @@ def _profile_out(profile: FiscalProfile | None) -> ProfileOut:
     )
 
 
+def _profile_message(code: str, country: str) -> str:
+    region = country_region(country)
+    if code == "tax_id_invalid" and region is not None:
+        return MSG_TAX_ID_INVALID[region]
+    if code == "postal_code_invalid" and region is not None:
+        return MSG_POSTAL_CODE_INVALID[region]
+    return MSG_PROFILE_INVALID[code]
+
+
 def _error(status: int, code: str, detail: str, **extra) -> JSONResponse:
     return JSONResponse({"detail": detail, "code": code, **extra}, status_code=status)
 
@@ -345,6 +391,14 @@ def build_router(
 
     writes = [Depends(require_csrf_header)]
 
+    @router.get(f"{PREFIX}/countries", response_model=CountriesOut)
+    async def countries(account: Account = Depends(current_account)) -> CountriesOut:  # noqa: B008
+        # Where Fichaitor invoices, and how the form asks for the tax id and the postal
+        # code. The names are the browser's (Intl.DisplayNames), not ours.
+        return CountriesOut(
+            countries=[CountryOut(code=c, region=r.value) for c, r in countries_for_form()]
+        )
+
     @router.get(f"{PREFIX}/profile", response_model=ProfileOut)
     async def get_profile(account: Account = Depends(current_account)) -> ProfileOut:  # noqa: B008
         return _profile_out(await billing.profile(account.id))
@@ -361,7 +415,7 @@ def build_router(
         try:
             tax = tax_treatment(country, address.postal_code, body.tax_id)
         except BillingInputError as exc:
-            return _error(422, exc.code, MSG_PROFILE_INVALID[exc.code])
+            return _error(422, exc.code, _profile_message(exc.code, country))
         profile = FiscalProfile(
             legal_name=_clean(body.legal_name) or body.legal_name,
             tax_id=tax.tax_id,
@@ -369,7 +423,7 @@ def build_router(
             tax_id_kind=tax.tax_id_kind.value,
             address_line1=_clean(address.line1) or address.line1,
             address_line2=_clean(address.line2),
-            postal_code=address.postal_code.strip(),
+            postal_code=tax.postal_code,
             city=_clean(address.city) or address.city,
             province=_clean(address.province),
             country=country,

@@ -410,6 +410,48 @@ def test_writes_send_the_callers_idempotency_key() -> None:
         run(adapter(server).create_customer("acc_1", DETAILS, idempotency_key=""))
 
 
+WORLD_DETAILS = CustomerDetails(
+    legal_name="Taco Loco LLC",
+    tax_id="12-3456789",
+    tax_id_type=None,
+    address=Address("1 Main St", None, "Austin", "US", state="TX"),
+    invoice_email="billing@tacoloco.example",
+)
+
+
+def test_a_customer_outside_the_eu_goes_to_stripe_without_a_tax_id() -> None:
+    # Stripe checks the form of the tax ids it knows, and ours is not checked by country:
+    # it stays in our database and in Odoo (docs/admin-facturacion.md, 2.7).
+    server = FakeStripeServer()
+    run(adapter(server).create_customer("acc_1", WORLD_DETAILS, idempotency_key="acc:w"))
+    form = server.form()
+    assert not any(k.startswith("tax_id_data") for k in form)
+    assert form["address[country]"] == ["US"]
+    assert form.get("address[postal_code]", [""]) == [""]
+
+
+def test_moving_outside_the_eu_drops_the_tax_ids_stripe_had() -> None:
+    old = {"id": "txi_1", "object": "tax_id", "type": "es_cif", "value": "B12345674"}
+    server = FakeStripeServer(
+        {
+            ("GET", "/v1/customers/cus_1/tax_ids"): lambda: httpx.Response(
+                200, json=_list([old], "/v1/customers/cus_1/tax_ids")
+            ),
+            ("DELETE", "/v1/customers/cus_1/tax_ids/txi_1"): lambda: httpx.Response(
+                200, json={"id": "txi_1", "object": "tax_id", "deleted": True}
+            ),
+            ("POST", "/v1/customers/cus_1"): lambda: httpx.Response(
+                200, json={"id": "cus_1", "object": "customer"}
+            ),
+        }
+    )
+    run(adapter(server).update_customer("cus_1", WORLD_DETAILS, idempotency_key="acc:u"))
+    calls = [(r.method, r.url.path) for r in server.requests]
+    assert ("DELETE", "/v1/customers/cus_1/tax_ids/txi_1") in calls
+    assert not any(m == "POST" and p.endswith("/tax_ids") for m, p in calls)
+    assert calls[-1] == ("POST", "/v1/customers/cus_1")
+
+
 def test_a_retry_after_a_5xx_reuses_the_same_key() -> None:
     answers = iter([stripe_error(500, "api_error"), None])
     server = FakeStripeServer()

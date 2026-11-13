@@ -66,7 +66,7 @@ class PaymentDeclined(PaymentsRejected):
 @dataclass(frozen=True)
 class Address:
     line1: str = field(repr=False)
-    postal_code: str = field(repr=False)
+    postal_code: str | None = field(repr=False)  # None: a country without one
     city: str = field(repr=False)
     country: str  # ISO 3166-1 alpha-2
     line2: str | None = field(default=None, repr=False)
@@ -80,7 +80,9 @@ class CustomerDetails:
 
     legal_name: str = field(repr=False)
     tax_id: str = field(repr=False)
-    tax_id_type: str  # `es_cif` or `eu_vat`, from TaxProfile.stripe_tax_id_type
+    # `es_cif` or `eu_vat`, from TaxProfile.stripe_tax_id_type. None outside the EU: the
+    # customer goes to Stripe without a tax id (docs/admin-facturacion.md, 2.7).
+    tax_id_type: str | None
     address: Address
     invoice_email: str = field(repr=False)
 

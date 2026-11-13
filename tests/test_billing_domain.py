@@ -3,7 +3,7 @@ state, blocks, the end of the beta and the DMARC check of a leave by email.
 
 docs/admin-facturacion.md, step 1 of section 7, with the decisions of the owner of
 section 9.0 (card only, the block has no time limit, a seat without a profile is not
-renewed, Spain and the EU from the start).
+renewed, Spain and the EU from the start, and the rest of the world to businesses).
 """
 
 import itertools
@@ -216,8 +216,12 @@ def test_the_rates_notes_and_fiscal_positions_of_each_treatment():
         TaxTreatment.IVA_21: 21,
         TaxTreatment.NO_SUJETO: 0,
         TaxTreatment.ISP_UE: 0,
+        TaxTreatment.EXTRACOMUNITARIO: 0,
     }
     assert billing.INVOICE_NOTE[TaxTreatment.IVA_21] is None
+    assert billing.INVOICE_NOTE[TaxTreatment.EXTRACOMUNITARIO] == (
+        "Operación no sujeta al IVA español por reglas de localización (art. 69 Ley 37/1992)"
+    )
     assert billing.INVOICE_NOTE[TaxTreatment.NO_SUJETO] == (
         "Operación no sujeta a IVA (arts. 3 y 69 de la Ley 37/1992)"
     )
@@ -228,6 +232,7 @@ def test_the_rates_notes_and_fiscal_positions_of_each_treatment():
         Territory.CEUTA: "extracomunitario",
         Territory.MELILLA: "extracomunitario",
         Territory.UE: "intracomunitario",
+        Territory.FUERA_UE: "extracomunitario",
     }
 
 
@@ -240,8 +245,11 @@ def test_eu_customers_are_reverse_charged_with_their_vat_number():
     assert profile.stripe_tax_id_type == "eu_vat"
     # Greece: GR in the address, EL in the VAT number; the prefix may be left out.
     assert billing.tax_treatment("GR", "10558", "123456789").tax_id == "EL123456789"
-    # The postal code abroad is not checked here.
-    assert billing.tax_treatment("DE", "", "DE123456789").treatment is TaxTreatment.ISP_UE
+    # In the EU the postal code is required, of any reasonable form, and kept normalised.
+    assert billing.tax_treatment("IE", " d02 x285 ", "IE6388047V").postal_code == "D02 X285"
+    with pytest.raises(BillingInputError) as error:
+        billing.tax_treatment("DE", "", "DE123456789")
+    assert error.value.code == "postal_code_invalid"
 
 
 def test_a_spanish_customer_needs_a_spanish_tax_id_and_an_eu_one_a_vat_number_of_its_country():
@@ -256,11 +264,88 @@ def test_a_spanish_customer_needs_a_spanish_tax_id_and_an_eu_one_a_vat_number_of
     assert error.value.code == "tax_id_invalid"
 
 
-@pytest.mark.parametrize("country", ["US", "GB", "CH", "NO", "AD", "XI", "", "ESP", None])
-def test_countries_out_of_spain_and_the_eu_are_not_sold_to(country):
+@pytest.mark.parametrize(
+    "country", ["CU", "IR", "KP", "SY", "RU", "BY", "ru", "XI", "IC", "EA", "ZZ", "", "ESP", None]
+)
+def test_sanctioned_and_unknown_countries_are_not_sold_to(country):
     with pytest.raises(BillingInputError) as error:
         billing.tax_treatment(country, "12345", "12345678Z")
     assert error.value.code == "country_not_supported"
+
+
+@pytest.mark.parametrize(
+    ("country", "postal_code", "tax_id", "stored"),
+    [
+        ("US", "78701", "12-3456789", "12-3456789"),  # EIN
+        ("us", " 10001-1234 ", "  12 3456789 ", "12 3456789"),
+        ("MX", "06600", "GHÑ-850101-AB1", "GHÑ-850101-AB1"),  # RFC, with Ñ
+        ("MX", "06600", "ab&850101xyz", "AB&850101XYZ"),
+        ("CH", "8001", "CHE-123.456.789 MWST", "CHE-123.456.789 MWST"),  # UID with VAT
+        ("GB", "sw1a 1aa", "GB123456789", "GB123456789"),
+        ("NO", "0150", "NO 123 456 789 MVA", "NO 123 456 789 MVA"),
+        ("AU", "2000", "51 824 753 556", "51 824 753 556"),  # ABN
+        ("CA", "K1A 0B1", "123456789RT0001", "123456789RT0001"),
+        ("AD", "AD500", "L-123456-Z", "L-123456-Z"),
+        ("UA", "01001", "12345678", "12345678"),
+        ("AE", "", "100123456700003", "100123456700003"),  # no postal codes
+        ("HK", None, "12345678", "12345678"),
+        ("XK", "10000", "810000000", "810000000"),
+        ("GP", "97110", "FR12345678901", "FR12345678901"),  # outside the EU VAT area
+    ],
+)
+def test_businesses_outside_the_eu_are_not_subject_with_any_tax_id(
+    country, postal_code, tax_id, stored
+):
+    profile = billing.tax_treatment(country, postal_code, tax_id)
+    assert profile.territory is Territory.FUERA_UE
+    assert profile.treatment is TaxTreatment.EXTRACOMUNITARIO
+    assert profile.tax_id == stored
+    assert profile.tax_id_kind is TaxIdKind.FOREIGN
+    assert profile.stripe_tax_id_type is None  # kept here and in Odoo, never in Stripe
+    assert billing.TAX_PERCENT[profile.treatment] == 0
+
+
+def test_the_postal_code_outside_the_eu_is_optional_and_loosely_checked():
+    assert billing.tax_treatment("US", "", "12-3456789").postal_code is None
+    assert billing.tax_treatment("US", "   ", "12-3456789").postal_code is None
+    assert billing.tax_treatment("GB", " ec1a  1bb ", "GB123456789").postal_code == "EC1A 1BB"
+    for bad in ["1", "-1234", "1234-", "12_34", "1234567890123", "#1234", "12.345"]:
+        with pytest.raises(BillingInputError) as error:
+            billing.tax_treatment("US", bad, "12-3456789")
+        assert error.value.code == "postal_code_invalid", bad
+
+
+@pytest.mark.parametrize(
+    "tax_id", ["", "  ", "12", "N/A", "NONE", "1" * 33, "12_345", "12#345", "12,345", "ü123", None]
+)
+def test_a_tax_id_outside_the_eu_needs_3_to_32_letters_digits_or_separators(tax_id):
+    with pytest.raises(BillingInputError) as error:
+        billing.tax_treatment("US", "78701", tax_id)
+    assert error.value.code == "tax_id_invalid"
+    assert billing.validate_foreign_tax_id("1" * 32) == "1" * 32
+    assert billing.validate_foreign_tax_id("a1b") == "A1B"
+
+
+def test_monaco_is_in_the_eu_vat_area_as_france():
+    profile = billing.tax_treatment("MC", "98000", "FR40303265045")
+    assert profile.territory is Territory.UE
+    assert profile.treatment is TaxTreatment.ISP_UE
+    assert profile.tax_id == "FR40303265045" and profile.stripe_tax_id_type == "eu_vat"
+    with pytest.raises(BillingInputError):
+        billing.tax_treatment("MC", "98000", "12-3456789")
+
+
+def test_the_country_list_of_the_form():
+    assert len(billing.ISO_COUNTRIES) == 250  # 249 official codes and XK
+    assert all(len(c) == 2 and c.isupper() for c in billing.ISO_COUNTRIES)
+    countries = dict(billing.countries_for_form())
+    assert list(countries) == sorted(countries)
+    assert countries["ES"] is billing.CountryRegion.ES
+    assert countries["FR"] is countries["GR"] is countries["MC"] is billing.CountryRegion.UE
+    assert countries["US"] is countries["GB"] is countries["CH"] is billing.CountryRegion.FUERA_UE
+    assert sum(r is billing.CountryRegion.UE for r in countries.values()) == 27
+    assert not billing.BLOCKED_COUNTRIES & set(countries)
+    assert len(countries) == 250 - len(billing.BLOCKED_COUNTRIES)
 
 
 def test_spanish_vat_number_with_the_es_prefix_is_accepted():
@@ -398,6 +483,33 @@ def test_invoice_lines_of_an_additional_whatsapp_seat_in_the_canaries():
     assert (draft.amount_untaxed, draft.amount_tax, draft.amount_total) == (5605, 0, 5605)
     assert draft.legal_note == "Operación no sujeta a IVA (arts. 3 y 69 de la Ley 37/1992)"
     assert draft.fiscal_position == "canarias"
+
+
+def test_invoice_lines_of_a_business_outside_the_eu():
+    draft = billing.invoice_lines(
+        PriceKey.PRO_FIRST,
+        "Taco Loco",
+        date(2027, 1, 1),
+        date(2028, 1, 1),
+        TaxTreatment.EXTRACOMUNITARIO,
+        Territory.FUERA_UE,
+    )
+    (line,) = draft.lines
+    assert (line.tax_rate, line.tax_percent) == ("extracomunitario", 0)
+    assert (draft.amount_untaxed, draft.amount_tax, draft.amount_total) == (3500, 0, 3500)
+    assert draft.legal_note == (
+        "Operación no sujeta al IVA español por reglas de localización (art. 69 Ley 37/1992)"
+    )
+    assert draft.fiscal_position == "extracomunitario"
+    with pytest.raises(ValueError):
+        billing.invoice_lines(
+            PriceKey.PRO_FIRST,
+            None,
+            date(2027, 1, 1),
+            date(2028, 1, 1),
+            TaxTreatment.NO_SUJETO,
+            Territory.FUERA_UE,
+        )
 
 
 @pytest.mark.parametrize("key", list(PriceKey))

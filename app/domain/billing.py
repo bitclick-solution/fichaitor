@@ -19,6 +19,11 @@ docs/admin-facturacion.md (step 1 of section 7), with the decisions of the owner
 - Sold in Spain (peninsula, Baleares, Canarias, Ceuta and Melilla) and in the EU from
   the start, always B2B with a NIF or an EU VAT number. The VAT number is only checked
   for its form here; VIES is another step.
+- Sold to the whole world (owner, 2026-11-13, decision 9.0, 12): outside the EU only to
+  businesses, with a tax id of their country whose form is not checked (3 to 32 letters,
+  digits and a few separators). Not subject to Spanish VAT (art. 69.Uno.1.º of Ley
+  37/1992). Countries under sanctions or that Stripe Spain does not serve are refused.
+  Always in euros.
 - The beta window (owner, 2026-11-13): the beta is free until `launch_at`. The accounts
   of the beta keep their beta seats for BETA_WINDOW_DAYS more (`beta_ends_at`) to choose
   a plan; a seat one of them buys in that window is first charged when it ends, with no
@@ -180,6 +185,9 @@ class TaxTreatment(StrEnum):
     IVA_21 = "iva_21"
     NO_SUJETO = "no_sujeto"  # Canarias, Ceuta and Melilla
     ISP_UE = "isp_ue"  # a business of another EU country: reverse charge
+    # A business outside the EU: not subject to Spanish VAT because the service is
+    # located where the customer is (art. 69.Uno.1.º of Ley 37/1992).
+    EXTRACOMUNITARIO = "extracomunitario"
 
 
 class Territory(StrEnum):
@@ -188,6 +196,7 @@ class Territory(StrEnum):
     CEUTA = "ceuta"
     MELILLA = "melilla"
     UE = "ue"
+    FUERA_UE = "fuera_ue"  # any other country Fichaitor sells to
 
 
 class TaxIdKind(StrEnum):
@@ -195,12 +204,16 @@ class TaxIdKind(StrEnum):
     NIE = "nie"  # X, Y or Z, 7 digits and a letter
     CIF = "cif"  # an organisation: a letter, 7 digits and a control
     EU_VAT = "eu_vat"
+    # The tax id of a business outside the EU (EIN, RFC, UID, ABN...), as typed and
+    # normalised: its form is not checked by country.
+    FOREIGN = "foreign"
 
 
 TAX_PERCENT: Mapping[TaxTreatment, int] = {
     TaxTreatment.IVA_21: 21,
     TaxTreatment.NO_SUJETO: 0,
     TaxTreatment.ISP_UE: 0,
+    TaxTreatment.EXTRACOMUNITARIO: 0,
 }
 # The legal mention at the foot of the invoice (sections 2.1 and 2.2). (gestoría)
 INVOICE_NOTE: Mapping[TaxTreatment, str | None] = {
@@ -210,14 +223,20 @@ INVOICE_NOTE: Mapping[TaxTreatment, str | None] = {
         "Operación no sujeta a IVA en España (art. 69.Uno.1.º de la Ley 37/1992). "
         "Inversión del sujeto pasivo (art. 196 de la Directiva 2006/112/CE)"
     ),
+    TaxTreatment.EXTRACOMUNITARIO: (
+        "Operación no sujeta al IVA español por reglas de localización (art. 69 Ley 37/1992)"
+    ),
 }
-# The fiscal position in Odoo, by the name the bridge maps to its record.
+# The fiscal position in Odoo, by the name the bridge maps to its record. Outside the EU
+# it is the same «extracomunitario» as Ceuta and Melilla (the «Régimen Extracomunitario»
+# of the Spanish chart); the tax of the line is what tells them apart.
 FISCAL_POSITION: Mapping[Territory, str] = {
     Territory.PENINSULA_BALEARES: "nacional",
     Territory.CANARIAS: "canarias",
     Territory.CEUTA: "extracomunitario",
     Territory.MELILLA: "extracomunitario",
     Territory.UE: "intracomunitario",
+    Territory.FUERA_UE: "extracomunitario",
 }
 _TREATMENT: Mapping[Territory, TaxTreatment] = {
     Territory.PENINSULA_BALEARES: TaxTreatment.IVA_21,
@@ -225,6 +244,7 @@ _TREATMENT: Mapping[Territory, TaxTreatment] = {
     Territory.CEUTA: TaxTreatment.NO_SUJETO,
     Territory.MELILLA: TaxTreatment.NO_SUJETO,
     Territory.UE: TaxTreatment.ISP_UE,
+    Territory.FUERA_UE: TaxTreatment.EXTRACOMUNITARIO,
 }
 # First two digits of a Spanish postal code (the province) outside the 21 %.
 _SPECIAL_PROVINCES = {
@@ -265,6 +285,64 @@ _EU_VAT_FORMATS: Mapping[str, tuple[str, str]] = {
     "SK": ("SK", r"\d{10}"),
 }
 EU_COUNTRIES = frozenset(_EU_VAT_FORMATS)  # without Spain
+# Monaco is not in the EU but is in its VAT territory, as part of France (art. 7.1 of
+# Directive 2006/112/EC): its businesses have a French VAT number (FR...) and are
+# reverse charged like a French one.
+_VAT_AREA_ALIASES: Mapping[str, str] = {"MC": "FR"}
+EU_VAT_COUNTRIES = EU_COUNTRIES | frozenset(_VAT_AREA_ALIASES)
+
+# Every officially assigned ISO 3166-1 alpha-2 code (249), plus XK (Kosovo: user
+# assigned, but the one Stripe, the EU and Odoo use). Canarias (IC), Ceuta and Melilla
+# (EA) are not here on purpose: they are ES with their postal code, as always.
+ISO_COUNTRIES = frozenset(
+    """
+    AD AE AF AG AI AL AM AO AQ AR AS AT AU AW AX AZ BA BB BD BE BF BG BH BI BJ BL BM BN
+    BO BQ BR BS BT BV BW BY BZ CA CC CD CF CG CH CI CK CL CM CN CO CR CU CV CW CX CY CZ
+    DE DJ DK DM DO DZ EC EE EG EH ER ES ET FI FJ FK FM FO FR GA GB GD GE GF GG GH GI GL
+    GM GN GP GQ GR GS GT GU GW GY HK HM HN HR HT HU ID IE IL IM IN IO IQ IR IS IT JE JM
+    JO JP KE KG KH KI KM KN KP KR KW KY KZ LA LB LC LI LK LR LS LT LU LV LY MA MC MD ME
+    MF MG MH MK ML MM MN MO MP MQ MR MS MT MU MV MW MX MY MZ NA NC NE NF NG NI NL NO NP
+    NR NU NZ OM PA PE PF PG PH PK PL PM PN PR PS PT PW PY QA RE RO RS RU RW SA SB SC SD
+    SE SG SH SI SJ SK SL SM SN SO SR SS ST SV SX SY SZ TC TD TF TG TH TJ TK TL TM TN TO
+    TR TT TV TW TZ UA UG UM US UY UZ VA VC VE VG VI VN VU WF WS XK YE YT ZA ZM ZW
+    """.split()
+)
+# Not sold to: countries under comprehensive sanctions of the EU, Spain or the United
+# States that Stripe does not serve (Cuba, Iran, North Korea, Syria) and those under EU
+# sanctions that forbid selling business software to them (Russia, Belarus). The
+# occupied regions of Ukraine (Crimea, Sevastopol, Donetsk, Luhansk, Zaporizhzhia and
+# Kherson) have no ISO code of their own: they are UA, so an address there cannot be
+# told apart here. Stripe screens the card and the payment (docs/admin-facturacion.md,
+# 2.1).
+BLOCKED_COUNTRIES = frozenset({"BY", "CU", "IR", "KP", "RU", "SY"})
+# Outside the EU VAT area and not refused: not subject to Spanish VAT.
+WORLD_COUNTRIES = ISO_COUNTRIES - BLOCKED_COUNTRIES - EU_VAT_COUNTRIES - {"ES"}
+
+
+class CountryRegion(StrEnum):
+    """How the form and the tax treat a country (GET /me/billing/countries)."""
+
+    ES = "es"  # NIF, NIE or CIF; postal code of 5 digits, required
+    UE = "ue"  # VAT number of that country; postal code required
+    FUERA_UE = "fuera_ue"  # tax id of the business; postal code optional
+
+
+def country_region(country: object) -> CountryRegion | None:
+    """The region of an ISO code, or None if it is not sold to (unknown or refused)."""
+    code = country.strip().upper() if isinstance(country, str) else ""
+    if code == "ES":
+        return CountryRegion.ES
+    if code in EU_VAT_COUNTRIES:
+        return CountryRegion.UE
+    if code in WORLD_COUNTRIES:
+        return CountryRegion.FUERA_UE
+    return None
+
+
+def countries_for_form() -> list[tuple[str, CountryRegion]]:
+    """Every country sold to, by its code, with its region."""
+    return [(code, region) for code in sorted(ISO_COUNTRIES) if (region := country_region(code))]
+
 
 _DNI_LETTERS = "TRWAGMYFPDXBNJZSQVHLCKE"
 _CIF_LETTERS = "JABCDEFGHI"
@@ -296,7 +374,10 @@ class TaxProfile:
     treatment: TaxTreatment
     tax_id: str
     tax_id_kind: TaxIdKind
-    stripe_tax_id_type: str  # `es_cif` (Stripe's type for every Spanish NIF) or `eu_vat`
+    # `es_cif` (Stripe's type for every Spanish NIF), `eu_vat`, or None outside the EU:
+    # that tax id is kept here and in Odoo only (section 2.7).
+    stripe_tax_id_type: str | None
+    postal_code: str | None = None  # normalised; None only outside the EU
 
 
 def _clean(value: object) -> str | None:
@@ -348,12 +429,15 @@ def validate_eu_vat_id(country: object, value: object) -> str | None:
     """The VAT number of a business of another member state, normalised with its prefix
     (`FR40303265045`, `EL123456789`), or None. Its form only: whether it exists and is
     active is asked to VIES elsewhere, before charging (decision 9.0, 9)."""
-    if not isinstance(country, str) or country.upper() not in _EU_VAT_FORMATS:
+    if not isinstance(country, str):
+        return None
+    code = _VAT_AREA_ALIASES.get(country.upper(), country.upper())
+    if code not in _EU_VAT_FORMATS:
         return None
     text = _clean(value)
     if not text:
         return None
-    prefix, pattern = _EU_VAT_FORMATS[country.upper()]
+    prefix, pattern = _EU_VAT_FORMATS[code]
     if text.startswith(prefix):
         body = text[2:]
     elif text[:2].isalpha():
@@ -363,34 +447,92 @@ def validate_eu_vat_id(country: object, value: object) -> str | None:
     return prefix + body if re.fullmatch(pattern, body) else None
 
 
-def _spanish_territory(postal_code: object) -> Territory:
+FOREIGN_TAX_ID_MIN = 3
+FOREIGN_TAX_ID_MAX = 32
+# Letters, digits, "-", ".", "/" and a single space; Ñ and & as well, which the Mexican
+# RFC may carry. At least one digit: every tax id has some, and "N/A" is not one.
+_FOREIGN_TAX_ID = re.compile(r"[A-Z0-9Ñ&./ -]+")
+# A postal code abroad: letters, digits, spaces and dashes, 2 to 12, starting and
+# ending with a letter or a digit ("SW1A 1AA", "10001-1234", "KY1-1104").
+_POSTAL_ABROAD = re.compile(r"[A-Z0-9][A-Z0-9 -]{0,10}[A-Z0-9]")
+
+
+def validate_foreign_tax_id(value: object) -> str | None:
+    """The tax id of a business outside the EU, normalised (upper case, spaces folded,
+    separators kept as typed: `12-3456789`, `CHE-123.456.789 MWST`), or None. Only its
+    characters and its length: no format by country, and nothing asked to any registry."""
+    if not isinstance(value, str):
+        return None
+    text = " ".join(value.split()).upper()
+    if not FOREIGN_TAX_ID_MIN <= len(text) <= FOREIGN_TAX_ID_MAX:
+        return None
+    if not _FOREIGN_TAX_ID.fullmatch(text) or not any(c.isdigit() for c in text):
+        return None
+    return text
+
+
+def _spanish_postal_code(postal_code: object) -> tuple[str, Territory]:
     code = _clean(postal_code) or ""
     if not re.fullmatch(r"\d{5}", code) or not 1 <= int(code[:2]) <= 52:
         raise BillingInputError("postal_code_invalid")
-    return _SPECIAL_PROVINCES.get(code[:2], Territory.PENINSULA_BALEARES)
+    return code, _SPECIAL_PROVINCES.get(code[:2], Territory.PENINSULA_BALEARES)
+
+
+def _postal_code_abroad(postal_code: object, *, required: bool) -> str | None:
+    """A postal code of another country, normalised, or None if it may be left out."""
+    text = " ".join(postal_code.split()).upper() if isinstance(postal_code, str) else ""
+    if not text:
+        if required:
+            raise BillingInputError("postal_code_invalid")
+        return None
+    if not _POSTAL_ABROAD.fullmatch(text):
+        raise BillingInputError("postal_code_invalid")
+    return text
 
 
 def tax_treatment(country: object, postal_code: object, tax_id: object) -> TaxProfile:
     """The tax of a customer from the country and postal code of its address and its tax
-    id (section 2.1 and decision 9.0, 9). Raises BillingInputError with the code of the
-    API: `country_not_supported`, `postal_code_invalid` or `tax_id_invalid`.
+    id (section 2.1 and decisions 9.0, 9 and 12). Raises BillingInputError with the code
+    of the API: `country_not_supported`, `postal_code_invalid` or `tax_id_invalid`.
 
     - Spain, postal code 35 or 38 (Canarias), 51 (Ceuta) or 52 (Melilla): not subject to
       Spanish VAT. Any other Spanish province: 21 %. Always with a NIF, NIE or CIF.
-    - Another member state: reverse charge, with a VAT number of that country.
+    - Another member state (or Monaco): reverse charge, with a VAT number of that
+      country. Postal code required, of any form.
+    - Any other country but those refused: not subject to Spanish VAT by the place of
+      supply, only to a business with its tax id. Postal code optional.
     """
+    region = country_region(country)
     code = country.strip().upper() if isinstance(country, str) else ""
-    if code == "ES":
-        territory = _spanish_territory(postal_code)
+    if region is CountryRegion.ES:
+        postal, territory = _spanish_postal_code(postal_code)
         spanish = validate_spanish_tax_id(tax_id)
         if spanish is None:
             raise BillingInputError("tax_id_invalid")
-        return TaxProfile(territory, _TREATMENT[territory], spanish.value, spanish.kind, "es_cif")
-    if code in EU_COUNTRIES:
+        return TaxProfile(
+            territory, _TREATMENT[territory], spanish.value, spanish.kind, "es_cif", postal
+        )
+    if region is CountryRegion.UE:
+        postal = _postal_code_abroad(postal_code, required=True)
         vat = validate_eu_vat_id(code, tax_id)
         if vat is None:
             raise BillingInputError("tax_id_invalid")
-        return TaxProfile(Territory.UE, TaxTreatment.ISP_UE, vat, TaxIdKind.EU_VAT, "eu_vat")
+        return TaxProfile(
+            Territory.UE, TaxTreatment.ISP_UE, vat, TaxIdKind.EU_VAT, "eu_vat", postal
+        )
+    if region is CountryRegion.FUERA_UE:
+        postal = _postal_code_abroad(postal_code, required=False)
+        foreign = validate_foreign_tax_id(tax_id)
+        if foreign is None:
+            raise BillingInputError("tax_id_invalid")
+        return TaxProfile(
+            Territory.FUERA_UE,
+            TaxTreatment.EXTRACOMUNITARIO,
+            foreign,
+            TaxIdKind.FOREIGN,
+            None,
+            postal,
+        )
     raise BillingInputError("country_not_supported")
 
 

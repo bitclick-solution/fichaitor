@@ -49,7 +49,7 @@ class Catalog:
         return created
 
 
-def test_it_creates_the_four_yearly_prices_and_three_tax_rates_once():
+def test_it_creates_the_four_yearly_prices_and_four_tax_rates_once():
     catalog = Catalog()
     steps = bootstrap_module.bootstrap(catalog)
     assert [s.kind for s in steps].count("product") == 2
@@ -65,11 +65,11 @@ def test_it_creates_the_four_yearly_prices_and_three_tax_rates_once():
         assert price["tax_behavior"] == "exclusive"
         assert price["product"].startswith("prod_")
     rates = {r["metadata"][TAX_RATE_METADATA]: r["percentage"] for r in catalog.rates}
-    assert rates == {"iva_21": 21, "no_sujeto": 0, "isp_ue": 0}
+    assert rates == {"iva_21": 21, "no_sujeto": 0, "isp_ue": 0, "extracomunitario": 0}
     assert all(not r["inclusive"] for r in catalog.rates)
     # Idempotent: a second run creates nothing.
     assert bootstrap_module.bootstrap(catalog) == []
-    assert len(catalog.keys) == len(set(catalog.keys)) == 9
+    assert len(catalog.keys) == len(set(catalog.keys)) == 10
 
 
 def test_a_price_with_another_amount_is_reported_not_changed():
@@ -83,7 +83,19 @@ def test_a_price_with_another_amount_is_reported_not_changed():
 def test_the_dry_run_creates_nothing():
     catalog = Catalog()
     steps = bootstrap_module.bootstrap(catalog, dry_run=True)
-    assert len(steps) == 9 and catalog.keys == []
+    assert len(steps) == 10 and catalog.keys == []
+
+
+def test_a_catalogue_made_before_only_gets_the_rate_outside_the_eu():
+    catalog = Catalog()
+    bootstrap_module.bootstrap(catalog)
+    catalog.rates = [
+        r for r in catalog.rates if r["metadata"][TAX_RATE_METADATA] != "extracomunitario"
+    ]
+    steps = bootstrap_module.bootstrap(catalog)
+    assert [(s.kind, s.key) for s in steps] == [("tax_rate", "extracomunitario")]
+    assert steps[0].params["display_name"] == "No sujeto (extracomunitario)"
+    assert steps[0].params["percentage"] == 0
 
 
 @pytest.mark.parametrize(

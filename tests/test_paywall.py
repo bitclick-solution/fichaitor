@@ -196,7 +196,10 @@ def test_the_profile_is_empty_until_saved_and_then_has_the_tax_of_its_address():
     [
         ({"tax_id": "B12345675"}, "tax_id_invalid"),
         ({"address": {**PROFILE["address"], "postal_code": "99999"}}, "postal_code_invalid"),
-        ({"address": {**PROFILE["address"], "country": "US"}}, "country_not_supported"),
+        ({"address": {**PROFILE["address"], "country": "RU"}}, "country_not_supported"),
+        ({"address": {**PROFILE["address"], "country": "ZZ"}}, "country_not_supported"),
+        ({"address": {**PROFILE["address"], "postal_code": None}}, "postal_code_invalid"),
+        ({"tax_id": "1"}, "tax_id_invalid"),
     ],
 )
 def test_a_profile_that_cannot_be_invoiced_is_a_422_with_its_code(change, code):
@@ -223,6 +226,65 @@ def test_canarias_is_not_subject_and_the_eu_is_reverse_charge():
         client.put(f"{BILLING}/profile", json=france, headers=HEADER).json()["tax_treatment"]
         == "isp_ue"
     )
+
+
+WORLD = {
+    "legal_name": "Taco Loco LLC",
+    "tax_id": "12-3456789",
+    "address": {"line1": "1 Main St", "city": "Austin", "province": "TX", "country": "us"},
+    "invoice_email": "billing@tacoloco.example",
+}
+
+
+def test_a_business_outside_the_eu_is_not_subject_and_may_leave_out_the_postal_code():
+    world = World()
+    client = world.owner()
+    r = client.put(f"{BILLING}/profile", json=WORLD, headers=HEADER)
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["tax_treatment"] == "extracomunitario" and body["complete"] is True
+    assert body["tax_id"] == "12-3456789"
+    assert body["address"]["postal_code"] is None and body["address"]["country"] == "US"
+    with_zip = {**WORLD, "address": {**WORLD["address"], "postal_code": " 78701-1234 "}}
+    r = client.put(f"{BILLING}/profile", json=with_zip, headers=HEADER)
+    assert r.json()["address"]["postal_code"] == "78701-1234"
+
+
+def test_the_error_of_each_region_speaks_of_its_own_tax_id():
+    client = World().owner()
+    spain = client.put(f"{BILLING}/profile", json={**PROFILE, "tax_id": "B1"}, headers=HEADER)
+    world = client.put(f"{BILLING}/profile", json={**WORLD, "tax_id": "N/A"}, headers=HEADER)
+    zipcode = {**WORLD, "address": {**WORLD["address"], "postal_code": "#1"}}
+    bad_zip = client.put(f"{BILLING}/profile", json=zipcode, headers=HEADER)
+    assert spain.json()["code"] == world.json()["code"] == "tax_id_invalid"
+    assert "NIF" in spain.json()["detail"]
+    assert "identificación fiscal" in world.json()["detail"]
+    assert bad_zip.status_code == 422 and bad_zip.json()["code"] == "postal_code_invalid"
+    assert "vacío" in bad_zip.json()["detail"]
+
+
+def test_a_business_outside_the_eu_pays_without_vat_and_stripe_gets_no_tax_id():
+    world = World()
+    client = world.owner()
+    assert client.put(f"{BILLING}/profile", json=WORLD, headers=HEADER).status_code == 200
+    bar, _ = world.ids(client)
+    world.buy(client, bar)
+    (checkout,) = world.payments.checkouts.values()
+    assert checkout["treatment"] is TaxTreatment.EXTRACOMUNITARIO
+    (customer,) = world.payments.customers.values()
+    assert customer.tax_id_type is None and customer.address.postal_code is None
+    assert by_id(client.get(ME).json())[bar]["active"] is True
+
+
+def test_the_countries_of_the_form():
+    world = World()
+    client = world.owner()
+    r = client.get(f"{BILLING}/countries")
+    assert r.status_code == 200
+    regions = {c["code"]: c["region"] for c in r.json()["countries"]}
+    assert regions["ES"] == "es" and regions["FR"] == "ue" and regions["US"] == "fuera_ue"
+    assert "RU" not in regions and "CU" not in regions
+    assert TestClient(world.app).get(f"{BILLING}/countries").status_code == 401
 
 
 def test_writes_need_the_header_and_a_session():

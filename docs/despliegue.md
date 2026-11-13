@@ -615,7 +615,7 @@ El cobro tiene dos procesos propios (`docs/admin-facturacion.md`, 4.1): `fichait
    | `FICHAITOR_STRIPE_LIVEMODE` | `false` con una clave de prueba; `true` solo con una `rk_live_…`. `deploy.sh` rechaza las combinaciones cruzadas |
    | `FICHAITOR_ODOO_URL`, `FICHAITOR_ODOO_DB` y `FICHAITOR_ODOO_API_KEY` | El Odoo de Bitclick, su base y la clave de API del usuario «Fichaitor facturación» |
    | `FICHAITOR_ODOO_JOURNAL_ID` y `FICHAITOR_ODOO_PAYMENT_JOURNAL_ID` | Los id del diario de ventas «Fichaitor» (FTR, con secuencia propia RFTR) y del diario de banco «Stripe» |
-   | `FICHAITOR_ODOO_TAX_IVA_21`, `…_NO_SUJETO` y `…_ISP_UE` | Los id de los impuestos de venta del 21 %, no sujeto e inversión del sujeto pasivo |
+   | `FICHAITOR_ODOO_TAX_IVA_21`, `…_NO_SUJETO`, `…_ISP_UE` y `…_EXTRACOMUNITARIO` | Los id de los impuestos de venta del 21 %, no sujeto, inversión del sujeto pasivo y no sujeto por reglas de localización (clientes de fuera de la UE) |
    | `FICHAITOR_ODOO_PRODUCT_PRO` y `…_PRO_WHATSAPP` | Los id de los productos de cada plan |
 
    `FICHAITOR_BILLING_DATABASE_URL` la escribe `init-roles.sh`: déjala vacía. Sin `FICHAITOR_ODOO_URL`, el cobro funciona, pero ninguna factura sale: quedan pendientes y el registro avisa con `invoice_overdue`.

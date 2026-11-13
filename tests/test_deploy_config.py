@@ -413,6 +413,7 @@ def test_a_complete_odoo_in_billing_env_passes(tmp_path):
             "FICHAITOR_ODOO_TAX_IVA_21",
             "FICHAITOR_ODOO_TAX_NO_SUJETO",
             "FICHAITOR_ODOO_TAX_ISP_UE",
+            "FICHAITOR_ODOO_TAX_EXTRACOMUNITARIO",
             "FICHAITOR_ODOO_PRODUCT_PRO",
             "FICHAITOR_ODOO_PRODUCT_PRO_WHATSAPP",
         )

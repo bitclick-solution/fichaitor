@@ -42,9 +42,14 @@ def settings(**changes: object) -> OdooSettings:
         "api_key": odoo.API_KEY,
         "sale_journal_id": odoo.SALE_JOURNAL,
         "payment_journal_id": odoo.STRIPE_JOURNAL,
-        "taxes": {TaxTreatment.IVA_21: 101, TaxTreatment.NO_SUJETO: 102, TaxTreatment.ISP_UE: 103},
+        "taxes": {
+            TaxTreatment.IVA_21: 101,
+            TaxTreatment.NO_SUJETO: 102,
+            TaxTreatment.ISP_UE: 103,
+            TaxTreatment.EXTRACOMUNITARIO: 104,
+        },
         "products": {Plan.PRO: 201, Plan.PRO_WHATSAPP: 202},
-        "fiscal_positions": {"nacional": 401, "canarias": 402},
+        "fiscal_positions": {"nacional": 401, "canarias": 402, "extracomunitario": 403},
     }
     values.update(changes)
     return OdooSettings(**values)  # type: ignore[arg-type]
@@ -154,6 +159,35 @@ def test_canarias_has_no_vat(make) -> None:  # type: ignore[no-untyped-def]
         port.issue_invoice(request(treatment=TaxTreatment.NO_SUJETO, territory=Territory.CANARIAS))
     )
     assert (doc.amount_tax, doc.amount_total) == (0, 3500) and doc.total_ok
+
+
+@BOTH
+def test_a_business_outside_the_eu_has_no_vat(make) -> None:  # type: ignore[no-untyped-def]
+    port, _ = make()
+    doc = run(
+        port.issue_invoice(
+            request(treatment=TaxTreatment.EXTRACOMUNITARIO, territory=Territory.FUERA_UE)
+        )
+    )
+    assert (doc.amount_tax, doc.amount_total) == (0, 3500) and doc.total_ok
+
+
+def test_what_goes_to_odoo_for_a_business_outside_the_eu() -> None:
+    server = odoo.FakeOdoo()
+    world = InvoiceCustomer(
+        "cus_W1", "Taco Loco LLC", "12-3456789", "US", None, "Austin", "1 Main St"
+    )
+    req = request(treatment=TaxTreatment.EXTRACOMUNITARIO, territory=Territory.FUERA_UE)
+    run(real(server).issue_invoice(replace(req, customer=world)))
+    move = server.moves("out_invoice")[0]
+    assert move["fiscal_position_id"] == 403
+    assert "reglas de localización (art. 69 Ley 37/1992)" in move["narration"]
+    (line,) = server.tables["account.move.line"].values()
+    assert line["tax_ids"] == [104]
+    partner = next(iter(server.tables["res.partner"].values()))
+    # The tax id as the customer's country writes it; no postal code is no zip.
+    assert partner["vat"] == "12-3456789" and partner["zip"] is False
+    assert partner["country_id"] == odoo.COUNTRIES["US"]
 
 
 @BOTH
@@ -362,7 +396,12 @@ def test_setup_problems_finds_a_wrong_setup() -> None:
     server.rounding = "round_globally"
     port = real(
         server,
-        taxes={TaxTreatment.IVA_21: 102, TaxTreatment.NO_SUJETO: 102, TaxTreatment.ISP_UE: 999},
+        taxes={
+            TaxTreatment.IVA_21: 102,
+            TaxTreatment.NO_SUJETO: 102,
+            TaxTreatment.ISP_UE: 999,
+            TaxTreatment.EXTRACOMUNITARIO: 104,
+        },
         payment_journal_id=odoo.SALE_JOURNAL,
         products={Plan.PRO: 201, Plan.PRO_WHATSAPP: 299},
     )
@@ -392,6 +431,7 @@ def test_settings_from_env() -> None:
         "FICHAITOR_ODOO_TAX_IVA_21": "101",
         "FICHAITOR_ODOO_TAX_NO_SUJETO": "102",
         "FICHAITOR_ODOO_TAX_ISP_UE": "103",
+        "FICHAITOR_ODOO_TAX_EXTRACOMUNITARIO": "104",
         "FICHAITOR_ODOO_PRODUCT_PRO": "201",
         "FICHAITOR_ODOO_PRODUCT_PRO_WHATSAPP": "202",
         "FICHAITOR_ODOO_FPOS_CANARIAS": "402",
@@ -399,6 +439,10 @@ def test_settings_from_env() -> None:
     parsed = OdooSettings.from_env(env)
     assert parsed.url == "https://erp.example.test" and parsed.fiscal_positions == {"canarias": 402}
     assert "k" * 40 not in repr(parsed)
+    assert parsed.taxes[TaxTreatment.EXTRACOMUNITARIO] == 104
+    missing = {k: v for k, v in env.items() if k != "FICHAITOR_ODOO_TAX_EXTRACOMUNITARIO"}
+    with pytest.raises(ValueError, match="FICHAITOR_ODOO_TAX_EXTRACOMUNITARIO"):
+        OdooSettings.from_env(missing)
     with pytest.raises(ValueError, match="FICHAITOR_ODOO_TAX_ISP_UE") as caught:
         OdooSettings.from_env({**env, "FICHAITOR_ODOO_TAX_ISP_UE": "abc"})
     assert "abc" not in str(caught.value)

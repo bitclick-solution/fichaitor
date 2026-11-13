@@ -537,3 +537,73 @@ def test_in_the_beta_no_plan_is_pro_and_a_free_profile_moves_to_pro_with_the_bet
         return beta, free, upgraded, charging
 
     assert run(go()) == (Plan.PRO, Plan.GRATIS, Plan.PRO, Plan.GRATIS)
+
+
+# --- customers outside the EU (decision 9.0, 12) -------------------------------------
+
+WORLD_PROFILE = replace(
+    PROFILE,
+    legal_name="Taco Loco LLC",
+    tax_id="12-3456789",
+    tax_id_type=None,
+    tax_id_kind="foreign",
+    postal_code=None,
+    city="Austin",
+    province="TX",
+    country="US",
+    territory=Territory.FUERA_UE,
+    tax_treatment=TaxTreatment.EXTRACOMUNITARIO,
+)
+
+
+def test_a_business_outside_the_eu_is_kept_without_a_stripe_tax_id_nor_postal_code():
+    async def go():
+        account, _ = await account_with()
+        async with Stage() as s:
+            await s.billing.save_profile(account, WORLD_PROFILE)
+            saved = await s.billing.profile(account)
+            # Back to Spain: the same row takes a NIF and a postal code again.
+            await s.billing.save_profile(account, PROFILE)
+            back = await s.billing.profile(account)
+        return saved, back
+
+    saved, back = run(go())
+    assert saved == WORLD_PROFILE
+    assert back == PROFILE
+
+
+def test_the_schema_keeps_the_four_fields_of_a_customer_outside_the_eu_together():
+    async def go():
+        account, _ = await account_with()
+        insert = (
+            "INSERT INTO billing_customer (account_id, legal_name, tax_id_type, tax_id_kind,"
+            " tax_id, address_line1, postal_code, city, country, territory, tax_treatment,"
+            " invoice_email) VALUES ($1::uuid, 'X', $2, $3, $4, 'C/ 1', $5, 'Y', 'US', $6, $7,"
+            " 'a@b.c')"
+        )
+        cases = {
+            "ok": (None, "foreign", "CHE-123.456.789 MWST", None, "fuera_ue", "extracomunitario"),
+            "stripe_type": (
+                "eu_vat",
+                "foreign",
+                "12-3456789",
+                None,
+                "fuera_ue",
+                "extracomunitario",
+            ),
+            "kind": (None, "eu_vat", "123456789", None, "fuera_ue", "extracomunitario"),
+            "treatment": (None, "foreign", "12-3456789", None, "fuera_ue", "isp_ue"),
+            "no_digit": (None, "foreign", "N/A", None, "fuera_ue", "extracomunitario"),
+            "lower": (None, "foreign", "ab-123", None, "fuera_ue", "extracomunitario"),
+            "too_long": (None, "foreign", "1" * 33, None, "fuera_ue", "extracomunitario"),
+            "eu_no_postal": ("eu_vat", "eu_vat", "FR40303265045", None, "ue", "isp_ue"),
+            "eu_no_type": (None, "eu_vat", "FR40303265045", "75001", "ue", "isp_ue"),
+        }
+        return {
+            name: await attempt(OWNER_URL, insert, account, *values)
+            for name, values in cases.items()
+        }
+
+    results = run(go())
+    assert results.pop("ok") == "ok"
+    assert results == dict.fromkeys(results, "CheckViolationError")

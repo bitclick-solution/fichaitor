@@ -29,7 +29,7 @@ from app.ports.payments import (
 )
 
 CardOutcome = Literal["ok", "declined", "3ds"]
-TAX_ID_TYPES = ("es_cif", "eu_vat")
+TAX_ID_TYPES = ("es_cif", "eu_vat", None)  # None: a customer outside the EU, without one
 
 
 def _next_year(day: datetime) -> datetime:

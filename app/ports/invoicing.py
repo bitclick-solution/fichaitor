@@ -61,7 +61,7 @@ class InvoiceCustomer:
     legal_name: str = field(repr=False)
     tax_id: str = field(repr=False)  # as TaxProfile.tax_id: no ES prefix for Spain
     country: str  # ISO 3166-1 alpha-2
-    postal_code: str = field(repr=False)
+    postal_code: str | None = field(repr=False)  # None only outside the EU
     city: str = field(repr=False)
     line1: str = field(repr=False)
     line2: str | None = field(default=None, repr=False)
