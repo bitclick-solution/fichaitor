@@ -103,10 +103,11 @@ export interface Plaza {
   plan: PlanPago;
   location_id: string | null;
   status: string;
-  renews_at: string;
+  /** Fecha de renovación (o de fin); puede faltar. */
+  renews_at: string | null;
   cancel_at_period_end: boolean;
-  /** Precio de la siguiente renovación, en céntimos y sin IVA. */
-  next_price: number;
+  /** Precio de la siguiente renovación, en céntimos y sin IVA. null en una plaza sin ficha: no se renueva. */
+  next_price: number | null;
   payment_method: string;
   collection: string;
 }
@@ -134,6 +135,16 @@ export interface PerfilFiscal {
   tax_id: string | null;
   address: Direccion | null;
   invoice_email: string | null;
+}
+
+/** Factura o rectificativa de Odoo (GET /me/billing/invoices). */
+export interface Factura {
+  id: string;
+  kind: "factura" | "rectificativa";
+  number: string;
+  /** Total con IVA, en céntimos (negativo en una rectificativa). */
+  amount_total: number;
+  issued_at: string;
 }
 
 /** Petición al proceso de cobro (plaza nueva, portal, pago…). Con `url`, se abre Stripe. */
@@ -296,6 +307,9 @@ export class ApiError extends Error {
 
 export const GENERICO = "Algo ha fallado. Prueba de nuevo en un minuto.";
 
+/** Se emite cuando una ruta responde 402 `account_blocked`. */
+export const EVENTO_BLOQUEO = "fichaitor:cuenta-bloqueada";
+
 
 async function pedir<T>(method: "GET" | "POST" | "PUT" | "DELETE", path: string, body?: unknown): Promise<T> {
   const headers: Record<string, string> = {};
@@ -338,6 +352,8 @@ async function pedir<T>(method: "GET" | "POST" | "PUT" | "DELETE", path: string,
   } catch {
     /* sin cuerpo */
   }
+  // Cuenta bloqueada a mitad de sesión: App vuelve a leer la cuenta y enseña la pantalla de pausa.
+  if (r.status === 402 && codigo === "account_blocked") dispatchEvent(new Event(EVENTO_BLOQUEO));
   throw new ApiError(r.status, detalle, estado, codigo, funcion, peticion);
 }
 
@@ -412,6 +428,15 @@ export const api = {
   /** Plaza nueva para una ficha. Al cobrarse, el backend activa la ficha en ella. */
   pedirPlaza: (plan: PlanPago, ficha: string) => pedir<{ request_id: string }>("POST", "/api/v1/me/billing/seats", { plan, location_id: ficha }),
   peticionCobro: (id: string) => pedir<PeticionCobro>("GET", `/api/v1/me/billing/requests/${encodeURIComponent(id)}`),
+  cancelarPlaza: (id: string) => pedir<{ request_id: string }>("POST", `/api/v1/me/billing/seats/${encodeURIComponent(id)}/cancel`),
+  reanudarPlaza: (id: string) => pedir<{ request_id: string }>("POST", `/api/v1/me/billing/seats/${encodeURIComponent(id)}/resume`),
+  /** La factura pendiente, alojada en Stripe, para salir del bloqueo. */
+  pagarPendiente: () => pedir<{ request_id: string }>("POST", "/api/v1/me/billing/pay"),
+  /** El portal de Stripe, para cambiar la tarjeta. */
+  portalCobro: () => pedir<{ request_id: string }>("POST", "/api/v1/me/billing/portal"),
+  facturas: async () => (await pedir<{ invoices: Factura[] }>("GET", "/api/v1/me/billing/invoices")).invoices ?? [],
+  /** Dirección del PDF de una factura: la sirve la API con la sesión, en el mismo origen. */
+  pdfFactura: (id: string) => `/api/v1/me/billing/invoices/${encodeURIComponent(id)}/pdf`,
   // ── Fechas clave. Con filter=all también las resueltas desde hoy, para enseñar el resultado.
   fechasClave: async (ficha: string) => (await leerFicha<{ dates: FechaClave[] }>("/api/v1/me/key-dates?filter=all", ficha)).dates ?? [],
   responderFecha: (id: string, r: RespuestaFecha) => pedir<FechaClave>("POST", `/api/v1/me/key-dates/${encodeURIComponent(id)}/answer`, r),

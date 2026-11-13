@@ -1,6 +1,7 @@
 import { useEffect, useId, useRef, useState } from "react";
 import { api, ApiError, type Location, type Me, type PerfilFiscal, type PlanPago } from "./api";
 import { Modal } from "./Ajustes";
+import { urlDePago } from "./cobro";
 
 // Paywall: «Pásate a Pro». Contrato: docs/admin-facturacion.md, 4.7.
 //  - Compara Pro y Pro+ (en la API, `pro_whatsapp`) con los precios de la API: nunca escritos aquí.
@@ -18,18 +19,6 @@ export type MotivoPaywall = "ai_replies" | "key_dates" | "no_seat" | "mejorar";
 let fichaPagando: string | null = null;
 export function marcarPagoEnCurso(ficha: string | null): void {
   fichaPagando = ficha;
-}
-
-/** Solo se abre una URL de Stripe (o, en el simulador, una de esta misma web). */
-function urlDePago(url: string): string | null {
-  try {
-    const u = new URL(url, location.origin);
-    if (u.protocol === "https:" && (u.hostname === "stripe.com" || u.hostname.endsWith(".stripe.com"))) return u.href;
-    if (import.meta.env.MODE === "mock" && u.origin === location.origin) return u.href;
-  } catch {
-    /* no es una URL */
-  }
-  return null;
 }
 
 /** Nombre visible de cada plan de pago. En la API, Pro+ es `pro_whatsapp`. */
@@ -177,7 +166,7 @@ export function Paywall({
       const request_id = peticion.current ?? (await pedirOPendiente());
       peticion.current = request_id;
       for (let i = 0; i < 20; i++) {
-        await new Promise((ok) => setTimeout(ok, 1500));
+        await new Promise((ok) => setTimeout(ok, 2000));
         if (!vivo.current) return;
         const p = await api.peticionCobro(request_id);
         if (!vivo.current) return;
@@ -320,13 +309,18 @@ export function Paywall({
 type Campo = "legal_name" | "tax_id" | "line1" | "postal_code" | "city" | "country" | "invoice_email";
 
 /** Datos fiscales que se piden antes del primer pago (GET y PUT /me/billing/profile). */
-function DatosFiscales({
+export function DatosFiscales({
   email,
   onVolver,
   onGuardado,
   onGuardando,
   onSinSesion,
+  etiqueta = "Guardar y pagar",
+  intro = "Los necesitamos para hacerte la factura. Solo los pedimos una vez.",
 }: {
+  /** Texto del botón: «Guardar y pagar» en el paywall, «Guardar» en Facturación. */
+  etiqueta?: string;
+  intro?: string;
   email: string;
   onVolver: () => void;
   onGuardado: () => void;
@@ -472,7 +466,7 @@ function DatosFiscales({
         void guardar();
       }}
     >
-      <p>Los necesitamos para hacerte la factura. Solo los pedimos una vez.</p>
+      <p>{intro}</p>
       {campo("legal_name", "Razón social o nombre", { autoComplete: "organization" })}
       {campo("tax_id", "NIF (o NIF-IVA si no estás en España)")}
       {campo("line1", "Dirección", { autoComplete: "address-line1" })}
@@ -509,7 +503,7 @@ function DatosFiscales({
       )}
       <div className="acciones">
         <button className="btn" type="submit" disabled={guardando}>
-          {guardando ? "Guardando…" : "Guardar y pagar"}
+          {guardando ? "Guardando…" : etiqueta}
         </button>
         <button className="btn sec" type="button" disabled={guardando} onClick={onVolver}>
           Volver

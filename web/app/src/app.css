@@ -425,3 +425,15 @@ html.lenis, html.lenis body { height: auto; }
 .aviso-pago[data-estado="cancelado"] { border-color: var(--gris, #55504a); font-weight: 600; }
 .uso-ia { display: grid; gap: 10px; justify-items: start; }
 .opcion input:disabled + span { opacity: 0.55; cursor: not-allowed; }
+/* Facturación */
+.facturacion { padding-top: clamp(20px, 4vh, 36px); border-top: 2px solid var(--tinta); display: grid; gap: 16px; }
+.plazas, .facturas { list-style: none; margin: 0; padding: 0; border: 2px solid var(--tinta); }
+.plazas li { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 8px 24px; padding: 14px 18px; }
+.plazas li + li, .facturas li + li { border-top: 2px solid var(--tinta); }
+.plazas .rotulo { overflow-wrap: anywhere; }
+.facturas li { display: flex; flex-wrap: wrap; align-items: baseline; gap: 6px 20px; padding: 12px 18px; }
+.facturas li > span:first-child { flex: 1 1 260px; }
+.factura-total { font-weight: 800; }
+.datos-guardados { line-height: 1.5; }
+.en-pausa { display: grid; gap: 18px; }
+.facturacion .hecho { margin: 0; padding: 10px 14px; border: 2px solid var(--tinta); font-weight: 700; }

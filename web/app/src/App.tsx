@@ -1,8 +1,9 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import logo from "../../../brand/logo.svg";
-import { api, ApiError, OAUTH_START, type BajaPendiente, type Diagnosis, type Location, type Me, type Summary } from "./api";
+import { api, ApiError, EVENTO_BLOQUEO, OAUTH_START, type BajaPendiente, type Diagnosis, type Location, type Me, type Summary } from "./api";
 import { Ajustes, AvisoBaja, cuando } from "./Ajustes";
 import { Canales } from "./Canales";
+import { CuentaEnPausa, Facturacion } from "./Facturacion";
 import { Fechas } from "./Fechas";
 import { Indice } from "./Indice";
 import { esMultinegocio, planPedido, SelectorNegocio, TusNegocios, type PreguntaNegocio } from "./Negocios";
@@ -29,6 +30,8 @@ type Vista =
   | { tipo: "desconectada"; me: Me }
   // Google niega el acceso a la ficha elegida: sigue elegida, pero ya no está en `locations`.
   | { tipo: "sin-acceso"; me: Me }
+  // Cuenta en pausa por un impago (`billing.blocked`): una pantalla única para pagar o darse de baja.
+  | { tipo: "bloqueada"; me: Me }
   // Tras confirmar el borrado de la cuenta: las sesiones ya están cerradas.
   | { tipo: "despedida"; borrado: string }
   // Llegada desde el enlace del correo: /app?restaurar=<token>, sin sesión.
@@ -75,6 +78,7 @@ function leerVuelta(): { google: string | null; fichas: string | null; restaurar
 
 function vistaDe(me: Me, fichasPendientes: boolean): Vista {
   if (me.pending_deletion) return { tipo: "baja", baja: me.pending_deletion };
+  if (me.billing?.blocked) return { tipo: "bloqueada", me };
   if (me.connected === false) return { tipo: "desconectada", me };
   const ficha = me.locations.find((l) => l.id === me.selected_location_id);
   // Antes que «sin fichas»: si era la única, `locations` llega vacía pero la ficha sigue elegida.
@@ -109,6 +113,29 @@ export function App() {
       else setVista({ tipo: "error", mensaje: e instanceof Error ? e.message : "Algo ha fallado." });
     }
   }, []);
+
+  // Vuelve a leer la cuenta sin pasar por «cargando»: la pantalla se queda y solo cambia lo que cambie.
+  // Devuelve si la cuenta sigue en pausa.
+  const refrescar = useCallback(async (): Promise<boolean> => {
+    const me = await api.me();
+    setVista(vistaDe(me, false));
+    return !!me.billing?.blocked;
+  }, []);
+
+  // Una ruta ha respondido 402 `account_blocked` (la cuenta se ha bloqueado a mitad de sesión).
+  // Al volver atrás desde Stripe, el navegador puede restaurar la página con los botones en «Abriendo…».
+  useEffect(() => {
+    const alBloquear = () => void refrescar().catch(() => undefined);
+    const alVolver = (e: PageTransitionEvent) => {
+      if (e.persisted) location.reload();
+    };
+    addEventListener(EVENTO_BLOQUEO, alBloquear);
+    addEventListener("pageshow", alVolver);
+    return () => {
+      removeEventListener(EVENTO_BLOQUEO, alBloquear);
+      removeEventListener("pageshow", alVolver);
+    };
+  }, [refrescar]);
 
   const restaurar = useCallback(() => {
     const token = tokenRestaurar.current;
@@ -274,6 +301,7 @@ export function App() {
             ficha={vista.ficha}
             email={vista.me.email}
             onRecargar={() => void cargar()}
+            onRefrescar={refrescar}
             onDespedida={(borrado) => setVista({ tipo: "despedida", borrado })}
             me={vista.me}
             variasFichas={vista.me.locations.length > 1}
@@ -296,6 +324,16 @@ export function App() {
             onVer={verNegocio}
             onVolver={() => void cargar()}
             onSinSesion={() => setVista({ tipo: "conectar" })}
+          />
+        )}
+        {vista.tipo === "bloqueada" && (
+          <CuentaEnPausa
+            me={vista.me}
+            onComprobar={refrescar}
+            onTusNegocios={() => setVista({ tipo: "negocios", me: vista.me })}
+            onSalir={() => void salir()}
+            onSinSesion={() => setVista({ tipo: "conectar" })}
+            onDespedida={(borrado) => setVista({ tipo: "despedida", borrado })}
           />
         )}
         {vista.tipo === "sin-acceso" && (
@@ -625,6 +663,7 @@ const SECCIONES = [
   { id: "festivos", nombre: "Festivos" },
   { id: "mejoras", nombre: "Mejoras" },
   { id: "avisos", nombre: "Avisos" },
+  { id: "facturacion", nombre: "Facturación" },
   { id: "ajustes", nombre: "Ajustes" },
 ];
 
@@ -635,6 +674,7 @@ function Panel({
   ficha,
   email,
   onRecargar,
+  onRefrescar,
   onDespedida,
   me,
   variasFichas,
@@ -647,6 +687,8 @@ function Panel({
   email: string;
   /** Vuelve a pedir la cuenta tras una baja o una restauración. */
   onRecargar: () => void;
+  /** Vuelve a leer la cuenta sin quitar el panel. */
+  onRefrescar: () => Promise<boolean>;
   /** Tras confirmar el borrado de la cuenta, con el momento del borrado. */
   onDespedida: (borrado: string) => void;
   /** La cuenta: precios, planes y cobro, para el paywall. */
@@ -846,6 +888,8 @@ function Panel({
       <Canales negocios={negocios} onSinSesion={onSinSesion} />
 
       <Instalar />
+
+      <Facturacion me={me} onRecargar={onRefrescar} onSinSesion={onSinSesion} />
 
       <Ajustes
         email={email}

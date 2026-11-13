@@ -70,7 +70,10 @@ export function Ajustes({
   soloCuenta = false,
   variasFichas = false,
   onDesactivarFicha,
+  sinRecorrido = soloCuenta,
 }: {
+  /** Fuera del panel (p. ej. con la cuenta en pausa) no hay recorrido que ver. */
+  sinRecorrido?: boolean;
   email: string;
   variasFichas?: boolean;
   /** Multinegocio: desactivar la ficha que se ve (lleva a «Tus negocios» con la confirmación abierta). */
@@ -90,7 +93,7 @@ export function Ajustes({
       <p className="sec">
         Has entrado como <strong>{email}</strong>.
         {/* El recorrido solo existe dentro del panel; sin ficha conectada no hay nada que recorrer. */}
-        {!soloCuenta && (
+        {!sinRecorrido && (
           <>
             {" "}
             <button className="enlace" type="button" onClick={() => dispatchEvent(new Event(EVENTO_RECORRIDO))}>

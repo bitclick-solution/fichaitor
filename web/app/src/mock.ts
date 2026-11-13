@@ -11,6 +11,8 @@ interface Estado {
   baja?: { scope: string; delete_at: string } | null;
   /** Multinegocio: plan de cada ficha activa. */
   planes?: Record<string, string>;
+  /** «bloqueada»: ya se ha pagado lo pendiente. */
+  pagado?: boolean;
   /** Cobro: datos fiscales guardados, plazas pagadas y un pago en curso (vuelta de Stripe simulada). */
   perfil?: { legal_name: string; tax_id: string; address: Record<string, string | null>; invoice_email: string } | null;
   plazas?: { id: string; plan: string; location_id: string; status: string; renews_at: string; cancel_at_period_end: boolean; next_price: number; payment_method: string; collection: string }[];
@@ -57,7 +59,13 @@ let llamadasSentimiento = 0;
 // Canales: tras pedir un código, la segunda consulta ya lo ve conectado (como si se hubiera enviado).
 // Cada chat guarda su filtro de fichas (null = todas); la etiqueta se compone al responder, como el backend.
 const CANALES: { id: string; channel: string; address: string; linked_at: string; locations: string[] | null }[] = [];
-const PETICIONES: Record<string, { vueltas: number; ficha: string; plan: string }> = {};
+// Peticiones al proceso de cobro: plaza nueva, cancelar, reanudar, pagar lo pendiente o el portal de Stripe.
+const PETICIONES: Record<string, { vueltas: number; tipo: "plaza" | "cancelar" | "reanudar" | "pagar" | "portal"; ficha?: string; plan?: string; plaza?: string }> = {};
+const nuevaPeticion = (p: Omit<(typeof PETICIONES)[string], "vueltas">) => {
+  const id = `req_${Date.now()}_${Object.keys(PETICIONES).length}`;
+  PETICIONES[id] = { vueltas: 0, ...p };
+  return json(202, { request_id: id });
+};
 let codigoPendiente: { consultas: number; locations: string[] | null } | null = null;
 
 /** «A», «A y B», «A, B y C»; una ficha inactiva lleva « (desactivada)». */
@@ -143,7 +151,8 @@ function cobroDe(e: Estado) {
   const pagadas = (e.plazas ?? []).length;
   return {
     profile_complete: !!e.perfil,
-    blocked: null,
+    // «bloqueada»: un cobro rechazado hasta que se paga desde la pantalla de pausa.
+    blocked: escenario() === "bloqueada" && !e.pagado ? { since: new Date(Date.now() - 86_400_000).toISOString(), reason: "payment_failed" } : null,
     seats: e.plazas ?? [],
     // Sin IVA y en céntimos; el 5 % desde la segunda ficha de pago.
     new_seat_price: { pro: pagadas > 0 ? 3325 : 3500, pro_whatsapp: pagadas > 0 ? 5605 : 5900 },
@@ -228,7 +237,7 @@ function conPlanes(e: Estado, lista: typeof FICHAS) {
 function planesCuenta(e: Estado) {
   const usados = Object.values(e.planes ?? {});
   // Con cobro («cobro») ya no hay plazas de la beta: las de pago se compran en el paywall.
-  const beta = escenario() === "gratis" || escenario() === "cobro" ? 0 : BETA_PRO;
+  const beta = ["gratis", "cobro", "bloqueada"].includes(escenario()) ? 0 : BETA_PRO;
   return {
     active: usados.length,
     free_available: !usados.includes("gratis"),
@@ -250,7 +259,7 @@ function precios(e: Estado) {
   return {
     currency: "EUR",
     period: "year",
-    charging: escenario() === "cobro",
+    charging: escenario() === "cobro" || escenario() === "bloqueada",
     plans: TARIFAS,
     total: totalDe(usados),
     if_activate: { pro: totalDe([...usados, "pro"]), pro_whatsapp: totalDe([...usados, "pro_whatsapp"]) },
@@ -329,20 +338,48 @@ export async function mockFetch(method: string, path: string, body: unknown): Pr
   if (method === "POST" && path === "/api/v1/me/billing/seats") {
     if (!e.perfil) return json(409, { detail: "Faltan tus datos para la factura.", code: "profile_incomplete" });
     const b = body as { plan: string; location_id: string };
-    const id = `req_${Date.now()}`;
-    PETICIONES[id] = { vueltas: 0, ficha: b.location_id, plan: b.plan };
-    return json(202, { request_id: id });
+    return nuevaPeticion({ tipo: "plaza", ficha: b.location_id, plan: b.plan });
   }
+  const accionPlaza = /^\/api\/v1\/me\/billing\/seats\/([^/]+)\/(cancel|resume)$/.exec(path);
+  if (method === "POST" && accionPlaza) {
+    if (!(e.plazas ?? []).some((s) => s.id === accionPlaza[1])) return json(404, { detail: "Esa plaza ya no se puede cambiar." });
+    return nuevaPeticion({ tipo: accionPlaza[2] === "cancel" ? "cancelar" : "reanudar", plaza: accionPlaza[1]! });
+  }
+  if (method === "POST" && path === "/api/v1/me/billing/pay") return nuevaPeticion({ tipo: "pagar" });
+  if (method === "POST" && path === "/api/v1/me/billing/portal") return nuevaPeticion({ tipo: "portal" });
+  if (method === "GET" && path === "/api/v1/me/billing/invoices")
+    return json(200, {
+      invoices: (e.plazas ?? []).map((s, i) => ({
+        id: `inv_${i + 1}`,
+        kind: "factura",
+        number: `FCH/2026/${String(i + 1).padStart(5, "0")}`,
+        amount_total: Math.round(s.next_price * 1.21),
+        issued_at: new Date().toISOString(),
+      })),
+    });
   const peticion = /^\/api\/v1\/me\/billing\/requests\/([^/]+)$/.exec(path);
   if (method === "GET" && peticion) {
     const r = PETICIONES[peticion[1]!];
     if (!r) return json(404, { detail: "No encontramos esa petición." });
     if (escenario() === "falla") return json(200, { state: "fallida", code: "stripe_error", detail: "Stripe no responde ahora mismo. Prueba otra vez en un minuto." });
     if (++r.vueltas < 2) return json(200, { state: "pendiente" });
+    if (r.tipo === "cancelar" || r.tipo === "reanudar") {
+      const s = (e.plazas ?? []).find((x) => x.id === r.plaza);
+      if (s) s.cancel_at_period_end = r.tipo === "cancelar";
+      guardar(e);
+      return json(200, { state: "lista", url: null });
+    }
+    if (r.tipo === "pagar") {
+      // «Factura alojada en Stripe» del simulador: queda pagada y se vuelve a la web.
+      e.pagado = true;
+      guardar(e);
+      return json(200, { state: "lista", url: `/app/?mock=${escenario()}` });
+    }
+    if (r.tipo === "portal") return json(200, { state: "lista", url: `/app/?mock=${escenario()}` });
     // «Stripe Checkout» del simulador: vuelve directamente con el pago hecho.
-    e.pagoEnCurso = { ficha: r.ficha, plan: r.plan, vueltas: 0 };
+    e.pagoEnCurso = { ficha: r.ficha!, plan: r.plan!, vueltas: 0 };
     guardar(e);
-    return json(200, { state: "lista", url: `/app/?mock=${escenario()}&pago=ok&ficha=${encodeURIComponent(r.ficha)}` });
+    return json(200, { state: "lista", url: `/app/?mock=${escenario()}&pago=ok&ficha=${encodeURIComponent(r.ficha!)}` });
   }
 
   if (method === "POST" && path === "/api/v1/channels/link-code") {
