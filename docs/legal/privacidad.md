@@ -28,7 +28,7 @@ Fichaitor está en pruebas. Hoy están activos la prueba con una captura, la lis
 | Crear y gestionar tu cuenta | Nombre, correo, teléfono vinculado, canal elegido (web, correo, Telegram o WhatsApp), plan y preferencias | Ejecución del contrato — art. 6.1.b | Mientras dure la cuenta |
 | Prestar el servicio sobre tu ficha de Google | Los datos obtenidos de las API de Google que se detallan en el apartado 3 | Ejecución del contrato — art. 6.1.b | Mientras tu ficha esté conectada. Tras desconectarla: 48 horas para restaurarla y, desde que la baja es efectiva, 30 días como máximo para el borrado; el registro de respuestas, 12 meses. Ver apartado 3 |
 | Conversar contigo y proponerte acciones (hoy, por Telegram) | El chat que vinculas (su identificador; en tu panel solo ves los últimos dígitos), los mensajes que intercambias con Fichaitor, incluidos el texto de las reseñas que te enviamos y los borradores de respuesta, y las propuestas que apruebas o descartas | Ejecución del contrato — art. 6.1.b | Los mensajes y las propuestas terminadas, 90 días; el chat, mientras esté vinculado y 90 días después de desvincularlo. Con la baja efectiva se borran los mensajes y las propuestas y, si la baja es de la cuenta, también los chats vinculados |
-| Cobro y facturación | Datos identificativos y de facturación. Los datos de la tarjeta los trata Stripe; Fichaitor no los ve ni los guarda | Ejecución del contrato — art. 6.1.b, y obligación legal — art. 6.1.c | Los plazos fiscales y mercantiles (hasta 6 años) |
+| Cobro y facturación | Razón social, NIF o número de IVA intracomunitario, dirección, correo para las facturas, los cobros y las facturas, y el nombre de cada ficha facturada, que figura en su factura para identificar el servicio. Los datos completos de la tarjeta los recoge Stripe: Fichaitor solo ve la marca y los últimos 4 dígitos. Las facturas se emiten en el sistema de gestión de Bitclick Solutions (Odoo), alojado en IONOS. Para clientes de otros países de la UE, comprobamos el número de IVA en el sistema VIES de la Comisión Europea | Ejecución del contrato — art. 6.1.b, y obligación legal (fiscal y mercantil) — art. 6.1.c. Las facturas se comunican a la Agencia Tributaria cuando lo exige la ley (sistema VERI\*FACTU) | 6 años desde la última factura (art. 30 del Código de Comercio), también después de borrar la cuenta |
 | Seguridad y registros del servidor | Dirección IP, fecha y hora, navegador, y las sesiones iniciadas | Interés legítimo en la seguridad del servicio — art. 6.1.f | Registros técnicos: se sobrescriben automáticamente al alcanzar un tamaño máximo y solo se usan para la seguridad del servicio. Sesiones caducadas o cerradas, 30 días |
 | Analítica y medición de campañas | Los indicados en la Política de Cookies (Google Analytics y píxel de TikTok) | Consentimiento — art. 6.1.a | Los indicados en la Política de Cookies |
 
@@ -54,6 +54,8 @@ Un único permiso: `https://www.googleapis.com/auth/business.manage`, que permit
 Si desactivas una ficha en «Tus negocios», dejamos de leerla y de avisarte de ella, y cancelamos sus propuestas pendientes. Si no la vuelves a activar en 30 días, borramos lo que tenemos de ella. Para retirar el acceso de Fichaitor a tu cuenta de Google, usa «Desconectar Google».
 
 Si Google deja de darnos acceso a una ficha, por ejemplo porque te han quitado como gestor, la ficha deja de mostrarse en tu panel y lo guardado de ella se borra a los 30 días, salvo que vuelvas a conectar antes con una cuenta que la gestione.
+
+Si tu cuenta queda en pausa por un pago pendiente, dejamos de leer tus fichas, pero la pausa no borra nada ni pone en marcha ningún plazo de borrado mientras dure. Durante la pausa puedes darte de baja o desconectar Google en cualquier momento.
 
 ### Para qué los usamos
 
@@ -141,7 +143,7 @@ Los siguientes proveedores todavía no tratan ningún dato: lo harán cuando se 
 | Proveedor | Para qué | Qué datos verá | Dónde trata |
 |---|---|---|---|
 | WhatsApp Ireland Ltd. / Meta Platforms Ireland Ltd. | Envío y recepción de mensajes por WhatsApp (plan Pro WhatsApp) | Tu número de teléfono y el contenido de los mensajes | Unión Europea y Estados Unidos |
-| Stripe Payments Europe Ltd. | Cobro de los planes de pago | Datos de facturación y de pago | Unión Europea y Estados Unidos |
+| Stripe Payments Europe Ltd. | Cobro de los planes de pago, como encargado. Para la prevención del fraude y del blanqueo de capitales, Stripe actúa como responsable independiente, según su propia política de privacidad | Razón social, NIF, dirección y correo para las facturas, y los datos del medio de pago, que recoge Stripe directamente. Nunca datos obtenidos de Google | Unión Europea y Estados Unidos |
 | Google Ireland Ltd. | Google Analytics, solo si aceptas la categoría analítica | Identificador de cookie, páginas vistas y datos de navegación | Unión Europea y Estados Unidos |
 | TikTok Technology Ltd. | Píxel de TikTok, solo si aceptas la categoría de publicidad | Identificador de cookie y eventos de navegación | Unión Europea y terceros países |
 

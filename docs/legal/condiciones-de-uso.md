@@ -2,7 +2,7 @@
 
 > **BORRADOR — no publicar sin revisión.** Este texto debe revisarlo un profesional antes de publicarse en `https://fichaitor.es/condiciones-de-uso/`. Los precios son la hipótesis de lanzamiento y pueden cambiar tras la beta. Borra este aviso al publicar.
 
-BITCLICK SOLUTIONS S.L.U. · C.I.F. B88994777 · Última revisión: 11 de noviembre de 2026
+BITCLICK SOLUTIONS S.L.U. · C.I.F. B88994777 · Última revisión: 13 de noviembre de 2026
 
 ## 1. Quiénes somos
 
@@ -22,6 +22,8 @@ Fichaitor se ofrece solo a empresas y a profesionales autónomos, para su activi
 - Eres el titular del negocio o tienes poder para actuar en su nombre.
 - Tienes permisos de propietario o administrador sobre la ficha de Google que conectas.
 
+Los planes de pago se contratan desde España (incluidas Canarias, Ceuta y Melilla) o desde otro país de la Unión Europea, y necesitan un NIF o, fuera de España, un número de IVA intracomunitario válido.
+
 ## 4. Cuenta y conexión con Google
 
 Para usar el servicio conectas tu cuenta de Google y autorizas a Fichaitor a ver y gestionar tus fichas de Google Business Profile. Puedes revocar esa autorización en cualquier momento, desde Fichaitor o desde tu cuenta de Google. Sin esa autorización, el servicio no puede funcionar.
@@ -37,7 +39,7 @@ En ambos casos, el contenido que se publica en tu ficha se publica en tu nombre 
 
 ## 6. Planes y precios
 
-Los precios son anuales, por ficha, y no incluyen IVA.
+Los precios son anuales, por ficha, y no incluyen IVA ni, en su caso, otros impuestos indirectos. Desde la segunda ficha de pago de una misma cuenta, cada ficha de pago tiene un 5 % de descuento; la ficha del plan Gratis no cuenta.
 
 | Plan | Precio al año | Canal | Incluye |
 |---|---|---|---|
@@ -51,16 +53,17 @@ Los precios y el contenido vigentes de cada plan son los publicados en `https://
 
 ## 7. Pago, renovación y cambios de precio
 
-- El pago se hace por adelantado, por periodos de un año, a través de Stripe.
-- **Renovación automática.** El plan se renueva por periodos sucesivos de un año salvo que lo canceles antes de la fecha de renovación. Te avisamos por correo al menos 30 días antes.
+- **Pago.** Se paga por adelantado con tarjeta (incluidos Apple Pay y Google Pay), a través de Stripe. Por cada cobro emitimos una factura, en la que figura el nombre de la ficha a la que corresponde.
+- **Años completos.** Cada ficha de pago se cobra por años completos desde su activación y se renueva sola salvo que la canceles antes de la fecha de renovación. Activar una ficha a mitad de año no se prorratea: se cobra un año completo desde ese día, con su propia fecha de renovación.
+- **Plazas sin ficha.** Si desactivas una ficha de pago, el año que pagaste por ella sigue vigente hasta su fecha de renovación. Si en esa fecha no tiene ninguna ficha asignada, no se renueva ni se cobra; te lo avisamos con el correo de renovación.
+- **Aviso de renovación.** Te avisamos por correo al menos 30 días antes de cada renovación.
 - **Cambios de precio.** Te los comunicamos al menos 30 días antes de la renovación y se aplican a partir de ella. Si no estás de acuerdo, puedes cancelar la renovación.
-- **Impago.** Si el cobro falla, podemos pasar la ficha al plan Gratis hasta que se regularice.
+- **Impago.** Si un cobro falla o no se completa (por ejemplo, porque tu banco pide una verificación que no se hace), tu cuenta queda en pausa hasta que se pague, también la ficha del plan Gratis: Fichaitor deja de leer tus fichas, de avisarte y de aplicar cambios en ellas. Te avisamos por correo y puedes ponerla al día desde el panel. Mientras está en pausa conservamos tus datos y puedes darte de baja o desconectar Google en cualquier momento.
 
 ## 8. Baja y reembolsos
 
-- Puedes cancelar en cualquier momento desde Ajustes o escribiendo a soporte@fichaitor.es. La cancelación evita la siguiente renovación y conservas el plan hasta el final del periodo pagado.
-- **Garantía de 14 días.** Si es tu primera contratación de un plan de pago y lo pides en los 14 días siguientes, te devolvemos el importe íntegro.
-- Fuera de ese caso, no se devuelven importes por periodos no consumidos.
+- Puedes cancelar la renovación de cada ficha de pago en cualquier momento desde el panel o escribiendo a soporte@fichaitor.es. La cancelación evita la siguiente renovación y conservas el plan hasta el final del año pagado.
+- **Sin reembolsos.** No devolvemos importes cobrados, tampoco por la parte no consumida de un año, salvo decisión excepcional de Fichaitor o lo previsto en la cláusula 11.
 - Al darte de baja, o al desconectar Google, dejamos de acceder a tu ficha. Lo ya publicado en ella permanece: es tuyo y lo gestionas desde Google.
 
 ## 9. Plan Gratis y funciones en pruebas
