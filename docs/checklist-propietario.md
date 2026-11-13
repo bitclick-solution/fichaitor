@@ -44,6 +44,8 @@ Lo que solo puedes hacer tú: cuentas, consolas, servidor, decisiones y pruebas 
 - [ ] Crear en el servidor `db.env`, `api.env`, `worker.env` y `conversation.env` a partir de `deploy/env.*.example`, con modo 600.
 - [ ] Generar con `openssl rand -hex 32` el pimiento de los códigos de vinculación (`FICHAITOR_LINK_CODE_PEPPER`, el mismo valor en `api.env` y `conversation.env`) y el secreto del webhook de Telegram (`FICHAITOR_TELEGRAM_WEBHOOK_SECRET`).
 - [x] Generar con `openssl rand -hex 32` el pimiento de las respuestas gratuitas (`FICHAITOR_ALLOWANCE_PEPPER`), el mismo en `api.env` y `conversation.env`. **No cambiarlo nunca:** si cambia, cada ficha vuelve a tener sus 25 respuestas con IA.
+- [ ] Generar con `openssl rand -hex 32` el secreto de los enlaces de baja de las comunicaciones (`FICHAITOR_UNSUBSCRIBE_SECRET`, el mismo valor en `api.env` y `worker.env`; `deploy.sh` exige al menos 32 caracteres). Si cambia, los enlaces de baja de los correos ya enviados dejan de funcionar.
+- [ ] Poner tu correo de administrador en el backoffice, para recibir los envíos de prueba: `python scripts/admin_usuario.py correo --usuario <tu_usuario> --correo <tu_correo>`.
 - [ ] SMTP de IONOS en `worker.env` (contraseña de `avisos@`). En `api.env`, solo el host y el remitente.
 - [ ] Clave de Gemini en `api.env`, `worker.env` y `conversation.env`, o Vertex AI (punto siguiente).
 - [ ] Registrar el webhook de Telegram en producción con su `secret_token`, siguiendo `docs/despliegue.md`, «Webhook de Telegram».
