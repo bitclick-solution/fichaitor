@@ -28,6 +28,11 @@ class MailSettings(BaseSettings):
     # Where the links of the emails point: "<base>/app#restaurar=<token>". Absolute,
     # from here only: never from the Host header or anything of a request.
     public_base_url: str = "http://localhost:8080"
+    # Signs the links to opt out of the commercial communications (app/domain/unsubscribe.py).
+    # The same in the API (checks them) and in the worker (writes them); deploy.sh requires
+    # 32 characters or more and the same value in api.env and worker.env. Empty: no
+    # commercial communication is sent and the opt-out routes answer 503.
+    unsubscribe_secret: str = ""
     # true: nothing is sent; the code and the restore link are written to the log.
     fake_mail: bool = False
     # Development only: SMTP without TLS to a local catcher (Mailpit). Refused for any

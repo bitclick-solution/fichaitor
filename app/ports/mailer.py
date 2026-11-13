@@ -24,6 +24,11 @@ class Attachment:
             raise ValueError("attachment filename not valid")
 
 
+# Extra headers a message may carry. Only these: the sender, Reply-To, Date and the rest
+# are the adapter's, from its configuration.
+EXTRA_HEADERS = frozenset({"List-Unsubscribe", "List-Unsubscribe-Post"})
+
+
 @dataclass(frozen=True)
 class Email:
     to: str
@@ -31,6 +36,15 @@ class Email:
     text: str
     html: str
     attachments: tuple[Attachment, ...] = ()
+    # (name, value) pairs: the opt-out headers of a commercial communication (RFC 8058).
+    headers: tuple[tuple[str, str], ...] = ()
+
+    def __post_init__(self) -> None:
+        for name, value in self.headers:
+            if name not in EXTRA_HEADERS:
+                raise ValueError("header not allowed")
+            if any(c in value for c in "\r\n\x00") or len(value) > 2000:
+                raise ValueError("header value not valid")
 
 
 class MailerError(Exception):

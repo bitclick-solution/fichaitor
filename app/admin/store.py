@@ -470,3 +470,67 @@ class AdminStore:
 
     async def metrics(self, session: str, since: datetime, until: datetime) -> dict:
         return await self.fetchval("SELECT admin_metrics($1, $2, $3)", session, since, until)
+
+    # --- communications by email (docs/contrato-backoffice.md, 10) ------------------------
+
+    async def communication_save(
+        self, session: str, communication: str | None, fields: dict[str, Any]
+    ) -> str:
+        value = await self.fetchval(
+            "SELECT admin_communication_save($1, $2::uuid, $3, $4, $5, $6, $7, $8, $9, $10,"
+            " $11, $12::uuid)::text",
+            session,
+            communication,
+            fields["kind"],
+            fields["subject"],
+            fields["preheader"],
+            fields["headline"],
+            list(fields["paragraphs"]),
+            fields["button_label"],
+            fields["button_url"],
+            fields["audience"],
+            fields["audience_plan"],
+            fields["audience_account"],
+        )
+        return str(value)
+
+    async def communication_get(self, session: str, communication: str) -> dict:
+        return await self.fetchval(
+            "SELECT admin_communication_get($1, $2::uuid)", session, communication
+        )
+
+    async def communication_audience(self, session: str, communication: str) -> dict:
+        return await self.fetchval(
+            "SELECT admin_communication_audience($1, $2::uuid)", session, communication
+        )
+
+    async def communication_test(self, session: str, communication: str) -> dict:
+        return await self.fetchval(
+            "SELECT admin_communication_test($1, $2::uuid)", session, communication
+        )
+
+    async def communication_confirm(
+        self, session: str, communication: str, expected: int, per_minute: int
+    ) -> dict:
+        return await self.fetchval(
+            "SELECT admin_communication_confirm($1, $2::uuid, $3, $4)",
+            session,
+            communication,
+            expected,
+            per_minute,
+        )
+
+    async def communications(
+        self, session: str, limit: int = 51, after: tuple[str, str] | None = None
+    ) -> list[dict]:
+        key, ident = after or (None, None)
+        return await self.fetch(
+            "SELECT communication_id::text AS communication_id, kind, subject, audience,"
+            " audience_plan, audience_account::text AS audience_account, state, created_at,"
+            " created_by, test_sent_at, confirmed_at, confirmed_by, recipients, excluded, sent,"
+            " failed, skipped, finished_at FROM admin_communications($1, $2, $3, $4)",
+            session,
+            limit,
+            key,
+            ident,
+        )

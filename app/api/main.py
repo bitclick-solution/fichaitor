@@ -38,6 +38,7 @@ from app.api.reviews import build_router as build_reviews_router
 from app.api.screenshot import build_reader as build_reply_writer
 from app.api.screenshot import build_router_from_settings as build_screenshot_router
 from app.api.session import AccountBlocked, account_blocked_response
+from app.api.unsubscribe import build_router as build_unsubscribe_router
 from app.api.visit import build_router as build_visit_router
 from app.api.waitlist import SOURCE_PATTERN, build_router
 from app.api.webhooks_stripe import build_router as build_stripe_webhook_router
@@ -455,6 +456,20 @@ def create_app(
             client_ip=client_ip,
             clock=clock,
             cookie_secure=settings.cookie_secure,
+        )
+    )
+
+    # Opting out of the commercial communications, from the link of each email or from
+    # the one-click header (RFC 8058). No session: the token is the proof.
+    app.include_router(
+        build_unsubscribe_router(
+            store=store,
+            secret=mail_settings.unsubscribe_secret,
+            page_limiter=SlidingWindowLimiter(settings.unsubscribe_rate_limit, 3600, clock),
+            one_click_limiter=SlidingWindowLimiter(
+                settings.unsubscribe_one_click_rate_limit, 3600, clock
+            ),
+            client_ip=client_ip,
         )
     )
 

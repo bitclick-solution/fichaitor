@@ -37,6 +37,10 @@ def build_message(
     message["Auto-Submitted"] = "auto-generated"
     if reply_to:
         message["Reply-To"] = reply_to
+    # The opt-out headers of a commercial communication (List-Unsubscribe and
+    # List-Unsubscribe-Post, RFC 8058). Email only lets those through.
+    for name, value in email.headers:
+        message[name] = value
     message.set_content(email.text)
     message.add_alternative(email.html, subtype="html")
     # With a file, the message becomes multipart/mixed: the text and the HTML stay

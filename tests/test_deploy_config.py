@@ -288,6 +288,49 @@ def test_deploy_requires_the_same_long_allowance_pepper(tmp_path, api, conversat
     assert PEPPER not in result.stderr
 
 
+@needs_bash
+@pytest.mark.parametrize(
+    ("api", "worker", "ok"),
+    [
+        (
+            f"FICHAITOR_UNSUBSCRIBE_SECRET={PEPPER}\n",
+            f"FICHAITOR_UNSUBSCRIBE_SECRET={PEPPER}\n",
+            True,
+        ),
+        ("FICHAITOR_UNSUBSCRIBE_SECRET=\n", "FICHAITOR_UNSUBSCRIBE_SECRET=\n", False),
+        (
+            f"FICHAITOR_UNSUBSCRIBE_SECRET={PEPPER[:31]}\n",
+            f"FICHAITOR_UNSUBSCRIBE_SECRET={PEPPER[:31]}\n",
+            False,
+        ),
+        (
+            f"FICHAITOR_UNSUBSCRIBE_SECRET={PEPPER}\n",
+            f"FICHAITOR_UNSUBSCRIBE_SECRET={'c' * 32}\n",
+            False,
+        ),
+        (f"FICHAITOR_UNSUBSCRIBE_SECRET={PEPPER}\n", "", False),
+    ],
+)
+def test_deploy_requires_the_same_long_unsubscribe_secret(tmp_path, api, worker, ok):
+    result = _check(
+        tmp_path,
+        "comprobar_secreto_baja",
+        {"api.env": api, "worker.env": worker, "conversation.env": ""},
+    )
+    assert (result.returncode == 0) is ok, result.stderr
+    assert PEPPER not in result.stderr
+
+
+def test_the_env_examples_carry_the_unsubscribe_secret_in_the_api_and_the_worker():
+    for name in ("env.api.example", "env.worker.example"):
+        assert "FICHAITOR_UNSUBSCRIBE_SECRET=" in (ROOT / "deploy" / name).read_text(
+            encoding="utf-8"
+        )
+    for name in ("env.conversation.example", "env.admin.example", "env.billing.example"):
+        text = (ROOT / "deploy" / name).read_text(encoding="utf-8")
+        assert "FICHAITOR_UNSUBSCRIBE_SECRET" not in text
+
+
 TEST_KEY = "rk_test_" + "a" * 24
 LIVE_KEY = "rk_live_" + "b" * 24
 BILLING_OK = f"FICHAITOR_STRIPE_SECRET_KEY={TEST_KEY}\n"

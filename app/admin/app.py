@@ -18,7 +18,7 @@ from fastapi.responses import FileResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
-from app.admin import routes_auth, routes_screens
+from app.admin import routes_auth, routes_communications, routes_screens
 from app.admin.audit import audit_denied
 from app.admin.auth import AuthKit, Passwords, SecretBox
 from app.admin.config import AdminSettings
@@ -103,6 +103,9 @@ def create_app(
     app.include_router(routes_auth.build_router(kit, store_view))
     app.include_router(
         routes_screens.build_router(kit, store_view, settings.authserv_id, settings.erp_base_url)
+    )
+    app.include_router(
+        routes_communications.build_router(kit, store_view, settings.communication_per_minute)
     )
 
     @app.get("/healthz", include_in_schema=False)

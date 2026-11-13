@@ -51,6 +51,10 @@ class AdminSettings(BaseSettings):
     # Base of the links to the invoices in Odoo (section 6.4). Only a URL, no key.
     erp_base_url: str = "https://erp.bitclick.solutions"
 
+    # Communications by email (docs/contrato-backoffice.md, 10): how many emails a
+    # confirmed communication enqueues per minute. The database accepts 1 to 600.
+    communication_per_minute: int = Field(default=60, ge=1, le=600)
+
     # Argon2id (section 6.2): 64 MiB, 3 iterations, parallelism 4. Lower only in tests.
     argon2_time_cost: int = Field(default=3, ge=1)
     argon2_memory_kib: int = Field(default=65536, ge=8)

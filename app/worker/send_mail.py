@@ -21,8 +21,19 @@ formatted by the billing process:
 - {"template": "beta_ending", "to", "fecha_lanzamiento", "fecha_fin", "oferta"}
 - {"template": "trial_ending", "to", "plan", "ficha", "fecha_cobro", "importe"}
 
+A communication of the backoffice (brand/correo/LEEME.md, 12), enqueued by
+admin_communication_confirm and admin_communication_test (db/schema_admin.sql):
+
+- {"template": "comunicacion", "to", "communication_id", "account_id"}: one email of a
+  confirmed communication. The text is read from the database at send time; if the
+  account opted out of a commercial one (or left) in between, nothing is sent.
+- {"template": "comunicacion", "to", "communication_id", "test": true}: the test email to
+  the person of the backoffice, with "[Prueba]" in the subject and a link that opts out
+  nobody. Not counted.
+
 No payload carries a link: each link is made here from the public URL of the
-configuration.
+configuration (the opt-out link of a commercial one, with a token signed here for that
+account).
 
 The payload is the only place where a code or a restore token exists in clear, and
 only until the email is out: every way out of this job empties it, the last failure
@@ -31,10 +42,11 @@ logged or stored in an error: the errors of the mailer are fixed strings.
 """
 
 import logging
+from dataclasses import replace
 from datetime import datetime
 from typing import Protocol
 
-from app.domain import billing_mail
+from app.domain import billing_mail, communication, unsubscribe
 from app.domain.jobs import Job, JobError, PermanentJobError
 from app.domain.offboarding import (
     MAIL_CODE,
@@ -61,6 +73,14 @@ class BillingDocuments(Protocol):
     async def pdf(self, document_id: str) -> bytes | None:
         """The PDF of an issued invoice or credit note; None if there is none."""
         ...
+
+
+class Communications(Protocol):
+    async def mail(self, communication_id: str, account_id: str | None) -> dict | None:
+        """The content and whether that account still gets it (`deliver`)."""
+        ...
+
+    async def result(self, communication_id: str, outcome: str) -> None: ...
 
 
 class MailJobs(Protocol):
@@ -194,11 +214,16 @@ class SendMail:
         mailer: Mailer | None,
         public_base_url: str,
         documents: BillingDocuments | None = None,
+        communications: Communications | None = None,
+        unsubscribe_secret: str = "",
     ) -> None:
         self._store = store  # None: nothing to tidy up (the demo without a database)
         self._mailer = mailer  # None: no mail configured; every job fails at once
         self._public_base_url = public_base_url
         self._documents = documents  # None: no invoice can be sent
+        self._communications = communications  # None: no communication can be sent
+        # Signs the opt-out link of each commercial communication. Empty: none is sent.
+        self._unsubscribe_secret = unsubscribe_secret
 
     async def _pdf(self, payload: dict) -> bytes | None:
         if payload.get("template") not in _WITH_PDF:
@@ -210,6 +235,9 @@ class SendMail:
 
     async def __call__(self, job: Job) -> None:
         template = job.payload.get("template")
+        if template == communication.TEMPLATE:
+            await self._communication(job)
+            return
         try:
             if self._mailer is None:
                 raise PermanentJobError("no hay correo configurado")
@@ -230,6 +258,78 @@ class SendMail:
         await self._close(job, MAIL_SENT)
         log.event("mail_sent", job_id=job.id, template=template if template in _KNOWN else None)
 
+    async def _communication(self, job: Job) -> None:
+        """One email of a communication. Its outcome goes to the counts of the
+        communication (not for a test); the payload is emptied on every way out."""
+        payload = job.payload
+        test = payload.get("test") is True
+        try:
+            if self._mailer is None or self._communications is None:
+                raise PermanentJobError("no hay correo configurado")
+            to, cid = _text(payload, "to"), _text(payload, "communication_id")
+            account = None if test else _text(payload, "account_id")
+            row = await self._communications.mail(cid, account)
+            if row is None:
+                raise PermanentJobError("comunicación no disponible")
+            if not row.get("deliver"):
+                # Opted out (commercial) or left after the confirmation: not sent.
+                await self._finish_communication(job, "skipped")
+                log.event("mail_skipped", job_id=job.id, template=communication.TEMPLATE)
+                return
+            content = communication.Content.from_row(row)
+            email = self._communication_email(to, content, account)
+        except PermanentJobError:
+            await self._finish_communication(job, "failed")
+            raise
+        try:
+            await self._mailer.send(email)
+        except MailRejected as exc:
+            await self._finish_communication(job, "failed")
+            raise PermanentJobError(str(exc)) from None
+        except MailerError as exc:
+            raise JobError(str(exc)) from None
+        except Exception as exc:
+            raise JobError(f"fallo inesperado al enviar el correo: {type(exc).__name__}") from None
+        await self._finish_communication(job, "sent")
+        log.event("mail_sent", job_id=job.id, template=communication.TEMPLATE)
+
+    def _communication_email(
+        self, to: str, content: communication.Content, account: str | None
+    ) -> Email:
+        if content.kind != communication.COMMERCIAL:
+            email = communication.communication_email(to, content)
+        else:
+            if not self._unsubscribe_secret:
+                # Never a commercial email without a working opt-out link.
+                raise PermanentJobError("falta FICHAITOR_UNSUBSCRIBE_SECRET")
+            token = (
+                unsubscribe.TEST_TOKEN
+                if account is None
+                else unsubscribe.sign(self._unsubscribe_secret, account)
+            )
+            email = replace(
+                communication.communication_email(
+                    to, content, unsubscribe.page_url(self._public_base_url, token)
+                ),
+                headers=unsubscribe.headers(self._public_base_url, token),
+            )
+        if account is None:
+            email = replace(email, subject=f"[Prueba] {email.subject}")
+        return email
+
+    async def _finish_communication(self, job: Job, outcome: str) -> None:
+        cid = job.payload.get("communication_id")
+        if (
+            self._communications is not None
+            and job.payload.get("test") is not True
+            and isinstance(cid, str)
+        ):
+            await self._communications.result(cid, outcome)
+        if self._store is not None:
+            await self._store.scrub_job(job.id)
+        if outcome == "failed":
+            log.event("mail_failed", logging.ERROR, job_id=job.id)
+
     async def _close(self, job: Job, state: str) -> None:
         if self._store is None:
             return
@@ -243,6 +343,9 @@ class SendMail:
     async def on_exhausted(self, job: Job) -> None:
         """Out of attempts: the owner is told (the code shows as not sent) and what the
         job carried is erased."""
+        if job.payload.get("template") == communication.TEMPLATE:
+            await self._finish_communication(job, "failed")
+            return
         await self._close(job, MAIL_FAILED)
 
     async def on_lost(self, kind: str) -> int:
@@ -253,3 +356,4 @@ class SendMail:
 
 
 _KNOWN = (MAIL_CODE, MAIL_SCHEDULED, MAIL_RESTORED, *billing_mail.TEMPLATES)
+# communication.TEMPLATE is logged by its own path.

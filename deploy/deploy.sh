@@ -211,6 +211,19 @@ comprobar_pimienta_gratis() {
         die "FICHAITOR_ALLOWANCE_PEPPER no coincide entre api.env y conversation.env."
 }
 
+# Los correos comerciales del backoffice llevan un enlace de baja firmado: lo escribe el
+# worker y lo comprueba la API, así que el secreto tiene que ser largo y el mismo en los
+# dos. Sin él, el worker no envía ninguna comunicación comercial. Si cambia, los enlaces ya
+# enviados dejan de valer. Solo se mide: el valor nunca se imprime.
+comprobar_secreto_baja() {
+    local secreto
+    secreto="$(valor_env "${API_ENV}" FICHAITOR_UNSUBSCRIBE_SECRET)"
+    ((${#secreto} >= 32)) ||
+        die "FICHAITOR_UNSUBSCRIBE_SECRET falta o tiene menos de 32 caracteres en api.env (openssl rand -hex 32)."
+    [[ "${secreto}" == "$(valor_env "${WORKER_ENV}" FICHAITOR_UNSUBSCRIBE_SECRET)" ]] ||
+        die "FICHAITOR_UNSUBSCRIBE_SECRET no coincide entre api.env y worker.env."
+}
+
 # Cobro (docs/admin-facturacion.md, 4.1 y 9.0.1). La API solo tiene el secreto de firma
 # del webhook de Stripe; si está, tiene que ser uno de verdad (whsec_...). La clave de
 # Stripe y la de Odoo viven solo en billing.env: nunca en api.env, worker.env,
@@ -321,6 +334,7 @@ comprobar_entorno() {
     comprobar_secretos_telegram
     comprobar_whatsapp
     comprobar_pimienta_gratis
+    comprobar_secreto_baja
     comprobar_cobro
     comprobar_backoffice
     [[ "$(valor_env "${API_ENV}" FICHAITOR_TOKEN_PUBLIC_KEY)" != "$(valor_env "${WORKER_ENV}" FICHAITOR_TOKEN_PRIVATE_KEY)" ]] ||

@@ -80,7 +80,7 @@ Cada persona tiene un rol. El backoffice solo te enseña las pantallas de tu rol
 
 - **Soporte:** atiende a los clientes. Busca cuentas, ve su estado, tramita bajas pedidas por correo y vigila la salud del servicio. No ve pagos ni métricas.
 - **Finanzas:** lleva el cobro. Ve pagos, facturas y datos fiscales, revisa las facturas con problemas, pide reembolsos excepcionales y ve las métricas. No tramita bajas ni ve la salud técnica.
-- **Propietario:** todo lo anterior y, además, concede y recorta derechos, cierra bloqueos a mano, ve la lista de espera en totales, las personas y el registro de auditoría.
+- **Propietario:** todo lo anterior y, además, concede y recorta derechos, cierra bloqueos a mano, envía comunicaciones por correo a los clientes, ve la lista de espera en totales, las personas y el registro de auditoría.
 
 | Pantalla o acción | Soporte | Finanzas | Propietario |
 |---|---|---|---|
@@ -95,8 +95,9 @@ Cada persona tiene un rol. El backoffice solo te enseña las pantallas de tu rol
 | Cerrar un bloqueo a mano | No | No | Sí |
 | Lista de espera (totales) | No | No | Sí |
 | Personas y auditoría | No | No | Sí |
+| Comunicaciones por correo | No | No | Sí |
 
-**Acciones sensibles.** Reembolsar, conceder o recortar un derecho, cerrar un bloqueo, tramitar una baja y cambiar tu contraseña piden un código de tu aplicación si el último que escribiste tiene más de 5 minutos.
+**Acciones sensibles.** Reembolsar, conceder o recortar un derecho, cerrar un bloqueo, tramitar una baja, confirmar el envío de una comunicación y cambiar tu contraseña piden un código de tu aplicación si el último que escribiste tiene más de 5 minutos.
 
 **La referencia del ticket.** Ver los nombres de las fichas o la dirección fiscal, y todas las acciones, piden la referencia del caso (por ejemplo, `Ticket 4321`). Escribe la del caso real, de 3 a 500 caracteres (80 en los reembolsos), en una línea y **nunca una dirección de correo**: se guarda en el registro de auditoría.
 
@@ -134,7 +135,9 @@ Qué significa cada dato del **Resumen**:
 - **Plazas:** cada plaza es un año pagado de un plan, con su propia fecha de renovación. Verás su estado (`active`, `pending`, `payment_failed`, `action_required`, `disputed` o `canceled`), el fin del periodo, si se cancelará al renovar, el precio de la renovación y, si está en la ventana de la beta, cuándo acaba su periodo de prueba.
 - **Bloqueos por impago:** cuándo empezó, por qué (`payment_failed`: pago rechazado; `action_required`: el banco pidió confirmar el pago y no se hizo; `dispute`: el cliente disputó el cobro) y cuándo y cómo se cerró (`payment`: pagó; `admin`: se cerró a mano).
 - **Bajas:** cada baja pedida, cuándo se confirmó, cuándo se hace efectiva, si se restauró y si ya es efectiva.
-- **Activaciones:** el historial de fichas activadas, desactivadas y cambiadas de plan.
+- **Activaciones:** el historial de fichas activadas, desactivadas y cambiadas de plan, de lo más nuevo a lo más viejo.
+
+Los listados largos van por páginas: **Cargar más** trae la siguiente (en la búsqueda de cuentas, **Más resultados**; en los nombres de las fichas, **Leer más nombres (con el mismo ticket)**, que vuelve a quedar en la auditoría).
 
 ### Cobro: revisión
 
@@ -159,9 +162,9 @@ Para soporte y propietario. El estado técnico del servicio:
 - **Trabajos fallidos en 24 h:** trabajos que agotaron sus intentos en el último día.
 - **Canales:** chats vinculados y desvinculados de cada canal.
 - **Cola de trabajos:** por tipo y estado, cuántos hay, el más antiguo y cuántos están atascados.
-- **Trabajos fallidos:** los más recientes, con su último error recortado.
+- **Trabajos fallidos:** los más recientes, con su último error recortado. **Cargar más** trae los anteriores.
 - **Fichas que no se leen bien:** las que no están en estado correcto, con su cuenta.
-- **Retención:** las últimas pasadas de la limpieza diaria y cuántas filas borró de cada tabla.
+- **Pasadas de la retención:** las últimas pasadas de la limpieza diaria y cuántas filas borró de cada tabla. **Cargar más** trae las anteriores.
 
 ### Métricas
 
@@ -176,7 +179,7 @@ Solo el propietario. Cuántas personas se apuntaron, por semana, canal (correo o
 Solo el propietario.
 
 - **Personas:** quién tiene acceso, con qué rol, si está activa, si tiene el alta pendiente, si está bloqueada por intentos y cuándo cambió su contraseña. Es solo lectura: las altas, los restablecimientos y las bajas se hacen en el servidor.
-- **Auditoría:** el registro de todo lo que pasa en el backoffice, de lo más nuevo a lo más viejo: entradas y fallos, lecturas de cuentas, acciones y rechazos por rol. No se puede borrar ni cambiar.
+- **Auditoría:** el registro de todo lo que pasa en el backoffice, de lo más nuevo a lo más viejo: entradas y fallos, lecturas de cuentas, acciones y rechazos por rol. **Más antiguos** trae la página anterior. No se puede borrar ni cambiar.
 
 ### Mi cuenta
 
@@ -287,6 +290,32 @@ Para finanzas y propietario. Cada cobro de Stripe genera su factura legal en el 
 
 > **Nota:** el backoffice no cambia el estado de una factura: solo te la enseña con sus enlaces. La corrección se hace en Odoo.
 
+### Enviar una comunicación por correo
+
+Solo el propietario. Sirve para escribir a los clientes con la plantilla de Fichaitor: un cambio en las condiciones, una incidencia, el fin de la beta o una novedad. Nunca a la lista de espera ni a direcciones escritas a mano.
+
+**Antes de la primera vez:** el propietario guarda en el servidor la dirección a la que te llegan las pruebas:
+
+```sh
+python scripts/admin_usuario.py correo --usuario ana --correo ana@bitclick.es
+```
+
+1. Elige el **tipo**. Es la decisión importante:
+   - **Servicio:** cambios en el producto o en las condiciones, incidencias, fin de la beta. Llega a todo el público elegido y no lleva enlace de baja.
+   - **Comercial:** ofertas, novedades con intención de venta, boletín. No llega a quien se dio de baja de las comerciales, y cada correo lleva su enlace de baja.
+   - **Si dudas, es comercial.** Un correo de servicio que vende algo deja de ser de servicio (LSSI, art. 21) y no se puede mandar a quien se dio de baja.
+2. Elige el **público**: todas las cuentas activas, solo la beta, un plan (Gratis, Pro o Pro+) o una cuenta concreta (su id, para un caso de soporte). Las cuentas dadas de baja o con la baja programada nunca entran.
+3. Escribe el **asunto** (hasta 90 caracteres), el **preencabezado** (120), el **titular** (40, sin punto final), de 1 a 8 **párrafos** y, si quieres, un **botón** con su etiqueta y un enlace a `https://fichaitor.es/…`. Nunca pongas nada obtenido de Google (reseñas, cifras ni nombres de fichas) ni datos de un cliente.
+4. Guarda y revisa la **vista previa**: es exactamente lo que llega, en HTML y en texto.
+5. Pulsa **Enviar prueba**. Te llega a tu dirección con «[Prueba]» en el asunto. Ábrela en el móvil y en el ordenador, y prueba el botón. Si cambias algo después, tienes que enviar otra prueba.
+6. Mira el **número de destinatarios**. En una comercial verás también cuántos no la reciben porque se dieron de baja.
+7. Pulsa **Confirmar el envío** y escribe un código de tu aplicación si te lo pide. Si el número ha cambiado entre tanto, el backoffice te enseña el nuevo y vuelves a confirmar.
+8. El worker envía los correos poco a poco (60 por minuto, por defecto). En **Comunicaciones** ves cuántos han salido, cuántos han fallado y cuántos se han omitido (clientes que se dieron de baja entre la confirmación y su envío).
+
+Una comunicación confirmada no se puede cambiar ni deshacer. Si te equivocas, envía otra de servicio que lo corrija.
+
+> **Nota:** el backoffice no guarda ni enseña la lista de direcciones: solo el texto, el público y los recuentos, durante 12 meses. Queda en la auditoría quién la escribió, quién la envió, a cuántos y cuándo.
+
 ### Buscar una cuenta para un ticket de soporte
 
 Para todos. Ve solo lo necesario para resolver el caso.
@@ -316,28 +345,28 @@ En la pantalla **Métricas**, elige el periodo (días en UTC, de 400 días como 
 | **Bloqueos abiertos ahora** | Cuentas bloqueadas por impago en este momento | Los bloqueos |
 | **Plazas en vigor** | Plazas activas, por plan y precio de renovación | Ídem que el ARR |
 | **Conversión: cuentas de la beta** | De las cuentas creadas antes del lanzamiento, cuántas han pagado algo con dinero | Cobros pagados con importe |
-| **Conversión: cuentas sin beta** | De las cuentas creadas en el periodo después del lanzamiento, cuántas han pagado algo con dinero | Ídem |
+| **Conversión: cuentas sin beta creadas en el periodo** | De las cuentas creadas en el periodo después del lanzamiento, cuántas han pagado algo con dinero | Ídem |
 | **Bloqueos del periodo** | Bloqueos abiertos y cerrados en el periodo | Los bloqueos |
 
 Ten en cuenta:
 
 - Una plaza contratada en la ventana de la beta (30 días desde el lanzamiento) cuenta como plaza nueva, pero su cuenta no «paga» hasta su primer cobro, al acabar la ventana.
-- No hay «plazas perdidas por impago»: un bloqueo no caduca y la plaza no se pierde mientras dura.
+- No hay una métrica de «perdidas por impago»: un bloqueo no caduca y la plaza no se pierde mientras dura.
 - Hasta el lanzamiento no se cobra nada y todas las cuentas nuevas son de la beta.
 
-**El embudo** cuenta eventos del periodo:
+**El embudo** cuenta eventos del periodo. La columna **Respecto al paso previo** da el porcentaje sobre el paso anterior:
 
 | Paso | Qué cuenta | Cuándo no cuenta |
 |---|---|---|
-| **Visitas** | Cada carga de la portada | En el modo «solo web», sin API. Tampoco robots ni más de 10 por dirección y hora |
+| **Visitas a la portada** | Cada carga de la portada | En el modo «solo web», sin API. Tampoco robots ni más de 10 por dirección y hora |
 | **Diagnósticos por nombre** | Diagnósticos con el buscador por nombre | En el modo «solo web». La portada solo enseña el buscador con `?v=buscador` |
 | **Diagnósticos por captura** | Pruebas con una captura de las reseñas que se leyeron bien | En el modo «solo web» o sin la clave de Gemini |
-| **Lista de espera** | Envíos del formulario de la lista de espera | En el modo «solo web». El mismo contacto dos veces cuenta dos |
-| **Conectan Google** | Primeras conexiones con Google (cuentas nuevas) | Volver a entrar no cuenta |
-| **Abren el pago** | Cada vez que se abre el pago de una plaza en Stripe | Antes del lanzamiento |
-| **Pagan** | Primeras facturas pagadas de cada plaza | Las renovaciones. Cuenta plazas, no cuentas |
+| **Se apuntan a la lista de espera** | Envíos del formulario de la lista de espera | En el modo «solo web». El mismo contacto dos veces cuenta dos |
+| **Conectan Google (la primera vez)** | Primeras conexiones con Google (cuentas nuevas) | Volver a entrar no cuenta |
+| **Abren el pago de una plaza** | Cada vez que se abre el pago de una plaza en Stripe | Antes del lanzamiento |
+| **Pagan una plaza nueva** | Primeras facturas pagadas de cada plaza | Las renovaciones. Cuenta plazas, no cuentas |
 
-Los diagnósticos y la lista de espera son entradas distintas, no pasos seguidos. El porcentaje entre pasos tiene sentido de **Conectan Google** a **Abren el pago** y de **Abren el pago** a **Pagan**.
+Los diagnósticos y la lista de espera son entradas distintas, no pasos seguidos. El porcentaje **Respecto al paso previo** tiene sentido de **Conectan Google (la primera vez)** a **Abren el pago de una plaza** y de **Abren el pago de una plaza** a **Pagan una plaza nueva**.
 
 ## Salud: qué mirar cada día
 
@@ -367,3 +396,4 @@ Por diseño, para proteger a los clientes y cumplir las normas de Google y la pr
 - **No hace bajas inmediatas ni restaura bajas**: la inmediata es un script del servidor y la restauración la hace el cliente con su enlace.
 - **No edita facturas**: se corrigen en Odoo.
 - **No cobra**: el cobro lo hace Stripe con el proceso de cobro.
+- **No escribe a direcciones sueltas ni a la lista de espera**: las comunicaciones van solo a cuentas de clientes, y las comerciales nunca a quien se dio de baja. No exporta listas de correos.

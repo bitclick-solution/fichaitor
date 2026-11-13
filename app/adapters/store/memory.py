@@ -207,6 +207,8 @@ class MemoryStore:
         self.free_allowance: dict[str, int] = {}
         # account_billing_block: written by MemoryBillingStore (the billing process).
         self.billing_blocks: list[BlockRow] = []
+        # communication_optout: the accounts that opted out of the commercial emails.
+        self.communication_optout: dict[str, str] = {}  # account id -> source
         self._fail = fail
 
     def _check(self) -> None:
@@ -247,6 +249,11 @@ class MemoryStore:
 
     def _account(self, account_id: str) -> AccountRow:
         return next(a for a in self.accounts.values() if a.id == account_id)
+
+    async def unsubscribe_communications(self, account_id: str, source: str) -> None:
+        self._check()
+        if any(a.id == account_id for a in self.accounts.values()):
+            self.communication_optout.setdefault(account_id, source)
 
     async def account_exists(self, google_sub: str) -> bool:
         self._check()

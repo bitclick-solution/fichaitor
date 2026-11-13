@@ -66,3 +66,8 @@ class Settings(BaseSettings):
     # At least 48: the database refuses a leave of less than 47 hours (M5).
     offboarding_grace_hours: float = Field(default=48.0, ge=48)
     offboarding_restore_rate_limit: int = Field(default=20, ge=1)  # per client IP and hour
+    # Opting out of the commercial communications (docs/contrato-web-api.md): per client
+    # IP and hour. The one-click route is called by the mail providers from a few
+    # addresses, so its limit is larger.
+    unsubscribe_rate_limit: int = Field(default=20, ge=1)
+    unsubscribe_one_click_rate_limit: int = Field(default=600, ge=1)

@@ -62,6 +62,7 @@ Viene de `GET /session` (`role`). La base vuelve a comprobarla en cada petición
 | Cerrar un bloqueo | `POST /blocks/{id}/close` | No | No | Sí |
 | Lista de espera (totales) | `GET /waitlist` | No | No | Sí |
 | Usuarios y auditoría | `GET /users`, `GET /audit` | No | No | Sí |
+| Comunicaciones por correo (sección 10) | `GET /communications`, `POST /communications`, `PUT /communications/{id}`, `GET /communications/{id}`, `GET /communications/{id}/preview`, `GET /communications/{id}/preview.html`, `GET /communications/{id}/audience`, `POST /communications/{id}/test`, `POST /communications/{id}/confirm` | No | No | Sí |
 
 Todas las rutas empiezan por `/admin/api`.
 
@@ -105,13 +106,14 @@ Todos los listados van por páginas **con cursor (keyset), nunca con desplazamie
 | Lista de espera (celdas) | `GET /waitlist` | — | `week`, y canal, tramo y origen | 100 |
 | Personas | `GET /users` | — | `username` | 50 |
 | Auditoría | `GET /audit` | — | `id`, de lo más nuevo a lo más viejo | 100 |
+| Comunicaciones | `GET /communications` | — | `created_at`, `communication_id`, de la más nueva a la más vieja | 50 |
 
 - `GET /accounts/{id}/lists/{nombre}` y `GET /billing/review/lists/{nombre}` responden `{"items": [...], "next_cursor": "…" | null}`, con las filas en la misma forma que en la pantalla que trae la primera página. Las de cobro llevan sus enlaces ya construidos, y las de la revisión, además, `links` y `odoo_link`. Un nombre que no está en la tabla da `404 not_found`.
 - **No es un listado** `jobs` de `GET /health/overview`: una fila por tipo y estado de job, acotada por el código.
 
 ### 1.4 Acciones sensibles
 
-Piden un TOTP de menos de 5 minutos: reembolsar, conceder o recortar derechos, cerrar un bloqueo, tramitar la baja y cambiar la contraseña. `GET /session` devuelve `totp_fresh_until`: antes de esa hora la acción pasa sin pedir código. Si la respuesta es `403 totp_required`, pide un código, llama a `POST /session/totp` y repite la petición.
+Piden un TOTP de menos de 5 minutos: reembolsar, conceder o recortar derechos, cerrar un bloqueo, tramitar la baja, confirmar el envío de una comunicación y cambiar la contraseña. `GET /session` devuelve `totp_fresh_until`: antes de esa hora la acción pasa sin pedir código. Si la respuesta es `403 totp_required`, pide un código, llama a `POST /session/totp` y repite la petición.
 
 ## 2. Sesión
 
@@ -657,12 +659,139 @@ Acciones que verás:
 | Grupo | `action` |
 |---|---|
 | Sesión | `login_password_ok`, `login_ok`, `login_failed` (`detail.stage`), `locked`, `totp_stepup`, `recovery_code_used`, `logout` |
-| Personas | `enrolled`, `totp_changed`, `password_changed`, `password_rehashed`, `user_created`, `user_reset`, `user_activated`, `user_deactivated` |
-| Lecturas | `find_accounts` (solo el tipo de búsqueda), `account_overview_read`, `account_detail_read`, `account_billing_read`, `billing_contact_read`, `billing_review_read`, `health_read`, `metrics_read`, `list_read` (`detail.list`: el listado de la página pedida), `waitlist_totals_read`, `audit_read`, `app_sync_read`, `app_channels_read`, `app_jobs_read`, `app_users_read` |
-| Acciones | `offboarding_email_checked`, `offboarding_email`, `entitlement_granted`, `entitlement_trimmed`, `block_closed`, `refund_requested` |
+| Personas | `enrolled`, `totp_changed`, `password_changed`, `password_rehashed`, `user_created`, `user_reset`, `user_activated`, `user_deactivated`, `user_email_set` (`detail.set`, sin la dirección) |
+| Lecturas | `find_accounts` (solo el tipo de búsqueda), `account_overview_read`, `account_detail_read`, `account_billing_read`, `billing_contact_read`, `billing_review_read`, `health_read`, `metrics_read`, `list_read` (`detail.list`: el listado de la página pedida), `waitlist_totals_read`, `audit_read`, `app_sync_read`, `app_channels_read`, `app_jobs_read`, `app_users_read`, `communication_read`, `communication_audience_read` (`detail`: el recuento), `communication_list_read` |
+| Acciones | `offboarding_email_checked`, `offboarding_email`, `entitlement_granted`, `entitlement_trimmed`, `block_closed`, `refund_requested`, `communication_saved`, `communication_test_sent`, `communication_sent` (`target` = la comunicación; `detail`: tipo, público, plan, `recipients`, `excluded` y `per_minute`; `account_id`, si el público es una cuenta) |
 | Rechazos | `app_denied` (`target` = la ruta, `detail.code` = `role_not_allowed` o `totp_required`), `app_offboarding_dmarc_failed` (`detail.reason`) |
 
 ## 9. Otras rutas
 
 - `GET /healthz`: `{"ok": true}`, sin sesión. La usa la comprobación de salud del contenedor.
 - `GET /`: la interfaz (`web/admin/dist/index.html`) y sus recursos en `/assets/`. Mientras la imagen no la incluya, una página que lo dice.
+
+## 10. Comunicaciones por correo (2026-11-13)
+
+Correos a los clientes con la plantilla de Fichaitor (`brand/correo/LEEME.md`, 12). Diseño: anexo «Comunicaciones por correo desde el backoffice» de `docs/admin-facturacion.md`. **Solo el rol `propietario`.** Flujo: redactar → vista previa → prueba a tu dirección → recuento → confirmar con TOTP → el worker envía en cola, a ritmo limitado.
+
+- **Tipos.** `servicio` (cambios en el producto o en las condiciones, incidencias, fin de la beta): llega a todo el público, sin enlace de baja. `comercial` (ofertas, novedades con intención de venta, boletín): no llega a las cuentas que se dieron de baja de las comerciales, y cada correo lleva su enlace de baja y las cabeceras `List-Unsubscribe` y `List-Unsubscribe-Post`. Si dudas, es comercial.
+- **Público** (`audience`): `todas` (las cuentas activas), `beta` (con un derecho beta en vigor), `plan` (con al menos una ficha activa en `audience_plan`: `gratis`, `pro` o `pro_whatsapp`) o `cuenta` (`audience_account`, el id de una cuenta). Nunca entra la lista de espera ni una dirección escrita a mano, ni una cuenta dada de baja o con la baja de la cuenta programada.
+- **Sin direcciones.** Ninguna ruta devuelve la dirección de un cliente: solo recuentos. La comunicación guarda el texto, el tipo, el público, el estado, los recuentos y las fechas.
+- **Estados** (`state`): `borrador` (se cambia, se prueba y se confirma), `enviando` (los correos están en cola) y `enviada` (todos han terminado).
+
+### `POST /admin/api/communications`
+
+Crea un borrador. Respuesta `201 {"communication_id": "…"}`.
+
+```json
+{
+  "kind": "comercial",
+  "subject": "Novedad en Fichaitor: contesta tus reseñas desde WhatsApp",
+  "preheader": "Te avisamos de cada reseña nueva y la respondes desde el mismo chat.",
+  "headline": "Reseñas por WhatsApp",
+  "paragraphs": ["Con el plan Pro+, Fichaitor…", "Puedes pasar a Pro+…"],
+  "button_label": "Ver el plan Pro+",
+  "button_url": "https://fichaitor.es/app#facturacion",
+  "audience": "plan",
+  "audience_plan": "pro",
+  "audience_account": null
+}
+```
+
+| Campo | Regla |
+|---|---|
+| `subject` | De 1 a 90 caracteres, en una línea |
+| `preheader` | De 1 a 120, en una línea |
+| `headline` | De 1 a 40, en una línea y **sin punto final** (la plantilla pone el punto rojo) |
+| `paragraphs` | De 1 a 8, de hasta 1000 caracteres cada uno. Texto, no HTML: se escapa todo. Un salto de línea dentro de un párrafo no se convierte en `<br>`: cada párrafo es un elemento de la lista |
+| `button_label` y `button_url` | Opcionales, los dos o ninguno. Etiqueta de hasta 30. El enlace **solo** puede ser `https://fichaitor.es/…` (sin usuario, puerto, espacios ni comillas): se comprueba al guardar |
+| `audience_plan` | Obligatorio con `audience = "plan"`; se ignora con los demás |
+| `audience_account` | Obligatorio con `audience = "cuenta"`; se ignora con los demás. `404 not_found` si la cuenta no existe |
+
+Errores: `422 invalid` con `message` sobre el campo (nunca repite el valor), `422 validation` si falta un campo.
+
+### `PUT /admin/api/communications/{id}`
+
+Cambia un borrador, con el mismo cuerpo. Respuesta `200 {"communication_id": "…"}`. `422 invalid` si ya se envió. Un cambio invalida la prueba anterior: hay que enviar otra antes de confirmar.
+
+### `GET /admin/api/communications/{id}`
+
+```json
+{
+  "communication_id": "…", "kind": "comercial", "subject": "…", "preheader": "…",
+  "headline": "…", "paragraphs": ["…"], "button_label": "…", "button_url": "https://fichaitor.es/…",
+  "audience": "plan", "audience_plan": "pro", "audience_account": null,
+  "state": "borrador", "created_at": "…", "updated_at": "…", "created_by": "jesus",
+  "test_sent_at": null, "test_is_current": false,
+  "confirmed_at": null, "confirmed_by": null, "per_minute": null,
+  "recipients": null, "excluded": null, "sent": 0, "failed": 0, "skipped": 0, "finished_at": null
+}
+```
+
+`test_is_current`: hay una prueba de esta versión (sin ella, confirmar da `422`). Tras confirmar: `recipients` (correos encolados), `excluded` (cuentas del público que no la reciben porque se dieron de baja de las comerciales), y `sent`, `failed` y `skipped` (dados de baja entre la confirmación y su envío) según avanza el worker.
+
+### `GET /admin/api/communications/{id}/preview` y `/preview.html`
+
+La vista previa, con el mismo código que usa el worker:
+
+```json
+{
+  "subject": "…", "preheader": "…", "html": "<!doctype html>…", "text": "RESEÑAS POR WHATSAPP\n\n…",
+  "headers": [
+    { "name": "List-Unsubscribe", "value": "<https://fichaitor.es/api/v1/public/unsubscribe/one-click?token=prueba>" },
+    { "name": "List-Unsubscribe-Post", "value": "List-Unsubscribe=One-Click" }
+  ]
+}
+```
+
+- `headers` va vacío en las de servicio. En la vista previa (y en la prueba) el token de baja es `prueba`: no da de baja a nadie.
+- `preview.html` devuelve solo el HTML (`text/html`), para enseñarlo en un `<iframe sandbox src="/admin/api/communications/{id}/preview.html">`. Es la única respuesta con otra CSP: `default-src 'none'; style-src 'unsafe-inline'; img-src data:; frame-ancestors 'self'; sandbox …` y `X-Frame-Options: SAMEORIGIN`. Sin scripts. No pongas el HTML del JSON en `srcdoc`: la CSP del backoffice bloquearía sus estilos en línea.
+
+### `GET /admin/api/communications/{id}/audience`
+
+Cuántos la recibirían si se confirmara ahora. Enséñalo antes de confirmar.
+
+```json
+{ "recipients": 182, "excluded": 4, "per_minute": 60 }
+```
+
+`excluded` solo cuenta en las comerciales. `per_minute`: el ritmo de envío (`FICHAITOR_ADMIN_COMMUNICATION_PER_MINUTE`, 60 por defecto): 182 correos tardan unos 3 minutos.
+
+### `POST /admin/api/communications/{id}/test`
+
+Envía la prueba a **tu** dirección (la que el propietario guardó con `scripts/admin_usuario.py correo`), con «[Prueba]» delante del asunto. Respuesta `202 {"sent_to": "j***s@bitclick.es"}`. Solo de un borrador y 10 por hora como mucho. `422 invalid` si no tienes dirección (el `message` lo dice).
+
+### `POST /admin/api/communications/{id}/confirm`
+
+Confirma el envío. **Acción sensible** (TOTP de menos de 5 minutos).
+
+```json
+{ "expected_recipients": 182 }
+```
+
+- `expected_recipients`: el `recipients` que enseñaste. Si el público ha cambiado, `422 invalid` con el número nuevo en `message`: enséñalo y pide confirmar otra vez.
+- `422 invalid` también si no es un borrador, si falta la prueba de esta versión o si no hay ningún destinatario.
+- Respuesta `202`:
+
+```json
+{ "communication_id": "…", "recipients": 182, "excluded": 4, "per_minute": 60, "last_run_at": "…" }
+```
+
+`last_run_at`: cuándo sale el último correo. Cada correo es un job `send_mail`; su carga lleva la dirección y la cuenta hasta que se envía, y se vacía al terminar. Una comunicación confirmada no se puede cambiar ni volver a enviar.
+
+### `GET /admin/api/communications?limit=50&cursor=<next_cursor>`
+
+El historial, de la más nueva a la más vieja (sin los párrafos). Clave: `created_at`, `communication_id`.
+
+```json
+{
+  "communications": [ { "communication_id": "…", "kind": "servicio", "subject": "…", "audience": "todas",
+                        "audience_plan": null, "audience_account": null, "state": "enviada",
+                        "created_at": "…", "created_by": "jesus", "test_sent_at": "…",
+                        "confirmed_at": "…", "confirmed_by": "jesus", "recipients": 182,
+                        "excluded": 0, "sent": 180, "failed": 1, "skipped": 1, "finished_at": "…" } ],
+  "next_cursor": null,
+  "per_minute": 60
+}
+```
+
+Las comunicaciones se borran a los 12 meses de escribirse (`docs/retencion.md`).

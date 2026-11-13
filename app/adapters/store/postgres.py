@@ -336,6 +336,14 @@ class PostgresStore:
             score,
         )
 
+    async def unsubscribe_communications(self, account_id: str, source: str) -> None:
+        """The account opts out of the commercial communications (db/schema_admin.sql,
+        fichaitor_communication_unsubscribe). Idempotent; nothing for an account that does
+        not exist or left."""
+        await self._require_pool().execute(
+            "SELECT fichaitor_communication_unsubscribe($1::uuid, $2)", account_id, source
+        )
+
     async def account_exists(self, google_sub: str) -> bool:
         return bool(
             await self._require_pool().fetchval(

@@ -630,6 +630,56 @@ Con `FICHAITOR_FAKE_MAIL=true` no se envía nada. El worker escribe el correo co
 docker compose logs worker | grep -A12 "CORREO SIMULADO"
 ```
 
+## Baja de las comunicaciones comerciales (2026-11-13)
+
+Desde el backoffice se envían correos a los clientes (`docs/contrato-backoffice.md`, 10). Los **comerciales** (ofertas, novedades con intención de venta, boletín) llevan un enlace para darse de baja de ellos, como pide el artículo 21 de la LSSI. Los de **servicio** (cambios en las condiciones, incidencias) no lo llevan: llegan a todos.
+
+El enlace es `https://fichaitor.es/baja-comunicaciones#<token>`. El token va en el **fragmento**: no llega a los registros del servidor. Es uno por cuenta, firmado por el backend, solo sirve para esto y no caduca pronto (un correo leído meses después tiene que funcionar).
+
+La baja deja de enviar las comunicaciones **comerciales**. Los correos sobre la cuenta y el servicio (códigos, bajas, facturas, avisos de renovación, comunicaciones de servicio) siguen llegando.
+
+### `POST /api/v1/public/unsubscribe`
+
+Para la página `fichaitor.es/baja-comunicaciones`, que hace la sesión de interfaz. **Sin sesión, sin cookies y sin la cabecera `X-Requested-With`.**
+
+```json
+{ "token": "..." }
+```
+
+Respuesta **204** sin cuerpo.
+
+- La página lee el token del fragmento (`location.hash`), lo quita de la barra de direcciones (`history.replaceState`) y lo envía en el cuerpo. Sin token en el fragmento, no llames a la API.
+- **Siempre 204**, sea el token válido, ya usado, de una cuenta que se dio de baja, de otro secreto o no sea un token. La respuesta no dice nada de ninguna cuenta. Enseña siempre el mismo texto, por ejemplo: «Listo. No te enviaremos más comunicaciones comerciales. Seguirás recibiendo los correos sobre tu cuenta y tu servicio.»
+- **Idempotente:** repetirla no cambia nada.
+- **429** con más de 20 intentos por dirección IP en una hora (`FICHAITOR_UNSUBSCRIBE_RATE_LIMIT`). Texto: «Demasiados intentos. Prueba dentro de un rato.»
+- **503** si la base no responde o si falta `FICHAITOR_UNSUBSCRIBE_SECRET`: «Ahora mismo no podemos hacerlo. Prueba otra vez en un minuto.» Ofrece reintentar.
+- No pide confirmación en la página: la baja es de un clic. Tampoco ofrece «volver a darse de alta» (no hay ruta para eso).
+
+### `POST /api/v1/public/unsubscribe/one-click?token=<token>`
+
+La URL de la cabecera `List-Unsubscribe` de cada correo comercial. **No es para la web:** la llama el cliente de correo (Gmail, Yahoo, Apple Mail…) cuando el destinatario pulsa «Cancelar suscripción», según el RFC 8058:
+
+```http
+List-Unsubscribe: <https://fichaitor.es/api/v1/public/unsubscribe/one-click?token=...>
+List-Unsubscribe-Post: List-Unsubscribe=One-Click
+```
+
+- El cliente hace un `POST` con el cuerpo `List-Unsubscribe=One-Click` (`application/x-www-form-urlencoded` o `multipart/form-data`). Sin cookies ni cabeceras nuestras: no pide sesión ni la cabecera de protección.
+- Aquí el token tiene que ir en la URL (el cuerpo lo fija el RFC), así que puede quedar en el registro de acceso de nginx. Filtrado, lo único que permite es dar de baja de las comerciales a esa cuenta.
+- Mismas respuestas que la ruta de la página: **204** siempre, **429** con más de 600 llamadas por IP en una hora (`FICHAITOR_UNSUBSCRIBE_ONE_CLICK_RATE_LIMIT`; los proveedores de correo llaman desde pocas direcciones) y **503**.
+- Un `GET` responde **405** y no da de baja: los analizadores de enlaces de los servidores de correo abren las URL y no deben dar de baja a nadie.
+- Sin `mailto:` en `List-Unsubscribe`: una baja por correo a soporte@ sería manual.
+
+### Qué se guarda
+
+Una fila por cuenta en `communication_optout`: el id de la cuenta, la fecha y si fue por la página (`enlace`) o por el cliente de correo (`un_clic`). Ni el token, ni la IP. Se borra con la cuenta (`docs/retencion.md`).
+
+### Lo que la web NO debe hacer con la baja de comunicaciones
+
+- No envíes el token a herramientas de analítica o de registro de errores, ni lo guardes.
+- No muestres un mensaje distinto si el token no vale: la API no lo dice a propósito.
+- No pongas la página detrás del inicio de sesión.
+
 ## Reseñas y respuestas (2026-11-12)
 
 Primera función que **escribe en Google**: el dueño ve las reseñas de su ficha, pide una respuesta redactada si quiere y **publica la que confirma**. Una respuesta es pública y Google avisa a quien escribió la reseña: no se puede deshacer, solo editar o borrar después.

@@ -9,6 +9,7 @@ db/schema_admin.sql, que comprueban que quien llama es el propietario.
     python scripts/admin_usuario.py alta --usuario ana --rol soporte
     python scripts/admin_usuario.py restablecer --usuario ana
     python scripts/admin_usuario.py desactivar --usuario ana
+    python scripts/admin_usuario.py correo --usuario ana --correo ana@bitclick.es
 
 - alta: crea a la persona y escribe un enlace de alta, válido 24 horas y de un solo uso:
   http://localhost:8090/#alta=<token>. La persona lo abre por el túnel, elige su
@@ -17,6 +18,8 @@ db/schema_admin.sql, que comprueban que quien llama es el propietario.
   identidad en persona o por teléfono. Cierra sus sesiones, retira sus códigos y escribe
   un enlace de alta nuevo.
 - desactivar: ya no entra. Cierra sus sesiones. Borra también su clave SSH del túnel.
+- correo: la dirección a la que le llegan los envíos de prueba de las comunicaciones
+  (docs/manual-backoffice.md, «Enviar una comunicación por correo»). --quitar la borra.
 
 Nunca imprime ni pide contraseñas. El enlace es el único secreto que imprime: de la base
 solo sale su huella (SHA-256). Dáselo a la persona por un canal privado.
@@ -45,6 +48,7 @@ HOST_VARIABLE = "FICHAITOR_OWNER_DB_HOST"
 ROLES = ("soporte", "finanzas", "propietario")
 USERNAME = re.compile(r"^[a-z][a-z0-9_.-]{1,39}$")
 LINK = "http://localhost:8090/#alta={token}"
+EMAIL = re.compile(r"^[^\s@]+@[^\s@]+\.[^\s@]+$")
 
 
 class ScriptError(Exception):
@@ -65,10 +69,19 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     reset.add_argument("--usuario", required=True)
     off = sub.add_parser("desactivar", help="La persona ya no puede entrar.")
     off.add_argument("--usuario", required=True)
+    mail = sub.add_parser("correo", help="Dirección para las pruebas de las comunicaciones.")
+    mail.add_argument("--usuario", required=True)
+    which = mail.add_mutually_exclusive_group(required=True)
+    which.add_argument("--correo")
+    which.add_argument("--quitar", action="store_true")
     args = parser.parse_args(argv)
     args.usuario = args.usuario.strip().lower()
     if not USERNAME.match(args.usuario):
         parser.error("--usuario: de 2 a 40 caracteres, minúsculas, cifras, punto, guion o _.")
+    if args.orden == "correo" and args.correo is not None:
+        args.correo = args.correo.strip().lower()
+        if not EMAIL.match(args.correo):
+            parser.error("--correo: no es una dirección de correo.")
     return args
 
 
@@ -113,6 +126,13 @@ async def run(
             await conn.fetchval("SELECT admin_owner_reset_user($1, $2)", args.usuario, hashed)
             out(f"{args.usuario}: sesiones cerradas y códigos retirados. Enlace de alta nuevo:")
             out(link)
+        elif args.orden == "correo":
+            address = None if args.quitar else args.correo
+            await conn.fetchval("SELECT admin_owner_set_email($1, $2)", args.usuario, address)
+            out(
+                f"{args.usuario}: dirección de las pruebas "
+                + ("quitada." if address is None else "guardada.")
+            )
         else:
             await conn.fetchval("SELECT admin_owner_set_active($1, false)", args.usuario)
             out(f"{args.usuario} desactivado y sus sesiones cerradas.")

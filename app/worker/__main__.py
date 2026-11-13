@@ -15,6 +15,7 @@ from app.adapters.job_queue.postgres import PostgresJobQueue
 from app.adapters.mailer.fake import FakeMailer
 from app.adapters.mailer.smtp import SmtpMailer
 from app.adapters.sentiment_model.build import build_sentiment_model
+from app.adapters.worker_store.communications import PostgresCommunications
 from app.adapters.worker_store.postgres import PostgresWorkerStore
 from app.domain.offboarding import RetentionPolicy
 from app.domain.sentiment import SentimentPolicy
@@ -54,6 +55,8 @@ def build_registry(
     public_base_url: str = "",
     retention_policy: RetentionPolicy | None = None,
     documents: send_mail.BillingDocuments | None = None,
+    communications: send_mail.Communications | None = None,
+    unsubscribe_secret: str = "",
 ) -> HandlerRegistry:
     """jobs: where a finished sync enqueues the sentiment analysis. Without it, no
     analysis is chained (the job kind is still registered). documents: where the emails
@@ -87,7 +90,17 @@ def build_registry(
     # Leaving: the emails, making a leave effective at its date, and the daily pass
     # that deletes what is past its term (docs/retencion.md).
     apply = apply_offboarding.ApplyOffboarding(store, google, settings.token_private_key)
-    registry.register(send_mail.KIND, send_mail.SendMail(store, mailer, public_base_url, documents))
+    registry.register(
+        send_mail.KIND,
+        send_mail.SendMail(
+            store,
+            mailer,
+            public_base_url,
+            documents,
+            communications=communications,
+            unsubscribe_secret=unsubscribe_secret,
+        ),
+    )
     registry.register(apply_offboarding.KIND, apply)
     registry.register(
         retention.KIND, retention.Retention(store, apply, retention_policy or RetentionPolicy())
@@ -174,6 +187,8 @@ async def run(settings: WorkerSettings) -> None:
                 public_base_url=mail_settings.public_base_url,
                 retention_policy=retention_settings.policy(),
                 documents=PostgresBillingDocuments(pool),
+                communications=PostgresCommunications(pool),
+                unsubscribe_secret=mail_settings.unsubscribe_secret,
             ),
             worker_id=settings.worker_id,
             poll_interval=settings.worker_poll_interval_seconds,

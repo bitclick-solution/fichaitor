@@ -2142,3 +2142,606 @@ TO fichaitor_admin;
 --     END IF;
 -- END
 -- $$;
+
+-- ---------------------------------------------------------------------------
+-- Comunicaciones por correo desde el backoffice (2026-11-13). Diseño: anexo «Comunicaciones
+-- por correo desde el backoffice» de docs/admin-facturacion.md; plantilla «comunicacion»:
+-- brand/correo/LEEME.md, 12. Contrato: docs/contrato-backoffice.md, sección 10.
+--
+-- - Dos tipos: 'servicio' (a todo el público elegido, sin enlace de baja) y 'comercial'
+--   (solo a quien no se ha dado de baja de las comerciales, con su enlace y las cabeceras
+--   List-Unsubscribe de un clic; LSSI art. 21.2).
+-- - Público: todas las cuentas activas, solo la beta, un plan o una cuenta. Siempre de
+--   `account`: nunca la lista de espera ni direcciones escritas a mano. Nunca una cuenta
+--   dada de baja ni con la baja de la cuenta programada.
+-- - Se guarda la comunicación (texto, tipo, público, estado, recuentos y fechas), nunca la
+--   lista de direcciones: las direcciones solo van en las cargas de los jobs send_mail, que
+--   el worker vacía al enviar (o al fallar).
+-- - Solo el rol propietario, con auditoría; confirmar el envío pide un TOTP de menos de 5
+--   minutos y el número de destinatarios que se le enseñó.
+-- - Retención: la comunicación, 12 meses (fichaitor_communication_purge, en la pasada
+--   diaria del worker); la baja de comunicaciones comerciales, mientras exista la cuenta
+--   (se borra con ella: al darse de baja la cuenta y por la clave ajena).
+-- Funciones con search_path = pg_catalog, public, pg_temp y nombres cualificados (M6).
+
+-- La dirección de la persona del backoffice, solo para recibir el envío de prueba de una
+-- comunicación. La pone el propietario con `scripts/admin_usuario.py correo`. El backoffice
+-- nunca la enseña entera.
+ALTER TABLE admin_user ADD COLUMN IF NOT EXISTS email text;
+ALTER TABLE admin_user DROP CONSTRAINT IF EXISTS admin_user_email_check;
+ALTER TABLE admin_user ADD CONSTRAINT admin_user_email_check
+    CHECK (length(email) <= 254 AND email ~ '^[^[:space:][:cntrl:]@]+@[^[:space:][:cntrl:]@]+\.[^[:space:][:cntrl:]@]+$');
+
+-- Solo el propietario de la base (scripts/admin_usuario.py correo): la dirección de las
+-- pruebas de una persona. NULL la quita. Se audita sin la dirección.
+CREATE OR REPLACE FUNCTION admin_owner_set_email(p_username text, p_email text)
+RETURNS void
+LANGUAGE plpgsql SECURITY DEFINER SET search_path = pg_catalog, public, pg_temp AS $$
+DECLARE
+    who uuid;
+BEGIN
+    IF NOT public.admin_caller_is_owner() THEN
+        RAISE EXCEPTION 'solo el propietario de la base' USING ERRCODE = 'insufficient_privilege';
+    END IF;
+    UPDATE public.admin_user u SET email = nullif(lower(btrim(coalesce(p_email, ''))), '')
+    WHERE u.username = lower(p_username) RETURNING u.id INTO who;
+    IF who IS NULL THEN
+        RAISE EXCEPTION 'no existe esa persona' USING ERRCODE = 'check_violation';
+    END IF;
+    PERFORM public.admin_audit_write(NULL, 'user_email_set', NULL, who::text, NULL,
+        jsonb_build_object('set', p_email IS NOT NULL AND btrim(p_email) <> ''));
+END
+$$;
+
+REVOKE ALL ON FUNCTION admin_owner_set_email(text, text) FROM PUBLIC;
+
+-- Reglas del texto (LEEME.md, 12), también en la base: de 1 a 8 párrafos de hasta 1000
+-- caracteres, sin caracteres de control salvo el salto de línea; y el enlace del botón,
+-- solo https://fichaitor.es/…, sin espacios, comillas ni ángulos. Inmutables y sin datos.
+CREATE OR REPLACE FUNCTION communication_paragraphs_ok(p text[]) RETURNS boolean
+LANGUAGE sql IMMUTABLE SET search_path = pg_catalog, public, pg_temp AS $$
+    SELECT p IS NOT NULL AND pg_catalog.cardinality(p) BETWEEN 1 AND 8
+       AND pg_catalog.array_ndims(p) = 1
+       AND NOT EXISTS (SELECT 1 FROM pg_catalog.unnest(p) AS t (x)
+                       WHERE x IS NULL OR pg_catalog.length(pg_catalog.btrim(x)) = 0
+                          OR pg_catalog.length(x) > 1000
+                          OR pg_catalog.translate(x, E'\n', '') ~ '[[:cntrl:]]')
+$$;
+
+CREATE OR REPLACE FUNCTION communication_url_ok(p text) RETURNS boolean
+LANGUAGE sql IMMUTABLE SET search_path = pg_catalog, public, pg_temp AS $$
+    SELECT p IS NULL
+        OR (pg_catalog.length(p) <= 500 AND p ~ '^https://fichaitor\.es/'
+            AND p !~ '[[:space:][:cntrl:]"''<>`]' AND pg_catalog.strpos(p, pg_catalog.chr(92)) = 0)
+$$;
+
+-- Una comunicación. created_by y confirmed_by: la persona del backoffice (sin clave
+-- ajena, como en la auditoría: la comunicación dura más que la persona). Estados:
+-- borrador (se puede cambiar, probar y confirmar), enviando (jobs en cola) y enviada
+-- (todos los correos han terminado: enviados, fallidos u omitidos).
+-- recipients: los correos que se encolaron al confirmar; excluded: las cuentas del público
+-- que no lo reciben porque se dieron de baja de las comerciales; skipped_count: las que se
+-- dieron de baja (o de la cuenta) entre la confirmación y su envío.
+CREATE TABLE IF NOT EXISTS admin_communication (
+    id               uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+    kind             text NOT NULL CHECK (kind IN ('servicio', 'comercial')),
+    subject          text NOT NULL CHECK (length(btrim(subject)) BETWEEN 1 AND 90
+                                          AND subject !~ '[[:cntrl:]]'),
+    preheader        text NOT NULL CHECK (length(btrim(preheader)) BETWEEN 1 AND 120
+                                          AND preheader !~ '[[:cntrl:]]'),
+    headline         text NOT NULL CHECK (length(btrim(headline)) BETWEEN 1 AND 40
+                                          AND headline !~ '[[:cntrl:]]'
+                                          AND right(headline, 1) <> '.'),
+    paragraphs       text[] NOT NULL CHECK (communication_paragraphs_ok(paragraphs)),
+    button_label     text CHECK (length(btrim(button_label)) BETWEEN 1 AND 30
+                                 AND button_label !~ '[[:cntrl:]]'),
+    button_url       text CHECK (communication_url_ok(button_url)),
+    audience         text NOT NULL CHECK (audience IN ('todas', 'beta', 'plan', 'cuenta')),
+    audience_plan    text CHECK (audience_plan IN ('gratis', 'pro', 'pro_whatsapp')),
+    audience_account uuid,
+    state            text NOT NULL DEFAULT 'borrador'
+                     CHECK (state IN ('borrador', 'enviando', 'enviada')),
+    created_by       uuid NOT NULL,
+    created_at       timestamptz NOT NULL DEFAULT now(),
+    updated_at       timestamptz NOT NULL DEFAULT now(),
+    test_sent_at     timestamptz,
+    confirmed_by     uuid,
+    confirmed_at     timestamptz,
+    per_minute       integer CHECK (per_minute BETWEEN 1 AND 600),
+    recipients       integer CHECK (recipients >= 0),
+    excluded         integer CHECK (excluded >= 0),
+    sent_count       integer NOT NULL DEFAULT 0 CHECK (sent_count >= 0),
+    failed_count     integer NOT NULL DEFAULT 0 CHECK (failed_count >= 0),
+    skipped_count    integer NOT NULL DEFAULT 0 CHECK (skipped_count >= 0),
+    finished_at      timestamptz,
+    CHECK ((button_label IS NULL) = (button_url IS NULL)),
+    CHECK ((audience = 'plan') = (audience_plan IS NOT NULL)),
+    CHECK ((audience = 'cuenta') = (audience_account IS NOT NULL)),
+    CHECK ((state = 'borrador') = (confirmed_at IS NULL)),
+    CHECK (state = 'borrador' OR (confirmed_by IS NOT NULL AND per_minute IS NOT NULL
+                                  AND recipients IS NOT NULL AND excluded IS NOT NULL)),
+    CHECK ((state = 'enviada') = (finished_at IS NOT NULL)),
+    CHECK (sent_count + failed_count + skipped_count <= coalesce(recipients, 0))
+);
+
+-- El historial (de la más nueva a la más vieja) y la retención, por la misma clave.
+CREATE INDEX IF NOT EXISTS admin_communication_keyset ON admin_communication (created_at, id);
+
+-- Baja de las comunicaciones comerciales, por cuenta: una fila por cuenta que no quiere
+-- recibirlas. La escribe la API (enlace del correo o un clic de List-Unsubscribe) con
+-- fichaitor_communication_unsubscribe. source: 'enlace' (página de la web) o 'un_clic'
+-- (el cliente de correo, RFC 8058). Se borra con la cuenta: al darse de baja (disparador
+-- de abajo) y por la clave ajena si alguna vez se borra la fila de la cuenta.
+CREATE TABLE IF NOT EXISTS communication_optout (
+    account_id uuid PRIMARY KEY REFERENCES account (id) ON DELETE CASCADE,
+    created_at timestamptz NOT NULL DEFAULT now(),
+    source     text NOT NULL CHECK (source IN ('enlace', 'un_clic'))
+);
+
+-- Ningún rol de la aplicación lee ni escribe estas tablas directamente: solo por las
+-- funciones de abajo. Con seguridad a nivel de fila y sin políticas, por si alguien
+-- concediera algo por error.
+ALTER TABLE admin_communication ENABLE ROW LEVEL SECURITY;
+ALTER TABLE communication_optout ENABLE ROW LEVEL SECURITY;
+REVOKE ALL ON admin_communication, communication_optout
+    FROM PUBLIC, fichaitor_api, fichaitor_worker, fichaitor_admin;
+DO $$
+BEGIN
+    IF EXISTS (SELECT FROM pg_catalog.pg_roles WHERE rolname = 'fichaitor_conversation') THEN
+        REVOKE ALL ON admin_communication, communication_optout FROM fichaitor_conversation;
+    END IF;
+    IF EXISTS (SELECT FROM pg_catalog.pg_roles WHERE rolname = 'fichaitor_billing') THEN
+        REVOKE ALL ON admin_communication, communication_optout FROM fichaitor_billing;
+    END IF;
+END
+$$;
+
+-- La baja de comunicaciones se va con la cuenta: cuando se da de baja (deleted_at), en la
+-- misma transacción.
+CREATE OR REPLACE FUNCTION communication_optout_on_leave() RETURNS trigger
+LANGUAGE plpgsql SECURITY DEFINER SET search_path = pg_catalog, public, pg_temp AS $$
+BEGIN
+    IF NEW.deleted_at IS NOT NULL AND OLD.deleted_at IS NULL THEN
+        DELETE FROM public.communication_optout o WHERE o.account_id = NEW.id;
+    END IF;
+    RETURN NULL;
+END
+$$;
+
+REVOKE ALL ON FUNCTION communication_optout_on_leave() FROM PUBLIC;
+DROP TRIGGER IF EXISTS communication_optout_on_leave ON account;
+CREATE TRIGGER communication_optout_on_leave AFTER UPDATE OF deleted_at ON account
+    FOR EACH ROW EXECUTE FUNCTION communication_optout_on_leave();
+
+-- ¿Recibe hoy esta cuenta comunicaciones? (interna). Activa: no dada de baja, con correo
+-- y sin la baja de la cuenta programada. Una baja de ficha no cuenta: sigue siendo cliente.
+CREATE OR REPLACE FUNCTION communication_account_ok(p_account uuid) RETURNS boolean
+LANGUAGE sql STABLE SECURITY DEFINER SET search_path = pg_catalog, public, pg_temp AS $$
+    SELECT EXISTS (
+        SELECT 1 FROM public.account x
+        WHERE x.id = p_account AND x.deleted_at IS NULL AND x.email <> ''
+          AND NOT EXISTS (SELECT 1 FROM public.offboarding o
+                          WHERE o.account_id = x.id AND o.scope = 'cuenta'
+                            AND o.restored_at IS NULL AND o.effective_at IS NULL))
+$$;
+
+-- El público de una comunicación (interna): cuentas activas del público, con su correo y
+-- si se dieron de baja de las comerciales. Solo de `account`: ni la lista de espera ni
+-- direcciones escritas a mano. Beta: con un derecho 'beta' en vigor. Plan: con al menos
+-- una ficha activa en ese plan.
+CREATE OR REPLACE FUNCTION communication_recipients(p_id uuid)
+RETURNS TABLE (account_id uuid, email text, opted_out boolean)
+LANGUAGE sql STABLE SECURITY DEFINER SET search_path = pg_catalog, public, pg_temp AS $$
+    SELECT x.id, x.email,
+           EXISTS (SELECT 1 FROM public.communication_optout o WHERE o.account_id = x.id)
+    FROM public.admin_communication c, public.account x
+    WHERE c.id = p_id
+      AND x.deleted_at IS NULL AND x.email <> ''
+      AND NOT EXISTS (SELECT 1 FROM public.offboarding o
+                      WHERE o.account_id = x.id AND o.scope = 'cuenta'
+                        AND o.restored_at IS NULL AND o.effective_at IS NULL)
+      AND CASE c.audience
+            WHEN 'todas' THEN true
+            WHEN 'beta' THEN EXISTS (
+                SELECT 1 FROM public.plan_entitlement e
+                WHERE e.account_id = x.id AND e.source = 'beta' AND e.starts_at <= now()
+                  AND (e.ends_at IS NULL OR e.ends_at > now()))
+            WHEN 'plan' THEN EXISTS (
+                SELECT 1 FROM public.location l
+                WHERE l.account_id = x.id AND l.active_since IS NOT NULL
+                  AND l.plan = c.audience_plan)
+            WHEN 'cuenta' THEN x.id = c.audience_account
+            ELSE false
+          END
+$$;
+
+-- Cuántos la recibirían ahora (interna): {"recipients", "excluded"}. En una comercial,
+-- excluded son las cuentas del público dadas de baja de las comerciales.
+CREATE OR REPLACE FUNCTION communication_count(p_id uuid) RETURNS jsonb
+LANGUAGE sql STABLE SECURITY DEFINER SET search_path = pg_catalog, public, pg_temp AS $$
+    SELECT jsonb_build_object(
+        'recipients', count(*) FILTER (WHERE NOT (c.kind = 'comercial' AND r.opted_out)),
+        'excluded', count(*) FILTER (WHERE c.kind = 'comercial' AND r.opted_out))
+    FROM public.admin_communication c
+    LEFT JOIN LATERAL public.communication_recipients(c.id) r ON true
+    WHERE c.id = p_id AND r.account_id IS NOT NULL
+$$;
+
+-- Una comunicación entera, como la enseña el backoffice (interna).
+CREATE OR REPLACE FUNCTION communication_json(p_id uuid) RETURNS jsonb
+LANGUAGE sql STABLE SECURITY DEFINER SET search_path = pg_catalog, public, pg_temp AS $$
+    SELECT jsonb_build_object(
+        'communication_id', c.id, 'kind', c.kind, 'subject', c.subject,
+        'preheader', c.preheader, 'headline', c.headline, 'paragraphs', to_jsonb(c.paragraphs),
+        'button_label', c.button_label, 'button_url', c.button_url,
+        'audience', c.audience, 'audience_plan', c.audience_plan,
+        'audience_account', c.audience_account, 'state', c.state,
+        'created_at', c.created_at, 'updated_at', c.updated_at,
+        'created_by', (SELECT u.username FROM public.admin_user u WHERE u.id = c.created_by),
+        'test_sent_at', c.test_sent_at,
+        'test_is_current', c.test_sent_at IS NOT NULL AND c.test_sent_at >= c.updated_at,
+        'confirmed_at', c.confirmed_at,
+        'confirmed_by', (SELECT u.username FROM public.admin_user u WHERE u.id = c.confirmed_by),
+        'per_minute', c.per_minute, 'recipients', c.recipients, 'excluded', c.excluded,
+        'sent', c.sent_count, 'failed', c.failed_count, 'skipped', c.skipped_count,
+        'finished_at', c.finished_at)
+    FROM public.admin_communication c WHERE c.id = p_id
+$$;
+
+-- Crear (p_id NULL) o cambiar un borrador. Solo propietario. El texto llega ya comprobado
+-- por el proceso (app/domain/communication.py); la base lo vuelve a comprobar con sus
+-- CHECK. Una comunicación confirmada no cambia.
+CREATE OR REPLACE FUNCTION admin_communication_save(
+    p_session text, p_id uuid, p_kind text, p_subject text, p_preheader text,
+    p_headline text, p_paragraphs text[], p_button_label text, p_button_url text,
+    p_audience text, p_plan text, p_account uuid)
+RETURNS uuid
+LANGUAGE plpgsql SECURITY DEFINER SET search_path = pg_catalog, public, pg_temp AS $$
+DECLARE
+    who uuid;
+    saved uuid;
+    plan text := CASE WHEN p_audience = 'plan' THEN p_plan END;
+    acct uuid := CASE WHEN p_audience = 'cuenta' THEN p_account END;
+    label text := nullif(btrim(coalesce(p_button_label, '')), '');
+    link text := nullif(btrim(coalesce(p_button_url, '')), '');
+BEGIN
+    SELECT a.actor_id INTO who FROM public.admin_actor(p_session, ARRAY['propietario'], false) a;
+    IF p_kind IS NULL OR p_kind NOT IN ('servicio', 'comercial') THEN
+        RAISE EXCEPTION 'El tipo es servicio o comercial.' USING ERRCODE = 'check_violation';
+    END IF;
+    IF p_audience IS NULL OR p_audience NOT IN ('todas', 'beta', 'plan', 'cuenta') THEN
+        RAISE EXCEPTION 'El público es todas, beta, plan o cuenta.'
+            USING ERRCODE = 'check_violation';
+    END IF;
+    IF p_audience = 'plan' AND (plan IS NULL OR plan NOT IN ('gratis', 'pro', 'pro_whatsapp')) THEN
+        RAISE EXCEPTION 'Elige el plan: gratis, pro o pro_whatsapp.'
+            USING ERRCODE = 'check_violation';
+    END IF;
+    IF p_audience = 'cuenta' AND NOT EXISTS (SELECT 1 FROM public.account x WHERE x.id = acct) THEN
+        RAISE EXCEPTION 'No hay ninguna cuenta con ese id.' USING ERRCODE = 'no_data_found';
+    END IF;
+    IF (label IS NULL) <> (link IS NULL) THEN
+        RAISE EXCEPTION 'El botón necesita la etiqueta y el enlace.'
+            USING ERRCODE = 'check_violation';
+    END IF;
+    IF NOT public.communication_url_ok(link) THEN
+        RAISE EXCEPTION 'El enlace del botón solo puede ser https://fichaitor.es/…'
+            USING ERRCODE = 'check_violation';
+    END IF;
+    IF NOT public.communication_paragraphs_ok(p_paragraphs) THEN
+        RAISE EXCEPTION 'De 1 a 8 párrafos de hasta 1000 caracteres.'
+            USING ERRCODE = 'check_violation';
+    END IF;
+    IF p_id IS NULL THEN
+        INSERT INTO public.admin_communication
+            (kind, subject, preheader, headline, paragraphs, button_label, button_url,
+             audience, audience_plan, audience_account, created_by)
+        VALUES (p_kind, btrim(p_subject), btrim(p_preheader), btrim(p_headline), p_paragraphs,
+                label, link, p_audience, plan, acct, who)
+        RETURNING id INTO saved;
+    ELSE
+        UPDATE public.admin_communication c
+        SET kind = p_kind, subject = btrim(p_subject), preheader = btrim(p_preheader),
+            headline = btrim(p_headline), paragraphs = p_paragraphs, button_label = label,
+            button_url = link, audience = p_audience, audience_plan = plan,
+            audience_account = acct, updated_at = pg_catalog.clock_timestamp()
+        WHERE c.id = p_id AND c.state = 'borrador'
+        RETURNING c.id INTO saved;
+        IF saved IS NULL THEN
+            IF EXISTS (SELECT 1 FROM public.admin_communication c WHERE c.id = p_id) THEN
+                RAISE EXCEPTION 'Esta comunicación ya se ha enviado: no se puede cambiar.'
+                    USING ERRCODE = 'check_violation';
+            END IF;
+            RAISE EXCEPTION 'No existe esa comunicación.' USING ERRCODE = 'no_data_found';
+        END IF;
+    END IF;
+    PERFORM public.admin_audit_write(who, 'communication_saved', acct, saved::text, NULL,
+        jsonb_build_object('kind', p_kind, 'audience', p_audience, 'plan', plan,
+                           'created', p_id IS NULL));
+    RETURN saved;
+END
+$$;
+
+-- Una comunicación, para la vista previa y la pantalla de confirmar. Solo propietario.
+CREATE OR REPLACE FUNCTION admin_communication_get(p_session text, p_id uuid) RETURNS jsonb
+LANGUAGE plpgsql SECURITY DEFINER SET search_path = pg_catalog, public, pg_temp AS $$
+DECLARE
+    who uuid;
+    result jsonb;
+BEGIN
+    SELECT a.actor_id INTO who FROM public.admin_actor(p_session, ARRAY['propietario'], false) a;
+    result := public.communication_json(p_id);
+    IF result IS NULL THEN
+        RAISE EXCEPTION 'No existe esa comunicación.' USING ERRCODE = 'no_data_found';
+    END IF;
+    PERFORM public.admin_audit_write(who, 'communication_read', NULL, p_id::text, NULL, NULL);
+    RETURN result;
+END
+$$;
+
+-- Cuántos la recibirían si se confirmara ahora: lo que se enseña antes de confirmar.
+-- {"recipients", "excluded"}. Solo propietario. Nunca las direcciones.
+CREATE OR REPLACE FUNCTION admin_communication_audience(p_session text, p_id uuid) RETURNS jsonb
+LANGUAGE plpgsql SECURITY DEFINER SET search_path = pg_catalog, public, pg_temp AS $$
+DECLARE
+    who uuid;
+    result jsonb;
+BEGIN
+    SELECT a.actor_id INTO who FROM public.admin_actor(p_session, ARRAY['propietario'], false) a;
+    IF NOT EXISTS (SELECT 1 FROM public.admin_communication c WHERE c.id = p_id) THEN
+        RAISE EXCEPTION 'No existe esa comunicación.' USING ERRCODE = 'no_data_found';
+    END IF;
+    result := public.communication_count(p_id);
+    PERFORM public.admin_audit_write(who, 'communication_audience_read', NULL, p_id::text,
+                                     NULL, result);
+    RETURN result;
+END
+$$;
+
+-- Envío de prueba a la dirección de la persona conectada (admin_user.email), con
+-- «[Prueba]» en el asunto. Solo de un borrador, 10 por persona y hora como mucho. Devuelve
+-- la dirección enmascarada. Confirmar exige una prueba de la versión que se confirma.
+CREATE OR REPLACE FUNCTION admin_communication_test(p_session text, p_id uuid) RETURNS jsonb
+LANGUAGE plpgsql SECURITY DEFINER SET search_path = pg_catalog, public, pg_temp AS $$
+DECLARE
+    who uuid;
+    mail text;
+    current_state text;
+BEGIN
+    SELECT a.actor_id INTO who FROM public.admin_actor(p_session, ARRAY['propietario'], false) a;
+    SELECT c.state INTO current_state FROM public.admin_communication c WHERE c.id = p_id
+    FOR UPDATE;
+    IF NOT FOUND THEN
+        RAISE EXCEPTION 'No existe esa comunicación.' USING ERRCODE = 'no_data_found';
+    END IF;
+    IF current_state <> 'borrador' THEN
+        RAISE EXCEPTION 'Esta comunicación ya se ha enviado.' USING ERRCODE = 'check_violation';
+    END IF;
+    SELECT u.email INTO mail FROM public.admin_user u WHERE u.id = who;
+    IF mail IS NULL THEN
+        RAISE EXCEPTION 'No tienes dirección de correo para las pruebas: pídesela al propietario (scripts/admin_usuario.py correo).'
+            USING ERRCODE = 'check_violation';
+    END IF;
+    IF (SELECT count(*) FROM public.admin_audit_log g
+        WHERE g.admin_user = who AND g.action = 'communication_test_sent'
+          AND g.at > now() - interval '1 hour') >= 10 THEN
+        RAISE EXCEPTION 'Ya has enviado 10 pruebas en la última hora: espera un poco.'
+            USING ERRCODE = 'check_violation';
+    END IF;
+    INSERT INTO public.job (kind, payload, max_attempts)
+    VALUES ('send_mail',
+            jsonb_build_object('template', 'comunicacion', 'to', mail,
+                               'communication_id', p_id::text, 'test', true),
+            3);
+    UPDATE public.admin_communication c SET test_sent_at = pg_catalog.clock_timestamp()
+    WHERE c.id = p_id;
+    PERFORM public.admin_audit_write(who, 'communication_test_sent', NULL, p_id::text, NULL, NULL);
+    RETURN jsonb_build_object('sent_to', public.admin_mask_email(mail));
+END
+$$;
+
+-- Confirmar el envío (acción sensible: propietario y TOTP de menos de 5 minutos). Pide:
+-- un borrador, una prueba de esta versión, y que p_expected sea el número de destinatarios
+-- de ahora (el que se enseñó; si ha cambiado, se vuelve a enseñar). Encola un job
+-- send_mail por destinatario, separados 60 / p_per_minute segundos (el ritmo, de 1 a 600
+-- por minuto, lo pone el proceso con FICHAITOR_ADMIN_COMMUNICATION_PER_MINUTE). Cada carga
+-- lleva la dirección y la cuenta, nada del texto: el worker lo lee al enviar y vacía la
+-- carga. La clave de idempotencia (comunicación y cuenta) impide un segundo envío.
+CREATE OR REPLACE FUNCTION admin_communication_confirm(
+    p_session text, p_id uuid, p_expected integer, p_per_minute integer)
+RETURNS jsonb
+LANGUAGE plpgsql SECURITY DEFINER SET search_path = pg_catalog, public, pg_temp AS $$
+DECLARE
+    who uuid;
+    c public.admin_communication%ROWTYPE;
+    counts jsonb;
+    total integer;
+    left_out integer;
+    at_now timestamptz := now();
+BEGIN
+    SELECT a.actor_id INTO who FROM public.admin_actor(p_session, ARRAY['propietario'], true) a;
+    IF p_per_minute IS NULL OR p_per_minute NOT BETWEEN 1 AND 600 THEN
+        RAISE EXCEPTION 'El ritmo va de 1 a 600 correos por minuto.'
+            USING ERRCODE = 'check_violation';
+    END IF;
+    SELECT * INTO c FROM public.admin_communication x WHERE x.id = p_id FOR UPDATE;
+    IF NOT FOUND THEN
+        RAISE EXCEPTION 'No existe esa comunicación.' USING ERRCODE = 'no_data_found';
+    END IF;
+    IF c.state <> 'borrador' THEN
+        RAISE EXCEPTION 'Esta comunicación ya se ha enviado.' USING ERRCODE = 'check_violation';
+    END IF;
+    IF c.test_sent_at IS NULL OR c.test_sent_at < c.updated_at THEN
+        RAISE EXCEPTION 'Envía antes la prueba de esta versión y revísala.'
+            USING ERRCODE = 'check_violation';
+    END IF;
+    counts := public.communication_count(p_id);
+    total := (counts->>'recipients')::integer;
+    left_out := (counts->>'excluded')::integer;
+    IF total = 0 THEN
+        RAISE EXCEPTION 'Este público no tiene ningún destinatario.'
+            USING ERRCODE = 'check_violation';
+    END IF;
+    IF p_expected IS DISTINCT FROM total THEN
+        RAISE EXCEPTION 'El número de destinatarios ha cambiado (ahora %): revísalo y confirma de nuevo.',
+            total USING ERRCODE = 'check_violation';
+    END IF;
+    INSERT INTO public.job (kind, payload, run_at, idempotency_key, max_attempts)
+    SELECT 'send_mail',
+           jsonb_build_object('template', 'comunicacion', 'to', r.email,
+                              'communication_id', p_id::text, 'account_id', r.account_id::text),
+           at_now + make_interval(secs => (r.n - 1) * 60.0 / p_per_minute),
+           'comunicacion:' || p_id::text || ':' || r.account_id::text,
+           3
+    FROM (SELECT s.account_id, s.email, row_number() OVER (ORDER BY s.account_id) AS n
+          FROM public.communication_recipients(p_id) s
+          WHERE NOT (c.kind = 'comercial' AND s.opted_out)) r;
+    UPDATE public.admin_communication x
+    SET state = 'enviando', confirmed_by = who, confirmed_at = at_now,
+        per_minute = p_per_minute, recipients = total, excluded = left_out
+    WHERE x.id = p_id;
+    PERFORM public.admin_audit_write(who, 'communication_sent', c.audience_account, p_id::text,
+        NULL, jsonb_build_object('kind', c.kind, 'audience', c.audience,
+                                 'plan', c.audience_plan, 'recipients', total,
+                                 'excluded', left_out, 'per_minute', p_per_minute));
+    RETURN jsonb_build_object(
+        'communication_id', p_id, 'recipients', total, 'excluded', left_out,
+        'per_minute', p_per_minute,
+        'last_run_at', at_now + make_interval(secs => (total - 1) * 60.0 / p_per_minute));
+END
+$$;
+
+-- Historial (solo propietario): de la más nueva a la más vieja, por páginas (created_at e
+-- id, como el resto de listados). Sin el texto de los párrafos.
+CREATE OR REPLACE FUNCTION admin_communications(
+    p_session text, p_limit integer DEFAULT 50, p_after_key text DEFAULT NULL,
+    p_after_id text DEFAULT NULL)
+RETURNS TABLE (communication_id uuid, kind text, subject text, audience text,
+               audience_plan text, audience_account uuid, state text,
+               created_at timestamptz, created_by text, test_sent_at timestamptz,
+               confirmed_at timestamptz, confirmed_by text, recipients integer,
+               excluded integer, sent integer, failed integer, skipped integer,
+               finished_at timestamptz)
+LANGUAGE plpgsql SECURITY DEFINER SET search_path = pg_catalog, public, pg_temp AS $$
+DECLARE
+    who uuid;
+BEGIN
+    SELECT a.actor_id INTO who FROM public.admin_actor(p_session, ARRAY['propietario'], false) a;
+    PERFORM public.admin_audit_write(who, 'communication_list_read', NULL, NULL, NULL, NULL);
+    RETURN QUERY
+    SELECT c.id, c.kind, c.subject, c.audience, c.audience_plan, c.audience_account, c.state,
+           c.created_at, (SELECT u.username FROM public.admin_user u WHERE u.id = c.created_by),
+           c.test_sent_at, c.confirmed_at,
+           (SELECT u.username FROM public.admin_user u WHERE u.id = c.confirmed_by),
+           c.recipients, c.excluded, c.sent_count, c.failed_count, c.skipped_count,
+           c.finished_at
+    FROM public.admin_communication c
+    WHERE p_after_key IS NULL
+       OR (c.created_at, c.id) < (p_after_key::timestamptz, p_after_id::uuid)
+    ORDER BY c.created_at DESC, c.id DESC
+    LIMIT least(greatest(coalesce(p_limit, 50), 1), 201);
+END
+$$;
+
+-- El worker, al enviar cada correo: el texto y si esa cuenta todavía lo recibe (`deliver`
+-- falso si se dio de baja de las comerciales, o de la cuenta, después de confirmar). Sin
+-- cuenta: la prueba, a la persona del backoffice (también si ya se confirmó: la prueba se
+-- encoló antes). NULL si la comunicación no existe.
+CREATE OR REPLACE FUNCTION fichaitor_communication_mail(p_id uuid, p_account uuid)
+RETURNS jsonb
+LANGUAGE sql STABLE SECURITY DEFINER SET search_path = pg_catalog, public, pg_temp AS $$
+    SELECT jsonb_build_object(
+        'kind', c.kind, 'subject', c.subject, 'preheader', c.preheader,
+        'headline', c.headline, 'paragraphs', to_jsonb(c.paragraphs),
+        'button_label', c.button_label, 'button_url', c.button_url,
+        'deliver', CASE
+            WHEN p_account IS NULL THEN true
+            ELSE c.state <> 'borrador'
+                 AND public.communication_account_ok(p_account)
+                 AND NOT (c.kind = 'comercial' AND EXISTS (
+                     SELECT 1 FROM public.communication_optout o WHERE o.account_id = p_account))
+        END)
+    FROM public.admin_communication c WHERE c.id = p_id
+$$;
+
+-- El worker, después de cada correo de una comunicación (no de las pruebas): suma uno a
+-- enviados, fallidos u omitidos. Con el último, la comunicación queda 'enviada'.
+CREATE OR REPLACE FUNCTION fichaitor_communication_result(p_id uuid, p_outcome text)
+RETURNS void
+LANGUAGE plpgsql SECURITY DEFINER SET search_path = pg_catalog, public, pg_temp AS $$
+BEGIN
+    IF p_outcome IS NULL OR p_outcome NOT IN ('sent', 'failed', 'skipped') THEN
+        RAISE EXCEPTION 'resultado desconocido' USING ERRCODE = 'check_violation';
+    END IF;
+    UPDATE public.admin_communication c
+    SET sent_count = c.sent_count + (p_outcome = 'sent')::integer,
+        failed_count = c.failed_count + (p_outcome = 'failed')::integer,
+        skipped_count = c.skipped_count + (p_outcome = 'skipped')::integer
+    WHERE c.id = p_id AND c.state = 'enviando'
+      AND c.sent_count + c.failed_count + c.skipped_count < c.recipients;
+    UPDATE public.admin_communication c
+    SET state = 'enviada', finished_at = now()
+    WHERE c.id = p_id AND c.state = 'enviando'
+      AND c.sent_count + c.failed_count + c.skipped_count >= c.recipients;
+END
+$$;
+
+-- La API: baja de las comunicaciones comerciales de una cuenta (el token ya comprobado
+-- por el proceso). Idempotente: una segunda vez no cambia nada. Una cuenta que no existe
+-- o está dada de baja no deja nada.
+CREATE OR REPLACE FUNCTION fichaitor_communication_unsubscribe(p_account uuid, p_source text)
+RETURNS void
+LANGUAGE sql SECURITY DEFINER SET search_path = pg_catalog, public, pg_temp AS $$
+    INSERT INTO public.communication_optout (account_id, source)
+    SELECT x.id, p_source FROM public.account x
+    WHERE x.id = p_account AND x.deleted_at IS NULL
+    ON CONFLICT (account_id) DO NOTHING
+$$;
+
+-- La retención (pasada diaria del worker): las comunicaciones de hace más de 12 meses.
+-- Devuelve cuántas se borraron.
+CREATE OR REPLACE FUNCTION fichaitor_communication_purge() RETURNS integer
+LANGUAGE plpgsql SECURITY DEFINER SET search_path = pg_catalog, public, pg_temp AS $$
+DECLARE
+    gone integer;
+BEGIN
+    DELETE FROM public.admin_communication c WHERE c.created_at < now() - interval '12 months';
+    GET DIAGNOSTICS gone = ROW_COUNT;
+    RETURN gone;
+END
+$$;
+
+-- Quién ejecuta qué: el backoffice, sus cinco pantallas (más el guardado); el worker, el
+-- texto de cada correo, su resultado y la retención; la API, la baja. Las internas, nadie.
+REVOKE ALL ON FUNCTION
+    communication_account_ok(uuid),
+    communication_recipients(uuid),
+    communication_count(uuid),
+    communication_json(uuid),
+    admin_communication_save(text, uuid, text, text, text, text, text[], text, text, text,
+                             text, uuid),
+    admin_communication_get(text, uuid),
+    admin_communication_audience(text, uuid),
+    admin_communication_test(text, uuid),
+    admin_communication_confirm(text, uuid, integer, integer),
+    admin_communications(text, integer, text, text),
+    fichaitor_communication_mail(uuid, uuid),
+    fichaitor_communication_result(uuid, text),
+    fichaitor_communication_unsubscribe(uuid, text),
+    fichaitor_communication_purge()
+FROM PUBLIC;
+GRANT EXECUTE ON FUNCTION
+    admin_communication_save(text, uuid, text, text, text, text, text[], text, text, text,
+                             text, uuid),
+    admin_communication_get(text, uuid),
+    admin_communication_audience(text, uuid),
+    admin_communication_test(text, uuid),
+    admin_communication_confirm(text, uuid, integer, integer),
+    admin_communications(text, integer, text, text)
+TO fichaitor_admin;
+GRANT EXECUTE ON FUNCTION
+    fichaitor_communication_mail(uuid, uuid),
+    fichaitor_communication_result(uuid, text),
+    fichaitor_communication_purge()
+TO fichaitor_worker;
+GRANT EXECUTE ON FUNCTION fichaitor_communication_unsubscribe(uuid, text) TO fichaitor_api;

@@ -13,6 +13,7 @@ session of each request.
 
 import hmac
 import json
+import re
 from dataclasses import dataclass
 from datetime import datetime
 
@@ -46,6 +47,26 @@ SECURITY_HEADERS = (
 )
 
 
+# The preview of a communication (GET /admin/api/communications/{id}/preview.html) is an
+# email: inline styles and nothing else, shown by the backoffice itself in an
+# <iframe sandbox>. Only that route gets this policy; every other answer keeps the strict
+# one, frame-ancestors 'none' included.
+PREVIEW_PATH = re.compile(r"^/admin/api/communications/[0-9a-fA-F-]{36}/preview\.html$")
+PREVIEW_HEADERS = tuple(
+    (name, value)
+    for name, value in SECURITY_HEADERS
+    if name not in (b"content-security-policy", b"x-frame-options")
+) + (
+    (
+        b"content-security-policy",
+        b"default-src 'none'; style-src 'unsafe-inline'; img-src data:; base-uri 'none';"
+        b" form-action 'none'; frame-ancestors 'self'; sandbox allow-popups"
+        b" allow-popups-to-escape-sandbox",
+    ),
+    (b"x-frame-options", b"SAMEORIGIN"),
+)
+
+
 def _error_body(code: str, message: str) -> bytes:
     return json.dumps({"code": code, "message": message}).encode()
 
@@ -64,16 +85,16 @@ class GuardMiddleware:
             return
         hosts = [v for k, v in scope.get("headers", []) if k == b"host"]
         host = hosts[0].decode("latin-1").lower() if len(hosts) == 1 else ""
+        secured = PREVIEW_HEADERS if PREVIEW_PATH.match(scope.get("path", "")) else SECURITY_HEADERS
 
         async def send_secured(message: Message) -> None:
             if message["type"] == "http.response.start":
                 headers = [
                     (k, v)
                     for k, v in message.get("headers", [])
-                    if k.lower() not in {name for name, _ in SECURITY_HEADERS}
-                    and k.lower() != b"server"
+                    if k.lower() not in {name for name, _ in secured} and k.lower() != b"server"
                 ]
-                message["headers"] = headers + list(SECURITY_HEADERS)
+                message["headers"] = headers + list(secured)
             await send(message)
 
         if host not in self.allowed:

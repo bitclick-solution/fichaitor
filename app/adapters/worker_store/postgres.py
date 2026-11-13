@@ -1224,6 +1224,15 @@ class PostgresWorkerStore:
                     policy.job_days,
                 )
             )
+            # Communications of the backoffice (docs/admin-facturacion.md, annex): 12 months
+            # after they were written. The worker cannot read the table: a function of the
+            # owner deletes and counts. Not there if db/schema_admin.sql was not applied.
+            if await conn.fetchval(
+                "SELECT to_regprocedure('public.fichaitor_communication_purge()') IS NOT NULL"
+            ):
+                counts["admin_communication"] = await conn.fetchval(
+                    "SELECT fichaitor_communication_purge()"
+                )
             launched = policy.waitlist_launched_at
             counts["waitlist_entry"] = _deleted(
                 await conn.execute(
