@@ -116,6 +116,37 @@ Antes, repetir una búsqueda salía de una caché y no contaba. Ahora **cada dia
 
 `channel`: `whatsapp` o `email`. `consent` debe ser `true`. `consent_version` es el identificador del texto legal mostrado. El vigente es `waitlist-2026-11-11`; el texto y su historial están en `docs/legal/consentimiento-lista-espera.md`. Respuesta 201 `{"status": "ok"}`. Errores: 422 con mensaje, 429, 503.
 
+### `POST /api/v1/public/visit` (2026-11-13)
+
+Cuenta una visita a la portada para el embudo del backoffice. Sin sesión y sin cookies. La portada la llama una vez al cargar, con `navigator.sendBeacon`:
+
+```js
+navigator.sendBeacon("/api/v1/public/visit", JSON.stringify({ source: origen() }));
+```
+
+**Cuerpo.** Cualquiera de estos, de 512 bytes como mucho:
+
+- `text/plain` con un JSON: `{"source": "instagram"}`. Es lo que manda `sendBeacon` con una cadena. También vale `application/json`.
+- `application/x-www-form-urlencoded`: `source=instagram`.
+- Vacío.
+
+**`source`.** El valor de `utm_source` o de `ref` de la URL de la portada. Se pasa a minúsculas y se guarda solo si son de 1 a 40 caracteres de `[a-z0-9_-]`. Si no cumple, o no viene, se guarda `null`. No da error.
+
+**Respuesta.** Siempre `204` sin cuerpo, también cuando la visita no se cuenta. Así no da pistas a quien intente inflar el número.
+
+**Qué se guarda.** Una fila de `funnel_event` con `kind = 'visit'`, `source` y la hora. **Nada más**: ni la dirección IP, ni el *user agent*, ni una cookie, ni ningún identificador del visitante. La tabla no tiene datos personales (`docs/retencion.md`).
+
+**Cuándo no se cuenta** (y responde 204 igual):
+
+- El *user agent* no empieza por `Mozilla/` (no es un navegador) o contiene `bot`, `crawl`, `spider` o `preview` (robots y vistas previas de enlaces).
+- Más de 10 visitas en una hora desde la misma dirección. El límite vive solo en la memoria de la API y no guarda la dirección: usa una huella HMAC con una clave aleatoria que se crea al arrancar y no se escribe en ningún sitio. Al reiniciar la API, el contador vuelve a cero.
+- El cuerpo pasa de 512 bytes.
+- La base no responde (se registra un aviso, sin datos).
+
+**Sin banner de cookies.** No escribe ni lee nada en el navegador del visitante (ni cookies, ni `localStorage`, ni huella del navegador), así que no le aplica el artículo 22.2 de la LSSI. Lo único del visitante que toca es su dirección IP, que llega con cualquier petición: se usa un instante, en memoria y transformada con una clave que se descarta, solo para el límite contra abusos, y no se guarda en ningún sitio. Lo que queda es un recuento agregado, sin nada que identifique a nadie.
+
+**Modo «solo web».** No hay API (`/api/` responde 503) y las visitas no se cuentan.
+
 ## Conexión con Google (ya existe)
 
 `GET /api/v1/google/oauth/start` es una **navegación del navegador**, no una llamada `fetch`: un enlace o `window.location`.

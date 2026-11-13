@@ -719,7 +719,14 @@ $$;
 -- Buscar cuentas: por id de cuenta, id de ficha (loc_…), correo exacto o, cuando exista
 -- billing_customer, NIF o razón social. Nunca por el nombre de una ficha (dato de
 -- Google). El correo sale enmascarado. Se audita el tipo de búsqueda, no lo buscado.
-CREATE OR REPLACE FUNCTION admin_find_accounts(p_session text, p_q text)
+-- Por páginas (keyset, nunca offset): created_at e id, de lo más viejo a lo más nuevo.
+-- p_after_key y p_after_id, los de la última fila de la página anterior (el proceso los
+-- lleva en el cursor). Mismo patrón en todos los listados de este archivo: hasta 201
+-- filas, porque el proceso pide una más de las que enseña para saber si hay otra página.
+DROP FUNCTION IF EXISTS admin_find_accounts(text, text);
+CREATE OR REPLACE FUNCTION admin_find_accounts(
+    p_session text, p_q text, p_limit integer DEFAULT 20, p_after_key text DEFAULT NULL,
+    p_after_id text DEFAULT NULL)
 RETURNS TABLE (account_id uuid, email_masked text, created_at timestamptz,
                deleted_at timestamptz, disconnected_at timestamptz,
                locations integer, active_locations integer)
@@ -764,15 +771,20 @@ BEGIN
             WHERE l.account_id = x.id AND l.active_since IS NOT NULL)
     FROM public.account x
     WHERE x.id = ANY (ids)
-    ORDER BY x.created_at
-    LIMIT 20;
+      AND (p_after_key IS NULL
+           OR (x.created_at, x.id) > (p_after_key::timestamptz, p_after_id::uuid))
+    ORDER BY x.created_at, x.id
+    LIMIT least(greatest(coalesce(p_limit, 20), 1), 201);
 END
 $$;
 
 -- Las fichas de una cuenta, con su nombre (dato de Google): solo aquí y con la referencia
 -- del ticket, que se audita con la lectura (política de datos de usuario de Google:
 -- lecturas humanas solo para soporte, seguridad u obligación legal).
-CREATE OR REPLACE FUNCTION admin_account_detail(p_session text, p_account uuid, p_ticket_ref text)
+DROP FUNCTION IF EXISTS admin_account_detail(text, uuid, text);
+CREATE OR REPLACE FUNCTION admin_account_detail(
+    p_session text, p_account uuid, p_ticket_ref text, p_limit integer DEFAULT 50,
+    p_after_key text DEFAULT NULL, p_after_id text DEFAULT NULL)
 RETURNS TABLE (location_id text, title text, active_since timestamptz, plan text,
                deactivated_at timestamptz, removed_at timestamptz, verified boolean)
 LANGUAGE plpgsql SECURITY DEFINER SET search_path = pg_catalog, public, pg_temp AS $$
@@ -790,8 +802,10 @@ BEGIN
     PERFORM public.admin_audit_write(who, 'account_detail_read', p_account, NULL, ticket, NULL);
     RETURN QUERY
     SELECT l.id, l.title, l.active_since, l.plan, l.deactivated_at, l.removed_at, l.verified
-    FROM public.location l WHERE l.account_id = p_account
-    ORDER BY l.id;
+    FROM public.location l
+    WHERE l.account_id = p_account AND (p_after_key IS NULL OR l.id > p_after_key)
+    ORDER BY l.id
+    LIMIT least(greatest(coalesce(p_limit, 50), 1), 201);
 END
 $$;
 
@@ -995,8 +1009,12 @@ BEGIN
 END
 $$;
 
--- Los 50 últimos jobs fallidos, con el error recortado y sin la carga.
-CREATE OR REPLACE FUNCTION admin_failed_jobs(p_session text)
+-- Los jobs fallidos, de lo más nuevo a lo más viejo, con el error recortado y sin la
+-- carga. Clave: finished_at (sin fecha, al final) e id; índice job_failed_keyset.
+DROP FUNCTION IF EXISTS admin_failed_jobs(text);
+CREATE OR REPLACE FUNCTION admin_failed_jobs(
+    p_session text, p_limit integer DEFAULT 50, p_after_key text DEFAULT NULL,
+    p_after_id text DEFAULT NULL)
 RETURNS TABLE (job_id uuid, kind text, attempts integer, finished_at timestamptz,
                last_error text)
 LANGUAGE plpgsql SECURITY DEFINER SET search_path = pg_catalog, public, pg_temp AS $$
@@ -1004,24 +1022,42 @@ BEGIN
     PERFORM public.admin_actor(p_session, ARRAY['soporte', 'propietario'], false);
     RETURN QUERY
     SELECT j.id, j.kind, j.attempts, j.finished_at, left(j.last_error, 200)
-    FROM public.job j WHERE j.state = 'failed'
-    ORDER BY j.finished_at DESC NULLS LAST LIMIT 50;
+    FROM public.job j
+    WHERE j.state = 'failed'
+      AND (p_after_key IS NULL
+           OR (coalesce(j.finished_at, '-infinity'::timestamptz), j.id)
+              < (p_after_key::timestamptz, p_after_id::uuid))
+    ORDER BY coalesce(j.finished_at, '-infinity'::timestamptz) DESC, j.id DESC
+    LIMIT least(greatest(coalesce(p_limit, 50), 1), 201);
 END
 $$;
 
-CREATE OR REPLACE FUNCTION admin_retention_runs(p_session text)
-RETURNS TABLE (at timestamptz, deleted jsonb)
+-- Las pasadas de la retención, de la más nueva a la más vieja. Clave: at e id; índice
+-- retention_run_keyset.
+DROP FUNCTION IF EXISTS admin_retention_runs(text);
+CREATE OR REPLACE FUNCTION admin_retention_runs(
+    p_session text, p_limit integer DEFAULT 10, p_after_key text DEFAULT NULL,
+    p_after_id text DEFAULT NULL)
+RETURNS TABLE (run_id bigint, at timestamptz, deleted jsonb)
 LANGUAGE plpgsql SECURITY DEFINER SET search_path = pg_catalog, public, pg_temp AS $$
 BEGIN
     PERFORM public.admin_actor(p_session, ARRAY['soporte', 'propietario'], false);
     RETURN QUERY
-    SELECT r.at, r.deleted FROM public.retention_run r ORDER BY r.at DESC LIMIT 10;
+    SELECT r.id, r.at, r.deleted FROM public.retention_run r
+    WHERE p_after_key IS NULL OR (r.at, r.id) < (p_after_key::timestamptz, p_after_id::bigint)
+    ORDER BY r.at DESC, r.id DESC
+    LIMIT least(greatest(coalesce(p_limit, 10), 1), 201);
 END
 $$;
 
 -- Estado de la sincronización de las fichas de una cuenta (o de todas con error), sin los
 -- hechos de la ficha.
-CREATE OR REPLACE FUNCTION admin_sync_status(p_session text, p_account uuid)
+-- De lo más nuevo a lo más viejo. Clave: status_at y el id de la ficha; índice
+-- profile_summary_problem_keyset para las de todas las cuentas.
+DROP FUNCTION IF EXISTS admin_sync_status(text, uuid);
+CREATE OR REPLACE FUNCTION admin_sync_status(
+    p_session text, p_account uuid, p_limit integer DEFAULT 50, p_after_key text DEFAULT NULL,
+    p_after_id text DEFAULT NULL)
 RETURNS TABLE (account_id uuid, location_id text, status text, status_at timestamptz,
                synced_at timestamptz)
 LANGUAGE plpgsql SECURITY DEFINER SET search_path = pg_catalog, public, pg_temp AS $$
@@ -1032,13 +1068,19 @@ BEGIN
     FROM public.account a
     JOIN public.location l ON l.account_id = a.id
     JOIN public.profile_summary ps ON ps.google_sub = a.google_sub AND ps.location = l.gbp_location
-    WHERE (p_account IS NULL AND ps.status <> 'ok') OR a.id = p_account
-    ORDER BY ps.status_at DESC LIMIT 200;
+    WHERE ((p_account IS NULL AND ps.status <> 'ok') OR a.id = p_account)
+      AND (p_after_key IS NULL OR (ps.status_at, l.id) < (p_after_key::timestamptz, p_after_id))
+    ORDER BY ps.status_at DESC, l.id DESC
+    LIMIT least(greatest(coalesce(p_limit, 50), 1), 201);
 END
 $$;
 
 -- Los chats de una cuenta, sin direcciones.
-CREATE OR REPLACE FUNCTION admin_channel_links(p_session text, p_account uuid)
+-- Clave: verified_at e id, de lo más viejo a lo más nuevo.
+DROP FUNCTION IF EXISTS admin_channel_links(text, uuid);
+CREATE OR REPLACE FUNCTION admin_channel_links(
+    p_session text, p_account uuid, p_limit integer DEFAULT 50, p_after_key text DEFAULT NULL,
+    p_after_id text DEFAULT NULL)
 RETURNS TABLE (identity_id text, channel text, verified_at timestamptz,
                last_inbound_at timestamptz, unlinked_at timestamptz)
 LANGUAGE plpgsql SECURITY DEFINER SET search_path = pg_catalog, public, pg_temp AS $$
@@ -1046,8 +1088,11 @@ BEGIN
     PERFORM public.admin_actor(p_session, ARRAY['soporte', 'finanzas', 'propietario'], false);
     RETURN QUERY
     SELECT c.id, c.channel, c.verified_at, c.last_inbound_at, c.unlinked_at
-    FROM public.channel_identity c WHERE c.account_id = p_account
-    ORDER BY c.verified_at;
+    FROM public.channel_identity c
+    WHERE c.account_id = p_account
+      AND (p_after_key IS NULL OR (c.verified_at, c.id) > (p_after_key::timestamptz, p_after_id))
+    ORDER BY c.verified_at, c.id
+    LIMIT least(greatest(coalesce(p_limit, 50), 1), 201);
 END
 $$;
 
@@ -1056,7 +1101,11 @@ $$;
 -- semana (lunes, hora de Madrid), canal, tramo de nota y origen. Las celdas de menos de 5
 -- personas no salen. No hay totales por fila ni por columna: con ellos, restando, se
 -- deducirían las celdas suprimidas.
-CREATE OR REPLACE FUNCTION admin_waitlist_totals(p_session text)
+-- Clave: la semana y el resto de la celda (canal|tramo|origen; el origen no lleva «|»).
+DROP FUNCTION IF EXISTS admin_waitlist_totals(text);
+CREATE OR REPLACE FUNCTION admin_waitlist_totals(
+    p_session text, p_limit integer DEFAULT 100, p_after_key text DEFAULT NULL,
+    p_after_id text DEFAULT NULL)
 RETURNS TABLE (week date, channel text, score_band text, source text, people bigint)
 LANGUAGE plpgsql SECURITY DEFINER SET search_path = pg_catalog, public, pg_temp AS $$
 DECLARE
@@ -1079,14 +1128,22 @@ BEGIN
     ) t
     GROUP BY t.week, t.channel, t.score_band, t.source
     HAVING count(*) >= 5
-    ORDER BY t.week, t.channel, t.score_band, t.source;
+       AND (p_after_key IS NULL
+            OR (t.week, t.channel || '|' || t.score_band || '|' || t.source)
+               > (p_after_key::date, p_after_id))
+    ORDER BY t.week, t.channel || '|' || t.score_band || '|' || t.source
+    LIMIT least(greatest(coalesce(p_limit, 100), 1), 201);
 END
 $$;
 
 -- ---------------------------------------------------------------------------
 -- Personas y registro (sección 6.3: solo el rol propietario).
 
-CREATE OR REPLACE FUNCTION admin_users(p_session text)
+-- Por nombre de usuario (único, con su índice).
+DROP FUNCTION IF EXISTS admin_users(text);
+CREATE OR REPLACE FUNCTION admin_users(
+    p_session text, p_limit integer DEFAULT 50, p_after_key text DEFAULT NULL,
+    p_after_id text DEFAULT NULL)
 RETURNS TABLE (admin_user_id uuid, username text, role text, active boolean,
                must_enroll boolean, locked_until timestamptz, created_at timestamptz,
                password_changed_at timestamptz)
@@ -1096,12 +1153,16 @@ BEGIN
     RETURN QUERY
     SELECT u.id, u.username, u.role, u.active, u.must_enroll, u.locked_until, u.created_at,
            u.password_changed_at
-    FROM public.admin_user u ORDER BY u.username;
+    FROM public.admin_user u
+    WHERE p_after_key IS NULL OR u.username > p_after_key
+    ORDER BY u.username
+    LIMIT least(greatest(coalesce(p_limit, 50), 1), 201);
 END
 $$;
 
--- El registro, de lo más nuevo a lo más viejo, por páginas (p_before: el id de la última
--- fila de la página anterior). La propia lectura queda registrada.
+-- El registro, de lo más nuevo a lo más viejo, por páginas (keyset por id, la clave
+-- primaria; p_before: el id de la última fila de la página anterior). Hasta 501 filas: el
+-- proceso pide una más de las que enseña. La propia lectura queda registrada.
 CREATE OR REPLACE FUNCTION admin_audit_read(p_session text, p_limit integer, p_before bigint)
 RETURNS TABLE (id bigint, at timestamptz, written_by name, admin_user uuid, username text,
                role text, action text, account_id uuid, target text, ticket_ref text,
@@ -1118,7 +1179,7 @@ BEGIN
     FROM public.admin_audit_log g LEFT JOIN public.admin_user u ON u.id = g.admin_user
     WHERE p_before IS NULL OR g.id < p_before
     ORDER BY g.id DESC
-    LIMIT least(greatest(coalesce(p_limit, 100), 1), 500);
+    LIMIT least(greatest(coalesce(p_limit, 100), 1), 501);
 END
 $$;
 
@@ -1188,6 +1249,10 @@ LANGUAGE plpgsql SECURITY DEFINER SET search_path = pg_catalog, public, pg_temp 
 DECLARE
     who uuid;
     result jsonb;
+    list_key text;
+    list_name text;
+    page jsonb;
+    nexts jsonb := '{}'::jsonb;
 BEGIN
     SELECT a.actor_id INTO who
     FROM public.admin_actor(p_session, ARRAY['soporte', 'finanzas', 'propietario'], false) a;
@@ -1202,50 +1267,22 @@ BEGIN
                         'disconnected_at', x.disconnected_at)
                     FROM public.account x WHERE x.id = p_account),
         'blocked', EXISTS (SELECT 1 FROM public.account_billing_block b
-                           WHERE b.account_id = p_account AND b.unblocked_at IS NULL),
-        'locations', coalesce((SELECT jsonb_agg(jsonb_build_object(
-                        'id', l.id, 'plan', l.plan, 'active_since', l.active_since,
-                        'deactivated_at', l.deactivated_at, 'removed_at', l.removed_at,
-                        'verified', l.verified) ORDER BY l.id)
-                    FROM public.location l WHERE l.account_id = p_account), '[]'::jsonb),
-        'entitlements', coalesce((SELECT jsonb_agg(jsonb_build_object(
-                        'id', e.id, 'plan', e.plan, 'quantity', e.quantity,
-                        'starts_at', e.starts_at, 'ends_at', e.ends_at, 'source', e.source,
-                        'seat_id', e.seat_id, 'provisional', e.provisional,
-                        'granted_by', e.granted_by, 'note_code', e.note_code,
-                        'current', e.starts_at <= now() AND (e.ends_at IS NULL OR e.ends_at > now()))
-                        ORDER BY e.starts_at DESC)
-                    FROM public.plan_entitlement e WHERE e.account_id = p_account), '[]'::jsonb),
-        'seats', coalesce((SELECT jsonb_agg(jsonb_build_object(
-                        'id', s.id, 'plan', s.plan, 'collection', s.collection,
-                        'location_id', s.location_id, 'status', s.status,
-                        'current_period_start', s.current_period_start,
-                        'current_period_end', s.current_period_end,
-                        'cancel_at_period_end', s.cancel_at_period_end,
-                        'next_price_key', s.next_price_key, 'trial_ends_at', s.trial_ends_at,
-                        'review_reason', s.review_reason, 'created_at', s.created_at)
-                        ORDER BY s.created_at)
-                    FROM public.billing_seat s WHERE s.account_id = p_account), '[]'::jsonb),
-        'blocks', coalesce((SELECT jsonb_agg(jsonb_build_object(
-                        'id', b.id, 'blocked_at', b.blocked_at, 'reason', b.reason,
-                        'seat_id', b.seat_id, 'unblocked_at', b.unblocked_at,
-                        'unblocked_by', b.unblocked_by) ORDER BY b.blocked_at DESC)
-                    FROM public.account_billing_block b WHERE b.account_id = p_account),
-                    '[]'::jsonb),
-        'activations', coalesce((SELECT jsonb_agg(jsonb_build_object(
-                        'at', g.at, 'location_id', g.location_id, 'event', g.event,
-                        'plan', g.plan, 'reason', g.reason) ORDER BY g.at DESC)
-                    FROM (SELECT * FROM public.location_activation_log k
-                          WHERE k.account_id = p_account ORDER BY k.at DESC LIMIT 100) g),
-                    '[]'::jsonb),
-        'offboardings', coalesce((SELECT jsonb_agg(jsonb_build_object(
-                        'id', o.id, 'scope', o.scope, 'confirmed_at', o.confirmed_at,
-                        'delete_at', o.delete_at, 'restored_at', o.restored_at,
-                        'effective_at', o.effective_at, 'reason', o.reason)
-                        ORDER BY o.confirmed_at DESC)
-                    FROM public.offboarding o WHERE o.account_id = p_account), '[]'::jsonb)
+                           WHERE b.account_id = p_account AND b.unblocked_at IS NULL)
     ) INTO result;
-    RETURN result;
+    -- Los listados, en su primera página (keyset; la siguiente, con admin_list).
+    FOR list_key, list_name IN SELECT t.key, t.list FROM (VALUES
+        ('locations', 'locations'),
+        ('entitlements', 'entitlements'),
+        ('seats', 'seats'),
+        ('blocks', 'blocks'),
+        ('activations', 'activations'),
+        ('offboardings', 'offboardings')
+    ) AS t (key, list) LOOP
+        page := public.admin_list_page(list_name, p_account, 50, NULL, NULL);
+        result := result || jsonb_build_object(list_key, page -> 'items');
+        nexts := nexts || jsonb_build_object(list_key, page -> 'next');
+    END LOOP;
+    RETURN result || jsonb_build_object('next', nexts);
 END
 $$;
 
@@ -1269,6 +1306,10 @@ LANGUAGE plpgsql SECURITY DEFINER SET search_path = pg_catalog, public, pg_temp 
 DECLARE
     who uuid;
     result jsonb;
+    list_key text;
+    list_name text;
+    page jsonb;
+    nexts jsonb := '{}'::jsonb;
 BEGIN
     SELECT a.actor_id INTO who
     FROM public.admin_actor(p_session, ARRAY['finanzas', 'propietario'], false) a;
@@ -1283,53 +1324,21 @@ BEGIN
                         'tax_id_type', c.tax_id_type, 'tax_id', c.tax_id,
                         'country', c.country, 'territory', c.territory,
                         'tax_treatment', c.tax_treatment, 'updated_at', c.updated_at)
-                     FROM public.billing_customer c WHERE c.account_id = p_account),
-        'seats', coalesce((SELECT jsonb_agg(jsonb_build_object(
-                        'id', s.id, 'plan', s.plan, 'collection', s.collection,
-                        'stripe_subscription_id', s.stripe_subscription_id,
-                        'location_id', s.location_id, 'status', s.status,
-                        'current_period_end', s.current_period_end,
-                        'cancel_at_period_end', s.cancel_at_period_end,
-                        'next_price_key', s.next_price_key, 'review_reason', s.review_reason)
-                        ORDER BY s.created_at)
-                    FROM public.billing_seat s WHERE s.account_id = p_account), '[]'::jsonb),
-        'charges', coalesce((SELECT jsonb_agg(jsonb_build_object(
-                        'stripe_invoice_id', h.stripe_invoice_id, 'seat_id', h.seat_id,
-                        'status', h.status, 'billing_reason', h.billing_reason,
-                        'currency', h.currency, 'subtotal', h.subtotal, 'tax', h.tax,
-                        'total', h.total, 'amount_paid', h.amount_paid,
-                        'amount_refunded', h.amount_refunded, 'price_key', h.price_key,
-                        'period_start', h.period_start, 'period_end', h.period_end,
-                        'paid_at', h.paid_at, 'payment_intent_id', h.payment_intent_id,
-                        'charge_id', h.charge_id, 'disputed', h.disputed)
-                        ORDER BY h.created_at DESC)
-                    FROM public.billing_charge h WHERE h.account_id = p_account), '[]'::jsonb),
-        'documents', coalesce((SELECT jsonb_agg(jsonb_build_object(
-                        'id', d.id, 'kind', d.kind, 'stripe_invoice_id', d.stripe_invoice_id,
-                        'stripe_refund_id', d.stripe_refund_id, 'state', d.state,
-                        'odoo_move_id', d.odoo_move_id, 'number', d.number,
-                        'amount_untaxed', d.amount_untaxed, 'amount_tax', d.amount_tax,
-                        'amount_total', d.amount_total, 'verifactu_state', d.verifactu_state,
-                        'review_reason', d.review_reason, 'created_at', d.created_at,
-                        'issued_at', d.issued_at) ORDER BY d.created_at DESC)
-                    FROM public.billing_document d WHERE d.account_id = p_account), '[]'::jsonb),
-        'refunds', coalesce((SELECT jsonb_agg(jsonb_build_object(
-                        'id', r.id, 'stripe_invoice_id', r.stripe_invoice_id,
-                        'amount', r.amount, 'reason', r.reason, 'ticket_ref', r.ticket_ref,
-                        'requested_by', r.requested_by, 'state', r.state,
-                        'stripe_refund_id', r.stripe_refund_id, 'created_at', r.created_at,
-                        'finished_at', r.finished_at) ORDER BY r.created_at DESC)
-                    FROM public.billing_refund_request r WHERE r.account_id = p_account),
-                    '[]'::jsonb),
-        'blocks', coalesce((SELECT jsonb_agg(jsonb_build_object(
-                        'id', b.id, 'blocked_at', b.blocked_at, 'reason', b.reason,
-                        'stripe_invoice_id', b.stripe_invoice_id, 'seat_id', b.seat_id,
-                        'unblocked_at', b.unblocked_at, 'unblocked_by', b.unblocked_by)
-                        ORDER BY b.blocked_at DESC)
-                    FROM public.account_billing_block b WHERE b.account_id = p_account),
-                    '[]'::jsonb)
+                     FROM public.billing_customer c WHERE c.account_id = p_account)
     ) INTO result;
-    RETURN result;
+    -- Los listados, en su primera página (keyset; la siguiente, con admin_list).
+    FOR list_key, list_name IN SELECT t.key, t.list FROM (VALUES
+        ('seats', 'billing_seats'),
+        ('charges', 'charges'),
+        ('documents', 'documents'),
+        ('refunds', 'refunds'),
+        ('blocks', 'billing_blocks')
+    ) AS t (key, list) LOOP
+        page := public.admin_list_page(list_name, p_account, 50, NULL, NULL);
+        result := result || jsonb_build_object(list_key, page -> 'items');
+        nexts := nexts || jsonb_build_object(list_key, page -> 'next');
+    END LOOP;
+    RETURN result || jsonb_build_object('next', nexts);
 END
 $$;
 
@@ -1371,6 +1380,10 @@ LANGUAGE plpgsql SECURITY DEFINER SET search_path = pg_catalog, public, pg_temp 
 DECLARE
     who uuid;
     result jsonb;
+    list_key text;
+    list_name text;
+    page jsonb;
+    nexts jsonb := '{}'::jsonb;
 BEGIN
     SELECT a.actor_id INTO who
     FROM public.admin_actor(p_session, ARRAY['finanzas', 'propietario'], false) a;
@@ -1396,59 +1409,22 @@ BEGIN
                                         AND NOT EXISTS (
                                             SELECT 1 FROM public.billing_document d
                                             WHERE d.kind = 'factura'
-                                              AND d.stripe_invoice_id = p.external_ref))),
-        'documents', coalesce((SELECT jsonb_agg(jsonb_build_object(
-                        'id', d.id, 'account_id', d.account_id, 'kind', d.kind,
-                        'stripe_invoice_id', d.stripe_invoice_id,
-                        'stripe_refund_id', d.stripe_refund_id, 'state', d.state,
-                        'odoo_move_id', d.odoo_move_id, 'number', d.number,
-                        'amount_total', d.amount_total, 'verifactu_state', d.verifactu_state,
-                        'review_reason', d.review_reason, 'created_at', d.created_at)
-                        ORDER BY d.created_at)
-                    FROM (SELECT * FROM public.billing_document k
-                          WHERE k.state = 'revision'
-                             OR (k.state = 'pendiente' AND k.created_at < now() - interval '1 hour')
-                          ORDER BY k.created_at LIMIT 200) d), '[]'::jsonb),
-        'seats', coalesce((SELECT jsonb_agg(jsonb_build_object(
-                        'id', s.id, 'account_id', s.account_id, 'plan', s.plan,
-                        'status', s.status, 'stripe_subscription_id', s.stripe_subscription_id,
-                        'review_reason', s.review_reason) ORDER BY s.updated_at)
-                    FROM (SELECT * FROM public.billing_seat k WHERE k.review_reason IS NOT NULL
-                          ORDER BY k.updated_at LIMIT 200) s), '[]'::jsonb),
-        'refunds', coalesce((SELECT jsonb_agg(jsonb_build_object(
-                        'id', r.id, 'account_id', r.account_id,
-                        'stripe_invoice_id', r.stripe_invoice_id, 'amount', r.amount,
-                        'reason', r.reason, 'state', r.state, 'requested_by', r.requested_by,
-                        'created_at', r.created_at) ORDER BY r.created_at)
-                    FROM (SELECT * FROM public.billing_refund_request k
-                          WHERE k.state IN ('pendiente', 'fallido')
-                          ORDER BY k.created_at DESC LIMIT 200) r), '[]'::jsonb),
-        'events', coalesce((SELECT jsonb_agg(jsonb_build_object(
-                        'id', e.id, 'type', e.type, 'object_id', e.object_id,
-                        'received_at', e.received_at, 'processed_at', e.processed_at,
-                        'outcome', e.outcome) ORDER BY e.received_at)
-                    FROM (SELECT * FROM public.stripe_event k
-                          WHERE k.outcome = 'orphan'
-                             OR (k.processed_at IS NULL AND k.received_at < now() - interval '1 hour')
-                          ORDER BY k.received_at DESC LIMIT 200) e), '[]'::jsonb),
-        'paid_without_document', coalesce((SELECT jsonb_agg(jsonb_build_object(
-                        'entitlement_id', p.id, 'account_id', p.account_id,
-                        'stripe_invoice_id', p.external_ref, 'seat_id', p.seat_id,
-                        'starts_at', p.starts_at) ORDER BY p.starts_at)
-                    FROM (SELECT * FROM public.plan_entitlement k
-                          WHERE k.source = 'pago' AND NOT k.provisional
-                            AND NOT EXISTS (SELECT 1 FROM public.billing_document d
-                                            WHERE d.kind = 'factura'
-                                              AND d.stripe_invoice_id = k.external_ref)
-                          ORDER BY k.starts_at LIMIT 200) p), '[]'::jsonb),
-        'blocks', coalesce((SELECT jsonb_agg(jsonb_build_object(
-                        'id', b.id, 'account_id', b.account_id, 'blocked_at', b.blocked_at,
-                        'reason', b.reason, 'stripe_invoice_id', b.stripe_invoice_id,
-                        'seat_id', b.seat_id) ORDER BY b.blocked_at)
-                    FROM (SELECT * FROM public.account_billing_block k WHERE k.unblocked_at IS NULL
-                          ORDER BY k.blocked_at LIMIT 200) b), '[]'::jsonb)
+                                              AND d.stripe_invoice_id = p.external_ref)))
     ) INTO result;
-    RETURN result;
+    -- Los listados, en su primera página (keyset; la siguiente, con admin_list).
+    FOR list_key, list_name IN SELECT t.key, t.list FROM (VALUES
+        ('documents', 'review_documents'),
+        ('seats', 'review_seats'),
+        ('refunds', 'review_refunds'),
+        ('events', 'review_events'),
+        ('paid_without_document', 'review_paid_without_document'),
+        ('blocks', 'review_blocks')
+    ) AS t (key, list) LOOP
+        page := public.admin_list_page(list_name, NULL, 50, NULL, NULL);
+        result := result || jsonb_build_object(list_key, page -> 'items');
+        nexts := nexts || jsonb_build_object(list_key, page -> 'next');
+    END LOOP;
+    RETURN result || jsonb_build_object('next', nexts);
 END
 $$;
 
@@ -1662,10 +1638,274 @@ BEGIN
 END
 $$;
 
+-- Listados de una cuenta y de la cola de revisión, por páginas (keyset, nunca offset).
+-- admin_list_page (interna, sin sesión ni registro): una página de un listado con nombre.
+-- Cada listado tiene una clave de orden estable: una fecha (k) y su id, en el sentido del
+-- listado; la página siguiente empieza justo después de (p_after_key, p_after_id). Una
+-- fila que se inserta entre dos páginas no repite ninguna otra ni deja un hueco: o cae
+-- antes del cursor (no sale) o después (sale en su sitio). Devuelve
+-- {"items": [...], "next": {"key", "id"} o null}. Las consultas son texto fijo de este
+-- archivo; p_list solo elige cuál.
+CREATE OR REPLACE FUNCTION admin_list_page(
+    p_list text, p_account uuid, p_limit integer, p_after_key text, p_after_id text)
+RETURNS jsonb
+LANGUAGE plpgsql STABLE SECURITY DEFINER SET search_path = pg_catalog, public, pg_temp AS $$
+DECLARE
+    lim integer := least(greatest(coalesce(p_limit, 50), 1), 200);
+    dir text;        -- ASC o DESC
+    k text;          -- la fecha de la clave
+    id_expr text;    -- el id de la clave, en su tipo
+    id_type text;
+    item text;
+    src text;
+    cond text;
+    q text;
+    page jsonb;
+    n integer;
+BEGIN
+    CASE p_list
+    WHEN 'locations' THEN
+        dir := 'ASC'; k := '''epoch''::timestamptz'; id_expr := 'l.id'; id_type := 'text';
+        src := 'public.location l'; cond := 'l.account_id = $1';
+        item := 'jsonb_build_object(''id'', l.id, ''plan'', l.plan, ''active_since'', l.active_since,
+                 ''deactivated_at'', l.deactivated_at, ''removed_at'', l.removed_at,
+                 ''verified'', l.verified)';
+    WHEN 'entitlements' THEN
+        dir := 'DESC'; k := 'e.starts_at'; id_expr := 'e.id'; id_type := 'uuid';
+        src := 'public.plan_entitlement e'; cond := 'e.account_id = $1';
+        item := 'jsonb_build_object(''id'', e.id, ''plan'', e.plan, ''quantity'', e.quantity,
+                 ''starts_at'', e.starts_at, ''ends_at'', e.ends_at, ''source'', e.source,
+                 ''seat_id'', e.seat_id, ''provisional'', e.provisional,
+                 ''granted_by'', e.granted_by, ''note_code'', e.note_code,
+                 ''current'', e.starts_at <= now() AND (e.ends_at IS NULL OR e.ends_at > now()))';
+    WHEN 'seats' THEN
+        dir := 'ASC'; k := 's.created_at'; id_expr := 's.id'; id_type := 'text';
+        src := 'public.billing_seat s'; cond := 's.account_id = $1';
+        item := 'jsonb_build_object(''id'', s.id, ''plan'', s.plan, ''collection'', s.collection,
+                 ''location_id'', s.location_id, ''status'', s.status,
+                 ''current_period_start'', s.current_period_start,
+                 ''current_period_end'', s.current_period_end,
+                 ''cancel_at_period_end'', s.cancel_at_period_end,
+                 ''next_price_key'', s.next_price_key, ''trial_ends_at'', s.trial_ends_at,
+                 ''review_reason'', s.review_reason, ''created_at'', s.created_at)';
+    WHEN 'blocks' THEN
+        dir := 'DESC'; k := 'b.blocked_at'; id_expr := 'b.id'; id_type := 'bigint';
+        src := 'public.account_billing_block b'; cond := 'b.account_id = $1';
+        item := 'jsonb_build_object(''id'', b.id, ''blocked_at'', b.blocked_at, ''reason'', b.reason,
+                 ''seat_id'', b.seat_id, ''unblocked_at'', b.unblocked_at,
+                 ''unblocked_by'', b.unblocked_by)';
+    WHEN 'activations' THEN
+        dir := 'DESC'; k := 'g.at'; id_expr := 'g.id'; id_type := 'bigint';
+        src := 'public.location_activation_log g'; cond := 'g.account_id = $1';
+        item := 'jsonb_build_object(''at'', g.at, ''location_id'', g.location_id,
+                 ''event'', g.event, ''plan'', g.plan, ''reason'', g.reason)';
+    WHEN 'offboardings' THEN
+        dir := 'DESC'; k := 'o.confirmed_at'; id_expr := 'o.id'; id_type := 'uuid';
+        src := 'public.offboarding o'; cond := 'o.account_id = $1';
+        item := 'jsonb_build_object(''id'', o.id, ''scope'', o.scope, ''confirmed_at'', o.confirmed_at,
+                 ''delete_at'', o.delete_at, ''restored_at'', o.restored_at,
+                 ''effective_at'', o.effective_at, ''reason'', o.reason)';
+    WHEN 'billing_seats' THEN
+        dir := 'ASC'; k := 's.created_at'; id_expr := 's.id'; id_type := 'text';
+        src := 'public.billing_seat s'; cond := 's.account_id = $1';
+        item := 'jsonb_build_object(''id'', s.id, ''plan'', s.plan, ''collection'', s.collection,
+                 ''stripe_subscription_id'', s.stripe_subscription_id,
+                 ''location_id'', s.location_id, ''status'', s.status,
+                 ''current_period_end'', s.current_period_end,
+                 ''cancel_at_period_end'', s.cancel_at_period_end,
+                 ''next_price_key'', s.next_price_key, ''review_reason'', s.review_reason)';
+    WHEN 'charges' THEN
+        dir := 'DESC'; k := 'h.created_at'; id_expr := 'h.stripe_invoice_id'; id_type := 'text';
+        src := 'public.billing_charge h'; cond := 'h.account_id = $1';
+        item := 'jsonb_build_object(''stripe_invoice_id'', h.stripe_invoice_id, ''seat_id'', h.seat_id,
+                 ''status'', h.status, ''billing_reason'', h.billing_reason,
+                 ''currency'', h.currency, ''subtotal'', h.subtotal, ''tax'', h.tax,
+                 ''total'', h.total, ''amount_paid'', h.amount_paid,
+                 ''amount_refunded'', h.amount_refunded, ''price_key'', h.price_key,
+                 ''period_start'', h.period_start, ''period_end'', h.period_end,
+                 ''paid_at'', h.paid_at, ''payment_intent_id'', h.payment_intent_id,
+                 ''charge_id'', h.charge_id, ''disputed'', h.disputed)';
+    WHEN 'documents' THEN
+        dir := 'DESC'; k := 'd.created_at'; id_expr := 'd.id'; id_type := 'uuid';
+        src := 'public.billing_document d'; cond := 'd.account_id = $1';
+        item := 'jsonb_build_object(''id'', d.id, ''kind'', d.kind, ''stripe_invoice_id'', d.stripe_invoice_id,
+                 ''stripe_refund_id'', d.stripe_refund_id, ''state'', d.state,
+                 ''odoo_move_id'', d.odoo_move_id, ''number'', d.number,
+                 ''amount_untaxed'', d.amount_untaxed, ''amount_tax'', d.amount_tax,
+                 ''amount_total'', d.amount_total, ''verifactu_state'', d.verifactu_state,
+                 ''review_reason'', d.review_reason, ''created_at'', d.created_at,
+                 ''issued_at'', d.issued_at)';
+    WHEN 'refunds' THEN
+        dir := 'DESC'; k := 'r.created_at'; id_expr := 'r.id'; id_type := 'uuid';
+        src := 'public.billing_refund_request r'; cond := 'r.account_id = $1';
+        item := 'jsonb_build_object(''id'', r.id, ''stripe_invoice_id'', r.stripe_invoice_id,
+                 ''amount'', r.amount, ''reason'', r.reason, ''ticket_ref'', r.ticket_ref,
+                 ''requested_by'', r.requested_by, ''state'', r.state,
+                 ''stripe_refund_id'', r.stripe_refund_id, ''created_at'', r.created_at,
+                 ''finished_at'', r.finished_at)';
+    WHEN 'billing_blocks' THEN
+        dir := 'DESC'; k := 'b.blocked_at'; id_expr := 'b.id'; id_type := 'bigint';
+        src := 'public.account_billing_block b'; cond := 'b.account_id = $1';
+        item := 'jsonb_build_object(''id'', b.id, ''blocked_at'', b.blocked_at, ''reason'', b.reason,
+                 ''stripe_invoice_id'', b.stripe_invoice_id, ''seat_id'', b.seat_id,
+                 ''unblocked_at'', b.unblocked_at, ''unblocked_by'', b.unblocked_by)';
+    WHEN 'review_documents' THEN
+        dir := 'ASC'; k := 'd.created_at'; id_expr := 'd.id'; id_type := 'uuid';
+        src := 'public.billing_document d';
+        cond := 'd.state IN (''revision'', ''pendiente'')
+                 AND (d.state = ''revision'' OR d.created_at < now() - interval ''1 hour'')';
+        item := 'jsonb_build_object(''id'', d.id, ''account_id'', d.account_id, ''kind'', d.kind,
+                 ''stripe_invoice_id'', d.stripe_invoice_id,
+                 ''stripe_refund_id'', d.stripe_refund_id, ''state'', d.state,
+                 ''odoo_move_id'', d.odoo_move_id, ''number'', d.number,
+                 ''amount_total'', d.amount_total, ''verifactu_state'', d.verifactu_state,
+                 ''review_reason'', d.review_reason, ''created_at'', d.created_at)';
+    WHEN 'review_seats' THEN
+        dir := 'ASC'; k := 's.updated_at'; id_expr := 's.id'; id_type := 'text';
+        src := 'public.billing_seat s'; cond := 's.review_reason IS NOT NULL';
+        item := 'jsonb_build_object(''id'', s.id, ''account_id'', s.account_id, ''plan'', s.plan,
+                 ''status'', s.status, ''stripe_subscription_id'', s.stripe_subscription_id,
+                 ''review_reason'', s.review_reason)';
+    WHEN 'review_refunds' THEN
+        dir := 'DESC'; k := 'r.created_at'; id_expr := 'r.id'; id_type := 'uuid';
+        src := 'public.billing_refund_request r'; cond := 'r.state IN (''pendiente'', ''fallido'')';
+        item := 'jsonb_build_object(''id'', r.id, ''account_id'', r.account_id,
+                 ''stripe_invoice_id'', r.stripe_invoice_id, ''amount'', r.amount,
+                 ''reason'', r.reason, ''state'', r.state, ''requested_by'', r.requested_by,
+                 ''created_at'', r.created_at)';
+    WHEN 'review_events' THEN
+        dir := 'DESC'; k := 'e.received_at'; id_expr := 'e.id'; id_type := 'text';
+        src := 'public.stripe_event e';
+        cond := '(e.outcome = ''orphan'' OR e.processed_at IS NULL)
+                 AND (e.outcome = ''orphan'' OR e.received_at < now() - interval ''1 hour'')';
+        item := 'jsonb_build_object(''id'', e.id, ''type'', e.type, ''object_id'', e.object_id,
+                 ''received_at'', e.received_at, ''processed_at'', e.processed_at,
+                 ''outcome'', e.outcome)';
+    WHEN 'review_paid_without_document' THEN
+        dir := 'ASC'; k := 'p.starts_at'; id_expr := 'p.id'; id_type := 'uuid';
+        src := 'public.plan_entitlement p';
+        cond := 'p.source = ''pago'' AND NOT p.provisional
+                 AND NOT EXISTS (SELECT 1 FROM public.billing_document d
+                                 WHERE d.kind = ''factura'' AND d.stripe_invoice_id = p.external_ref)';
+        item := 'jsonb_build_object(''entitlement_id'', p.id, ''account_id'', p.account_id,
+                 ''stripe_invoice_id'', p.external_ref, ''seat_id'', p.seat_id,
+                 ''starts_at'', p.starts_at)';
+    WHEN 'review_blocks' THEN
+        dir := 'ASC'; k := 'b.blocked_at'; id_expr := 'b.id'; id_type := 'bigint';
+        src := 'public.account_billing_block b'; cond := 'b.unblocked_at IS NULL';
+        item := 'jsonb_build_object(''id'', b.id, ''account_id'', b.account_id,
+                 ''blocked_at'', b.blocked_at, ''reason'', b.reason,
+                 ''stripe_invoice_id'', b.stripe_invoice_id, ''seat_id'', b.seat_id)';
+    ELSE
+        RAISE EXCEPTION 'ese listado no existe' USING ERRCODE = 'check_violation';
+    END CASE;
+    q := format(
+        'SELECT coalesce(jsonb_agg(jsonb_build_object(''k'', s.k, ''id'', s.id, ''item'', s.item)'
+        '                 ORDER BY s.k %1$s, s.kid %1$s), ''[]''::jsonb)'
+        ' FROM (SELECT %2$s AS k, %3$s AS kid, (%3$s)::text AS id, %4$s AS item'
+        '       FROM %5$s'
+        '       WHERE (%6$s)'
+        '         AND ($2::text IS NULL OR (%2$s, %3$s) %7$s ($2::timestamptz, $3::%8$s))'
+        '       ORDER BY %2$s %1$s, %3$s %1$s LIMIT $4) s',
+        dir, k, id_expr, item, src, cond, CASE dir WHEN 'ASC' THEN '>' ELSE '<' END, id_type);
+    EXECUTE q INTO page USING p_account, p_after_key, p_after_id, lim + 1;
+    n := jsonb_array_length(page);
+    RETURN jsonb_build_object(
+        'items', coalesce((SELECT jsonb_agg(x.e -> 'item' ORDER BY x.i)
+                           FROM jsonb_array_elements(page) WITH ORDINALITY AS x (e, i)
+                           WHERE x.i <= lim), '[]'::jsonb),
+        'next', CASE WHEN n > lim THEN jsonb_build_object(
+                    'key', page -> (lim - 1) ->> 'k', 'id', page -> (lim - 1) ->> 'id') END);
+END
+$$;
+
+-- La página siguiente de un listado de la cuenta (Resumen: soporte, finanzas y
+-- propietario; Cobro y revisión: finanzas y propietario). Cada lectura queda registrada
+-- (list_read, con el nombre del listado).
+CREATE OR REPLACE FUNCTION admin_list(
+    p_session text, p_list text, p_account uuid, p_limit integer, p_after_key text,
+    p_after_id text)
+RETURNS jsonb
+LANGUAGE plpgsql SECURITY DEFINER SET search_path = pg_catalog, public, pg_temp AS $$
+DECLARE
+    who uuid;
+    roles text[];
+BEGIN
+    IF p_list IN ('locations', 'entitlements', 'seats', 'blocks', 'activations', 'offboardings') THEN
+        roles := ARRAY['soporte', 'finanzas', 'propietario'];
+    ELSIF p_list IN ('billing_seats', 'charges', 'documents', 'refunds', 'billing_blocks',
+                     'review_documents', 'review_seats', 'review_refunds', 'review_events',
+                     'review_paid_without_document', 'review_blocks') THEN
+        roles := ARRAY['finanzas', 'propietario'];
+    ELSE
+        RAISE EXCEPTION 'ese listado no existe' USING ERRCODE = 'check_violation';
+    END IF;
+    SELECT a.actor_id INTO who FROM public.admin_actor(p_session, roles, false) a;
+    IF p_list NOT LIKE 'review\_%' THEN
+        IF p_account IS NULL OR NOT EXISTS (SELECT 1 FROM public.account x WHERE x.id = p_account) THEN
+            RAISE EXCEPTION 'no existe esa cuenta' USING ERRCODE = 'no_data_found';
+        END IF;
+    END IF;
+    PERFORM public.admin_audit_write(who, 'list_read', p_account, NULL, NULL,
+        jsonb_build_object('list', p_list));
+    -- Los de cobro llevan el modo de Stripe, para construir los enlaces a su panel.
+    RETURN public.admin_list_page(p_list, p_account, p_limit, p_after_key, p_after_id)
+        || CASE WHEN 'soporte' = ANY (roles) THEN '{}'::jsonb
+                ELSE jsonb_build_object('livemode', public.admin_stripe_livemode()) END;
+END
+$$;
+
+-- Índices que respaldan el orden de los listados globales (los de una cuenta filtran antes
+-- por account_id, que ya tiene índice). Las tablas de cobro, solo si ya existen.
+CREATE INDEX IF NOT EXISTS job_failed_keyset
+    ON job ((coalesce(finished_at, '-infinity'::timestamptz)) DESC, id DESC)
+    WHERE state = 'failed';
+CREATE INDEX IF NOT EXISTS retention_run_keyset ON retention_run (at DESC, id DESC);
+CREATE INDEX IF NOT EXISTS profile_summary_problem_keyset ON profile_summary (status_at DESC)
+    WHERE status <> 'ok';
+CREATE INDEX IF NOT EXISTS location_activation_log_keyset
+    ON location_activation_log (account_id, at DESC, id DESC);
+DO $$
+BEGIN
+    IF pg_catalog.to_regclass('public.billing_document') IS NOT NULL THEN
+        CREATE INDEX IF NOT EXISTS billing_document_review_keyset
+            ON public.billing_document (created_at, id) WHERE state IN ('revision', 'pendiente');
+        CREATE INDEX IF NOT EXISTS billing_seat_review_keyset
+            ON public.billing_seat (updated_at, id) WHERE review_reason IS NOT NULL;
+        CREATE INDEX IF NOT EXISTS billing_refund_request_review_keyset
+            ON public.billing_refund_request (created_at DESC, id DESC)
+            WHERE state IN ('pendiente', 'fallido');
+        CREATE INDEX IF NOT EXISTS stripe_event_review_keyset
+            ON public.stripe_event (received_at DESC, id DESC)
+            WHERE outcome = 'orphan' OR processed_at IS NULL;
+        CREATE INDEX IF NOT EXISTS plan_entitlement_paid_keyset
+            ON public.plan_entitlement (starts_at, id) WHERE source = 'pago' AND NOT provisional;
+        CREATE INDEX IF NOT EXISTS account_billing_block_open_keyset
+            ON public.account_billing_block (blocked_at, id) WHERE unblocked_at IS NULL;
+    END IF;
+END
+$$;
+
 -- Métricas (sección 6.4; finanzas y propietario), siempre en totales, del periodo
 -- [p_from, p_to). Las plazas en vigor van por precio: el proceso calcula el ARR y el MRR
 -- con los precios del dominio (app/domain/billing.py, price_cents), sin copiarlos aquí.
--- Definiciones en docs/contrato-backoffice.md, «Métricas».
+-- Solo lo que algo registra de verdad. Definiciones, quién registra cada cosa y cuándo
+-- no, en docs/contrato-backoffice.md, «Métricas».
+-- - Una plaza «contratada» es la que tiene un derecho 'pago': fichaitor-billing lo crea
+--   cuando Stripe da por pagada su primera factura (también la de 0 € de la ventana de la
+--   beta). Una plaza cuyo primer pago no llegó a completarse acaba 'canceled' sin derecho:
+--   ni es plaza nueva ni es baja.
+-- - Sin «plazas perdidas por impago»: el bloqueo no tiene límite y no se pierde la plaza
+--   (decisión 9.0, 2 y 3, de docs/admin-facturacion.md). Lo que hay sin pagar son los
+--   bloqueos abiertos.
+-- - «Pagan» en la conversión: un cobro con dinero (amount_paid > 0). La plaza de la ventana
+--   de la beta no paga hasta que acaba la ventana (decisión 9.0, 11).
+-- - Cuentas de la beta: las que recibieron el derecho beta automático al crearse antes del
+--   lanzamiento (granted_by vacío). Una ampliación de la beta desde el backoffice lleva
+--   granted_by y no cambia la cohorte de la cuenta.
+-- - Embudo: los eventos de funnel_event, cada uno con quien lo registra en el contrato.
+--   'visit' lo registra la portada (POST /api/v1/public/visit) y 'connected', solo la
+--   primera conexión de una identidad de Google (no cada inicio de sesión).
 CREATE OR REPLACE FUNCTION admin_metrics(p_session text, p_from timestamptz, p_to timestamptz)
 RETURNS jsonb
 LANGUAGE plpgsql SECURITY DEFINER SET search_path = pg_catalog, public, pg_temp AS $$
@@ -1680,6 +1920,25 @@ BEGIN
     END IF;
     PERFORM public.admin_audit_write(who, 'metrics_read', NULL, NULL, NULL,
         jsonb_build_object('from', p_from, 'to', p_to));
+    WITH contracted AS (
+        SELECT s.id, s.account_id, s.status, s.created_at, s.updated_at
+        FROM public.billing_seat s
+        WHERE EXISTS (SELECT 1 FROM public.plan_entitlement p
+                      WHERE p.seat_id = s.id AND p.source = 'pago')
+    ),
+    paying AS (
+        SELECT DISTINCT c.account_id FROM public.billing_charge c
+        WHERE c.status = 'paid' AND c.amount_paid > 0
+    ),
+    beta AS (
+        SELECT DISTINCT e.account_id FROM public.plan_entitlement e
+        WHERE e.source = 'beta' AND e.granted_by IS NULL
+    ),
+    free AS (
+        SELECT x.id FROM public.account x
+        WHERE x.created_at >= p_from AND x.created_at < p_to
+          AND NOT EXISTS (SELECT 1 FROM beta b WHERE b.account_id = x.id)
+    )
     SELECT jsonb_build_object(
         'seats_in_force', coalesce((SELECT jsonb_agg(jsonb_build_object(
                 'plan', t.plan, 'next_price_key', t.next_price_key, 'seats', t.n)
@@ -1690,25 +1949,17 @@ BEGIN
         'signups', jsonb_build_object(
             'accounts', (SELECT count(*) FROM public.account x
                          WHERE x.created_at >= p_from AND x.created_at < p_to),
-            'first_seats', (SELECT count(*) FROM public.billing_seat s
-                            WHERE s.status <> 'pending' AND s.created_at >= p_from
-                              AND s.created_at < p_to
-                              AND NOT EXISTS (SELECT 1 FROM public.billing_seat o
+            'first_seats', (SELECT count(*) FROM contracted s
+                            WHERE s.created_at >= p_from AND s.created_at < p_to
+                              AND NOT EXISTS (SELECT 1 FROM contracted o
                                               WHERE o.account_id = s.account_id
-                                                AND o.status <> 'pending'
                                                 AND o.created_at < s.created_at)),
-            'new_seats', (SELECT count(*) FROM public.billing_seat s
-                          WHERE s.status <> 'pending' AND s.created_at >= p_from
-                            AND s.created_at < p_to)),
+            'new_seats', (SELECT count(*) FROM contracted s
+                          WHERE s.created_at >= p_from AND s.created_at < p_to)),
         'churn', jsonb_build_object(
-            'seats_canceled', (SELECT count(*) FROM public.billing_seat s
+            'seats_canceled', (SELECT count(*) FROM contracted s
                                WHERE s.status = 'canceled' AND s.updated_at >= p_from
                                  AND s.updated_at < p_to),
-            'seats_lost_unpaid', (SELECT count(*) FROM public.billing_seat s
-                                  WHERE s.status = 'canceled' AND s.updated_at >= p_from
-                                    AND s.updated_at < p_to
-                                    AND EXISTS (SELECT 1 FROM public.account_billing_block b
-                                                WHERE b.seat_id = s.id)),
             'seats_to_cancel', (SELECT count(*) FROM public.billing_seat s
                                 WHERE s.status = 'active' AND s.cancel_at_period_end),
             'account_leaves', (SELECT count(DISTINCT o.account_id) FROM public.offboarding o
@@ -1722,25 +1973,15 @@ BEGIN
             'open_now', (SELECT count(*) FROM public.account_billing_block b
                          WHERE b.unblocked_at IS NULL)),
         'conversion', jsonb_build_object(
-            'beta_accounts', (SELECT count(DISTINCT e.account_id) FROM public.plan_entitlement e
-                              WHERE e.source = 'beta'),
-            'beta_paid', (SELECT count(DISTINCT e.account_id) FROM public.plan_entitlement e
-                          WHERE e.source = 'beta'
-                            AND EXISTS (SELECT 1 FROM public.plan_entitlement p
-                                        WHERE p.account_id = e.account_id AND p.source = 'pago')),
-            'free_accounts', (SELECT count(*) FROM public.account x
-                              WHERE x.created_at >= p_from AND x.created_at < p_to
-                                AND NOT EXISTS (SELECT 1 FROM public.plan_entitlement e
-                                                WHERE e.account_id = x.id AND e.source = 'beta')),
-            'free_paid', (SELECT count(*) FROM public.account x
-                          WHERE x.created_at >= p_from AND x.created_at < p_to
-                            AND NOT EXISTS (SELECT 1 FROM public.plan_entitlement e
-                                            WHERE e.account_id = x.id AND e.source = 'beta')
-                            AND EXISTS (SELECT 1 FROM public.plan_entitlement p
-                                        WHERE p.account_id = x.id AND p.source = 'pago'))),
+            'beta_accounts', (SELECT count(*) FROM beta),
+            'beta_paid', (SELECT count(*) FROM beta b
+                          WHERE EXISTS (SELECT 1 FROM paying p WHERE p.account_id = b.account_id)),
+            'free_accounts', (SELECT count(*) FROM free),
+            'free_paid', (SELECT count(*) FROM free f
+                          WHERE EXISTS (SELECT 1 FROM paying p WHERE p.account_id = f.id))),
         'funnel', (SELECT jsonb_object_agg(k.kind, coalesce(f.n, 0))
-                   FROM unnest(ARRAY['visit', 'diagnosis', 'signup', 'connected',
-                                     'checkout_started', 'paid']) AS k (kind)
+                   FROM unnest(ARRAY['visit', 'diagnosis', 'screenshot_diagnosis', 'signup',
+                                     'connected', 'checkout_started', 'paid']) AS k (kind)
                    LEFT JOIN (SELECT e.kind, count(*) AS n FROM public.funnel_event e
                               WHERE e.at >= p_from AND e.at < p_to GROUP BY e.kind) f
                      ON f.kind = k.kind)
@@ -1861,17 +2102,17 @@ GRANT EXECUTE ON FUNCTION
     admin_session_close(text),
     admin_enrollment_check(text),
     admin_enroll(text, text, text, bigint, text[]),
-    admin_find_accounts(text, text),
-    admin_account_detail(text, uuid, text),
+    admin_find_accounts(text, text, integer, text, text),
+    admin_account_detail(text, uuid, text, integer, text, text),
     admin_email_matches(text, uuid, text, text),
     fichaitor_email_offboarding(text, uuid, text, text, text, boolean),
     admin_job_stats(text),
-    admin_failed_jobs(text),
-    admin_retention_runs(text),
-    admin_sync_status(text, uuid),
-    admin_channel_links(text, uuid),
-    admin_waitlist_totals(text),
-    admin_users(text),
+    admin_failed_jobs(text, integer, text, text),
+    admin_retention_runs(text, integer, text, text),
+    admin_sync_status(text, uuid, integer, text, text),
+    admin_channel_links(text, uuid, integer, text, text),
+    admin_waitlist_totals(text, integer, text, text),
+    admin_users(text, integer, text, text),
     admin_audit_read(text, integer, bigint),
     -- Paso 12.
     admin_session_pending_user(text),
@@ -1885,7 +2126,8 @@ GRANT EXECUTE ON FUNCTION
     admin_trim_entitlement(text, uuid, timestamptz, text),
     admin_close_block(text, bigint, text),
     admin_request_refund(text, text, integer, text, text),
-    admin_metrics(text, timestamptz, timestamptz)
+    admin_metrics(text, timestamptz, timestamptz),
+    admin_list(text, text, uuid, integer, text, text)
 TO fichaitor_admin;
 
 -- ---------------------------------------------------------------------------

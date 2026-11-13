@@ -301,6 +301,11 @@ class Store(Protocol):
         """Append a connection. A reconnection is a new row; the newest one wins."""
         ...
 
+    async def account_exists(self, google_sub: str) -> bool:
+        """Whether that Google identity already has an account (deleted ones do not count:
+        `upsert_account` would make a new one). Tells a first connection from a sign-in."""
+        ...
+
     async def upsert_account(self, google_sub: str, email: str) -> str:
         """Create the account of that Google identity, or refresh its email. Returns its id.
 

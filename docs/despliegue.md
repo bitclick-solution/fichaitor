@@ -740,7 +740,7 @@ Para el resto de personas, repite el paso 1 con `--rol soporte` o `--rol finanza
 
 > **Importante:** el backoffice escribe en su registro de auditoría cada inicio de sesión, cada fallo, cada lectura de una cuenta y cada acción. Para ver el nombre de una ficha o la dirección fiscal de un cliente pide la referencia del ticket: escribe la del caso, nunca una dirección de correo.
 
-Lo que puede hacer cada rol está en la sección 6.3 de `docs/admin-facturacion.md`; las pantallas y sus rutas, en `docs/contrato-backoffice.md`.
+Cómo se usa cada pantalla, los procedimientos de soporte y finanzas y qué mirar cada día están en el [manual del backoffice](manual-backoffice.md). Lo que puede hacer cada rol está en la sección 6.3 de `docs/admin-facturacion.md`; las pantallas y sus rutas, en `docs/contrato-backoffice.md`.
 
 ## Probar un pago en local
 

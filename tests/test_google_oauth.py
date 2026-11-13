@@ -121,6 +121,15 @@ def test_successful_connection_stores_encrypted_token_and_locations():
     assert "fake-refresh-token" not in r.headers["location"]
 
 
+def test_the_funnel_counts_the_first_connection_not_every_sign_in():
+    client, store, _ = make()
+    for code in ("codigo-1", "codigo-2"):
+        state = begin(client)
+        r = client.get(CALLBACK, params={"code": code, "state": state})
+        assert result_of(r)["google"] == "ok"
+    assert [e for e in store.events if e[0] == "connected"] == [("connected", None, None, None)]
+
+
 def test_callback_without_valid_state_is_rejected_and_never_calls_google():
     client, store, google = make()
     begin(client)

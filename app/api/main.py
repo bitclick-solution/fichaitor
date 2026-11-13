@@ -38,6 +38,7 @@ from app.api.reviews import build_router as build_reviews_router
 from app.api.screenshot import build_reader as build_reply_writer
 from app.api.screenshot import build_router_from_settings as build_screenshot_router
 from app.api.session import AccountBlocked, account_blocked_response
+from app.api.visit import build_router as build_visit_router
 from app.api.waitlist import SOURCE_PATTERN, build_router
 from app.api.webhooks_stripe import build_router as build_stripe_webhook_router
 from app.application.diagnosis_service import DailyLimitReached, DiagnosisService, RateLimited
@@ -324,6 +325,11 @@ def create_app(
             client_ip,
         )
     )
+
+    async def record_visit(source: str | None) -> None:
+        await store.record_event("visit", source)
+
+    app.include_router(build_visit_router(record_visit, client_ip))
 
     if google is not None:
         app.include_router(

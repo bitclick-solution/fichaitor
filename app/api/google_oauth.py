@@ -126,6 +126,8 @@ def build_router(
         token = new_token()
         try:
             now = clock()
+            # The funnel counts the first connection of an identity, not every sign-in.
+            first_time = not await store.account_exists(identity.sub)
             account_id = await store.upsert_account(identity.sub, identity.email)
             if locations is not None:  # not listed: keep whatever the account already had
                 await store.sync_locations(account_id, locations, utc(now))
@@ -147,10 +149,11 @@ def build_router(
                 await sync.request_for_account(account_id, reconnected=True)
             except Exception as exc:  # identifiers must never reach the logs
                 log.warning("sincronización tras conectar no encolada: %s", type(exc).__name__)
-        try:
-            await store.record_event("connected")
-        except Exception as exc:
-            log.warning("evento de embudo no registrado: %s", type(exc).__name__)
+        if first_time:
+            try:
+                await store.record_event("connected")
+            except Exception as exc:
+                log.warning("evento de embudo no registrado: %s", type(exc).__name__)
         # "pendiente": connected, but Google did not let us list the profiles.
         # It does not mean the owner has none.
         resp = back("ok", fichas="pendiente" if locations is None else len(locations))

@@ -211,40 +211,98 @@ class AdminStore:
 
     # --- screens ----------------------------------------------------------------------------
 
-    async def find_accounts(self, session: str, q: str) -> list[dict]:
+    # Listings: `limit` rows (the routes ask for one more than they show) after the key
+    # `after` = (key, id) of the last row of the page before (app/admin/pagination.py).
+
+    async def find_accounts(
+        self, session: str, q: str, limit: int = 21, after: tuple[str, str] | None = None
+    ) -> list[dict]:
+        key, ident = after or (None, None)
         return await self.fetch(
             "SELECT account_id::text AS account_id, email_masked, created_at, deleted_at,"
-            " disconnected_at, locations, active_locations FROM admin_find_accounts($1, $2)",
+            " disconnected_at, locations, active_locations"
+            " FROM admin_find_accounts($1, $2, $3, $4, $5)",
             session,
             q,
+            limit,
+            key,
+            ident,
         )
 
     async def account_overview(self, session: str, account: str) -> dict:
         return await self.fetchval("SELECT admin_account_overview($1, $2::uuid)", session, account)
 
-    async def account_detail(self, session: str, account: str, ticket: str) -> list[dict]:
+    async def account_detail(
+        self,
+        session: str,
+        account: str,
+        ticket: str,
+        limit: int = 51,
+        after: tuple[str, str] | None = None,
+    ) -> list[dict]:
+        key, ident = after or (None, None)
         return await self.fetch(
             "SELECT location_id, title, active_since, plan, deactivated_at, removed_at, verified"
-            " FROM admin_account_detail($1, $2::uuid, $3)",
+            " FROM admin_account_detail($1, $2::uuid, $3, $4, $5, $6)",
             session,
             account,
             ticket,
+            limit,
+            key,
+            ident,
         )
 
-    async def sync_status(self, session: str, account: str | None) -> list[dict]:
+    async def sync_status(
+        self,
+        session: str,
+        account: str | None,
+        limit: int = 51,
+        after: tuple[str, str] | None = None,
+    ) -> list[dict]:
+        key, ident = after or (None, None)
         return await self.fetch(
             "SELECT account_id::text AS account_id, location_id, status, status_at, synced_at"
-            " FROM admin_sync_status($1, $2::uuid)",
+            " FROM admin_sync_status($1, $2::uuid, $3, $4, $5)",
             session,
             account,
+            limit,
+            key,
+            ident,
         )
 
-    async def channel_links(self, session: str, account: str) -> list[dict]:
+    async def channel_links(
+        self, session: str, account: str, limit: int = 51, after: tuple[str, str] | None = None
+    ) -> list[dict]:
+        key, ident = after or (None, None)
         return await self.fetch(
             "SELECT identity_id, channel, verified_at, last_inbound_at, unlinked_at"
-            " FROM admin_channel_links($1, $2::uuid)",
+            " FROM admin_channel_links($1, $2::uuid, $3, $4, $5)",
             session,
             account,
+            limit,
+            key,
+            ident,
+        )
+
+    async def list_page(
+        self,
+        session: str,
+        name: str,
+        account: str | None,
+        limit: int,
+        after: tuple[str, str] | None = None,
+    ) -> dict:
+        """A page of a listing of an account or of the review queue (admin_list):
+        {"items": [...], "next": {"key", "id"} or None}."""
+        key, ident = after or (None, None)
+        return await self.fetchval(
+            "SELECT admin_list($1, $2, $3::uuid, $4, $5, $6)",
+            session,
+            name,
+            account,
+            limit,
+            key,
+            ident,
         )
 
     async def account_billing(self, session: str, account: str) -> dict:
@@ -293,27 +351,55 @@ class AdminStore:
             "SELECT kind, state, jobs, oldest_run_at, stuck FROM admin_job_stats($1)", session
         )
 
-    async def failed_jobs(self, session: str) -> list[dict]:
+    async def failed_jobs(
+        self, session: str, limit: int = 51, after: tuple[str, str] | None = None
+    ) -> list[dict]:
+        key, ident = after or (None, None)
         return await self.fetch(
             "SELECT job_id::text AS job_id, kind, attempts, finished_at, last_error"
-            " FROM admin_failed_jobs($1)",
+            " FROM admin_failed_jobs($1, $2, $3, $4)",
             session,
+            limit,
+            key,
+            ident,
         )
 
-    async def retention_runs(self, session: str) -> list[dict]:
-        return await self.fetch("SELECT at, deleted FROM admin_retention_runs($1)", session)
-
-    async def waitlist_totals(self, session: str) -> list[dict]:
+    async def retention_runs(
+        self, session: str, limit: int = 11, after: tuple[str, str] | None = None
+    ) -> list[dict]:
+        key, ident = after or (None, None)
         return await self.fetch(
-            "SELECT week, channel, score_band, source, people FROM admin_waitlist_totals($1)",
+            "SELECT run_id, at, deleted FROM admin_retention_runs($1, $2, $3, $4)",
             session,
+            limit,
+            key,
+            ident,
         )
 
-    async def users(self, session: str) -> list[dict]:
+    async def waitlist_totals(
+        self, session: str, limit: int = 101, after: tuple[str, str] | None = None
+    ) -> list[dict]:
+        key, ident = after or (None, None)
+        return await self.fetch(
+            "SELECT week, channel, score_band, source, people"
+            " FROM admin_waitlist_totals($1, $2, $3, $4)",
+            session,
+            limit,
+            key,
+            ident,
+        )
+
+    async def users(
+        self, session: str, limit: int = 51, after: tuple[str, str] | None = None
+    ) -> list[dict]:
+        key, ident = after or (None, None)
         return await self.fetch(
             "SELECT admin_user_id::text AS admin_user_id, username, role, active, must_enroll,"
-            " locked_until, created_at, password_changed_at FROM admin_users($1)",
+            " locked_until, created_at, password_changed_at FROM admin_users($1, $2, $3, $4)",
             session,
+            limit,
+            key,
+            ident,
         )
 
     async def audit_read(self, session: str, limit: int, before: int | None) -> list[dict]:

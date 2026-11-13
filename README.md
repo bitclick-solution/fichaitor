@@ -214,6 +214,8 @@ uv run ruff check .
 | [docs/06-estandares.md](docs/06-estandares.md) | Stack, separación de responsabilidades, Docker y estrategia de pruebas |
 | [docs/sentimiento.md](docs/sentimiento.md) | Sentimiento del establecimiento: fórmula de la nota, temas, disparadores, coste y qué se guarda |
 | [docs/retencion.md](docs/retencion.md) | Baja y conservación: qué dato se guarda, cuánto tiempo, quién lo borra y cuándo |
+| [docs/manual-backoffice.md](docs/manual-backoffice.md) | Manual del backoffice para el propietario, soporte y finanzas: entrar, roles, pantallas, procedimientos, métricas y salud |
+| [docs/contrato-backoffice.md](docs/contrato-backoffice.md) | Contrato HTTP del backoffice: rutas, roles, paginación por cursor y definición de cada métrica |
 
 ## Decisiones tomadas
 

@@ -924,6 +924,8 @@ def test_every_function_of_the_backoffice_fixes_the_search_path_and_is_not_publi
         # Paso 12: the reference of the case and the mode of Stripe, used by the others.
         "admin_ticket",
         "admin_stripe_livemode",
+        # One page of a named listing, for admin_list and the screens that embed it.
+        "admin_list_page",
     }
     owner_only = {n for n in names if n.startswith("admin_owner_")}
     for r in rows:

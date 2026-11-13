@@ -1290,14 +1290,8 @@ def test_the_metrics_are_totals(client):
     body = response.json()
     assert body["revenue"]["arr_cents"] >= 3500
     assert body["revenue"]["mrr_cents"] == round(body["revenue"]["arr_cents"] / 12)
-    assert set(body["funnel"]) == {
-        "visit",
-        "diagnosis",
-        "signup",
-        "connected",
-        "checkout_started",
-        "paid",
-    }
+    assert set(body["funnel"]) == FUNNEL_STEPS
+    assert set(body["churn"]) == {"seats_canceled", "seats_to_cancel", "account_leaves"}
     assert body["signups"]["accounts"] >= 1
     assert re.fullmatch(r"\d{4}-\d{2}-\d{2}", body["period"]["from"])
     assert (
@@ -1305,4 +1299,360 @@ def test_the_metrics_are_totals(client):
             "/admin/api/metrics?from=2026-01-01&to=2025-01-01", headers=person["headers"]
         ).status_code
         == 422
+    )
+
+
+# Every step has something that records it (docs/contrato-backoffice.md, «Métricas»).
+FUNNEL_STEPS = {
+    "visit",
+    "diagnosis",
+    "screenshot_diagnosis",
+    "signup",
+    "connected",
+    "checkout_started",
+    "paid",
+}
+METRICS_PERIOD = "from=2019-03-01&to=2019-04-01"
+METRICS_SOURCE = "pytest-metricas"
+
+
+def _metrics(client, person: dict) -> dict:
+    response = client.get(f"/admin/api/metrics?{METRICS_PERIOD}", headers=person["headers"])
+    assert response.status_code == 200
+    return response.json()
+
+
+async def _account(created_at: str | None, *, auto_beta: bool) -> str:
+    """An account of the test. The trigger gives every account the automatic beta right
+    (no launch date in the test database); `auto_beta=False` takes it away."""
+    sub = f"{SUB}{uuid.uuid4().hex[:8]}"
+    row = await owner(
+        "INSERT INTO account (google_sub, email, created_at)"
+        " VALUES ($1, $2, coalesce($3::text::timestamptz, now())) RETURNING id::text",
+        sub,
+        f"{sub}@example.com",
+        created_at,
+    )
+    account = row[0]["id"]
+    if not auto_beta:
+        await owner(
+            "DELETE FROM plan_entitlement WHERE account_id = $1::uuid AND source = 'beta'",
+            account,
+        )
+    return account
+
+
+async def _seat(
+    account: str, created_at: str, *, status: str, contracted: bool, paid_cents: int = 0
+) -> str:
+    """A seat. `contracted`: its first invoice was paid, so it has a 'pago' right (also the
+    0 € invoice of the beta window). `paid_cents`: the money of that invoice."""
+    seat = f"seat_{secrets.token_hex(8)}"
+    await owner(
+        "INSERT INTO billing_seat (id, account_id, plan, status, current_period_end,"
+        " next_price_key, created_at, updated_at) VALUES ($1, $2::uuid, 'pro', $3,"
+        " $4::text::timestamptz + interval '365 days', 'pro_first_yearly', $4::text::timestamptz,"
+        " $4::text::timestamptz + interval '1 day')",
+        seat,
+        account,
+        status,
+        created_at,
+    )
+    if contracted:
+        invoice = f"in_{secrets.token_hex(8)}"
+        await owner(
+            "INSERT INTO billing_charge (stripe_invoice_id, account_id, seat_id, status,"
+            " billing_reason, total, amount_paid, paid_at) VALUES ($1, $2::uuid, $3, 'paid',"
+            " 'subscription_create', $4, $4, $5::text::timestamptz)",
+            invoice,
+            account,
+            seat,
+            paid_cents,
+            created_at,
+        )
+        await owner(
+            "INSERT INTO plan_entitlement (account_id, plan, quantity, starts_at, ends_at,"
+            " source, external_ref, seat_id) VALUES ($1::uuid, 'pro', 1, $2::text::timestamptz,"
+            " $2::text::timestamptz + interval '400 days', 'pago', $3, $4)",
+            account,
+            created_at,
+            invoice,
+            seat,
+        )
+    return seat
+
+
+def test_the_metrics_count_only_what_is_recorded(client):
+    """Each figure against what records it: the seats that were never paid are neither new
+    nor lost, no seat is «lost for not paying» (the block has no time limit), a 0 € invoice
+    of the beta window is not a payment and a beta extended from the backoffice does not make
+    an account of the beta."""
+    person = logged("finanzas")
+    before = _metrics(client, person)
+
+    async def scenario():
+        # Accounts of the period, without the automatic beta: the Gratis cohort.
+        paying = await _account("2019-03-05", auto_beta=False)
+        trial = await _account("2019-03-06", auto_beta=False)
+        extended = await _account("2019-03-07", auto_beta=False)
+        await owner(
+            "INSERT INTO plan_entitlement (account_id, plan, quantity, starts_at, ends_at,"
+            " source, granted_by) VALUES ($1::uuid, 'pro', 1, now(), now() + interval '30 days',"
+            " 'beta', 'pytest')",
+            extended,
+        )
+        await _seat(paying, "2019-03-07", status="active", contracted=True, paid_cents=4235)
+        await _seat(trial, "2019-03-08", status="active", contracted=True, paid_cents=0)
+        # Its first payment never completed: canceled without a right.
+        await _seat(extended, "2019-03-09", status="canceled", contracted=False)
+        # Paid, blocked once and paid again, then canceled: a cancellation, not a loss.
+        lost = await _seat(
+            paying, "2019-03-10", status="canceled", contracted=True, paid_cents=4235
+        )
+        await owner(
+            "INSERT INTO account_billing_block (account_id, reason, seat_id, blocked_at,"
+            " unblocked_at, unblocked_by) VALUES ($1::uuid, 'payment_failed', $2,"
+            " '2019-03-11', '2019-03-12', 'payment')",
+            paying,
+            lost,
+        )
+        # Accounts of the beta (now, outside the period): one pays, one only has the 0 € of
+        # its window.
+        beta_paying = await _account(None, auto_beta=True)
+        beta_trial = await _account(None, auto_beta=True)
+        await _seat(beta_paying, "2019-02-01", status="active", contracted=True, paid_cents=4235)
+        await _seat(beta_trial, "2019-02-01", status="active", contracted=True, paid_cents=0)
+        for kind, times in (
+            ("visit", 2),
+            ("diagnosis", 1),
+            ("screenshot_diagnosis", 2),
+            ("signup", 1),
+            ("connected", 3),
+            ("checkout_started", 2),
+            ("paid", 1),
+        ):
+            for _ in range(times):
+                await owner(
+                    "INSERT INTO funnel_event (at, kind, source) VALUES ('2019-03-15', $1, $2)",
+                    kind,
+                    METRICS_SOURCE,
+                )
+
+    try:
+        run(scenario())
+        after = _metrics(client, person)
+    finally:
+        run(owner("DELETE FROM funnel_event WHERE source = $1", METRICS_SOURCE))
+
+    assert set(after["funnel"]) == FUNNEL_STEPS
+    assert after["funnel"] == {
+        "visit": 2,
+        "diagnosis": 1,
+        "screenshot_diagnosis": 2,
+        "signup": 1,
+        "connected": 3,
+        "checkout_started": 2,
+        "paid": 1,
+    }
+    assert after["signups"] == {"accounts": 3, "first_seats": 2, "new_seats": 3}
+    assert after["churn"]["seats_canceled"] == 1
+    assert "seats_lost_unpaid" not in after["churn"]
+    assert after["blocks"]["opened"] == 1 and after["blocks"]["closed"] == 1
+    assert after["conversion"]["free_accounts"] == 3
+    assert after["conversion"]["free_paid"] == 1
+    assert after["conversion"]["beta_accounts"] - before["conversion"]["beta_accounts"] == 2
+    assert after["conversion"]["beta_paid"] - before["conversion"]["beta_paid"] == 1
+
+
+# --- pages (keyset): no duplicates and no gaps with rows inserted between pages ----------
+
+
+def walk(client, path: str, key: str, headers: dict, limit: int, between=None) -> list[dict]:
+    """Every page of a listing, calling `between(n)` after page n."""
+    rows: list[dict] = []
+    cursor = None
+    for n in range(100):
+        sep = "&" if "?" in path else "?"
+        url = f"{path}{sep}limit={limit}" + (f"&cursor={cursor}" if cursor else "")
+        response = client.get(url, headers=headers)
+        assert response.status_code == 200, response.text
+        body = response.json()
+        rows.extend(body[key])
+        cursor = body["next_cursor"]
+        if cursor is None:
+            return rows
+        if between is not None:
+            between(n)
+    raise AssertionError("demasiadas páginas")
+
+
+def test_the_users_go_by_pages_without_duplicates_nor_gaps(client):
+    person = logged("propietario")
+    first = [run(make_user("soporte"))[1] for _ in range(5)]
+    added: list[str] = []
+
+    def between(n: int) -> None:
+        added.append(run(make_user("soporte"))[1])
+
+    rows = walk(client, "/admin/api/users", "users", person["headers"], 2, between)
+    names = [r["username"] for r in rows]
+    assert len(names) == len(set(names))
+    assert names == sorted(names)
+    assert set(first) <= set(names)
+    # A user inserted after the cursor shows up in its place; one before it, not again.
+    for name in added:
+        assert names.count(name) <= 1
+
+
+def test_an_account_listing_goes_by_pages_and_a_new_row_neither_repeats_nor_hides(client):
+    account = furnish()
+    person = logged("finanzas")
+
+    async def blocks(at: str) -> None:
+        await owner(
+            "INSERT INTO account_billing_block (account_id, reason, seat_id, blocked_at,"
+            " unblocked_at, unblocked_by) VALUES ($1::uuid, 'payment_failed', $2,"
+            " $3::text::timestamptz, $3::text::timestamptz + interval '1 hour', 'payment')",
+            account["id"],
+            account["seat"],
+            at,
+        )
+
+    for day in range(1, 8):
+        run(blocks(f"2026-0{day}-01"))
+    older = []
+
+    def between(n: int) -> None:
+        # Newer than everything seen (before the cursor, DESC): not shown on later pages.
+        run(blocks("2030-01-01"))
+        # Older than everything: shown at the end, once.
+        # Each one older than the one before: always after the cursor.
+        older.append(f"2019-{12 - n:02d}-01")
+        run(blocks(older[-1]))
+
+    path = f"/admin/api/accounts/{account['id']}/lists/blocks"
+    rows = walk(client, path, "items", person["headers"], 2, between)
+    ids = [r["id"] for r in rows]
+    assert len(ids) == len(set(ids))
+    dates = [r["blocked_at"] for r in rows]
+    assert dates == sorted(dates, reverse=True)
+    assert sum(1 for d in dates if d.startswith("2019-")) == len(older)
+    assert not any(d.startswith("2030-") for d in dates[1:])
+    # The first page of the overview carries the cursor of the next one.
+    overview = client.get(f"/admin/api/accounts/{account['id']}", headers=person["headers"])
+    assert set(overview.json()["next_cursors"]) >= {"blocks", "seats", "activations"}
+
+
+def test_the_failed_jobs_go_by_pages(client):
+    person = logged("soporte")
+    sub = f"{SUB}{uuid.uuid4().hex[:8]}"
+
+    async def failed(at: str | None) -> None:
+        await owner(
+            "INSERT INTO job (kind, payload, state, finished_at, last_error)"
+            " VALUES ('send_mail', $1::jsonb, 'failed', $2::text::timestamptz, 'x')",
+            f'{{"to": "{sub}@example.com"}}',
+            at,
+        )
+
+    for day in range(1, 6):
+        run(failed(f"2020-01-0{day}"))
+    run(failed(None))
+
+    def between(n: int) -> None:
+        run(failed("2031-01-01"))
+
+    rows = walk(
+        client, "/admin/api/health/failed-jobs", "failed_jobs", person["headers"], 2, between
+    )
+    ids = [r["job_id"] for r in rows]
+    assert len(ids) == len(set(ids))
+    mine = run(
+        owner(
+            "SELECT id::text AS id FROM job WHERE payload->>'to' = $1 AND finished_at"
+            " < '2031-01-01' OR (payload->>'to' = $1 AND finished_at IS NULL)",
+            f"{sub}@example.com",
+        )
+    )
+    assert {r["id"] for r in mine} <= set(ids)
+    # The one without an end date goes last.
+    assert rows[-1]["finished_at"] is None or all(r["finished_at"] for r in rows)
+
+
+def test_the_audit_goes_by_cursor(client):
+    person = logged("propietario")
+    first = client.get("/admin/api/audit?limit=3", headers=person["headers"]).json()
+    assert "next_before" not in first and first["next_cursor"]
+    second = client.get(
+        f"/admin/api/audit?limit=3&cursor={first['next_cursor']}", headers=person["headers"]
+    ).json()
+    seen = [r["id"] for r in first["rows"] + second["rows"]]
+    assert seen == sorted(seen, reverse=True) and len(seen) == len(set(seen))
+    # No gap: the second page starts right after the first one.
+    between = run(
+        owner(
+            "SELECT count(*) AS n FROM admin_audit_log WHERE id < $1 AND id > $2",
+            first["rows"][-1]["id"],
+            second["rows"][0]["id"],
+        )
+    )
+    assert between[0]["n"] == 0
+
+
+@pytest.mark.parametrize("cursor", ["no-es-base64!", "WzEsMl0", "eyJhIjoxfQ"])
+def test_a_cursor_that_was_not_made_here_is_refused(client, cursor):
+    person = logged("propietario")
+    response = client.get(f"/admin/api/users?cursor={cursor}", headers=person["headers"])
+    assert response.status_code == 422
+    assert response.json()["code"] in ("invalid_cursor", "invalid")
+
+
+def test_the_limit_has_a_cap(client):
+    person = logged("propietario")
+    assert client.get("/admin/api/users?limit=201", headers=person["headers"]).status_code == 422
+    assert client.get("/admin/api/audit?limit=501", headers=person["headers"]).status_code == 422
+
+
+def test_the_search_and_the_review_queue_go_by_pages(client):
+    accounts = [furnish() for _ in range(3)]
+    person = logged("finanzas")
+    # furnish() gives all of them the same legal name: a search that finds the three.
+    rows = walk(
+        client, "/admin/api/accounts?q=Bar%20La%20Parra%20SL", "accounts", person["headers"], 1
+    )
+    found = [r["account_id"] for r in rows]
+    assert len(found) == len(set(found))
+    assert {a["id"] for a in accounts} <= set(found)
+    # The open blocks of the review queue, oldest first.
+    rows = walk(client, "/admin/api/billing/review/lists/blocks", "items", person["headers"], 1)
+    ids = [r["id"] for r in rows]
+    assert len(ids) == len(set(ids))
+    assert {a["block"] for a in accounts} <= set(ids)
+    review = client.get("/admin/api/billing/review", headers=person["headers"]).json()
+    assert set(review["next_cursors"]) == {
+        "documents",
+        "seats",
+        "refunds",
+        "events",
+        "paid_without_document",
+        "blocks",
+    }
+    assert (
+        client.get("/admin/api/billing/review/lists/nada", headers=person["headers"]).status_code
+        == 404
+    )
+    # Soporte cannot read the lists of the money.
+    support = logged("soporte")
+    account = accounts[0]["id"]
+    assert (
+        client.get(
+            f"/admin/api/accounts/{account}/lists/charges", headers=support["headers"]
+        ).status_code
+        == 403
+    )
+    assert (
+        client.get(
+            f"/admin/api/accounts/{account}/lists/blocks", headers=support["headers"]
+        ).status_code
+        == 200
     )

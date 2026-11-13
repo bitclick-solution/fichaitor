@@ -663,10 +663,11 @@ Decisión del propietario (2026-11-13, [9.0](#90-decisiones-del-propietario-sobr
 - **Métricas:**
   - **ARR** = la suma de `next_price` de las plazas no canceladas. **MRR** = ARR / 12;
   - altas: cuentas, primeras plazas y plazas nuevas;
-  - bajas: plazas canceladas, plazas perdidas por impago y bajas de cuenta;
+  - bajas: plazas canceladas y bajas de cuenta (sin «plazas perdidas por impago»: con la decisión 9.0, 2 y 3, el bloqueo no tiene límite y no se pierde la plaza);
   - bloqueos abiertos y desbloqueados;
   - conversión de la beta al pago y del plan Gratis al pago;
-  - embudo de `funnel_event`: `visit` → `diagnosis` → `signup` → `connected` → `checkout_started` → `paid`.
+  - embudo de `funnel_event`: `visit`, `diagnosis`, `screenshot_diagnosis`, `signup`, `connected`, `checkout_started` y `paid`.
+  - Definiciones exactas y qué registra cada paso: `docs/contrato-backoffice.md`, «Métricas» (revisado el 2026-11-13).
 - **Lista de espera, solo en totales anónimos:** `fichaitor_admin` no tiene privilegios sobre `waitlist_entry`. La función `admin_waitlist_totals()` devuelve recuentos por semana, canal, tramo de nota y origen, y **suprime las celdas con menos de 5 personas**.
 
 ### 6.5 Frontend

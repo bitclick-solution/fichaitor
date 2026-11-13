@@ -1,6 +1,6 @@
 # Contrato del backoffice
 
-Contrato HTTP entre el proceso `fichaitor-admin` (`python -m app.admin`) y su interfaz, `web/admin/`. Lo que puede hacer cada rol, y por qué, está en la sección 6 de `docs/admin-facturacion.md`. Fecha: 2026-11-13. Estado: implementado (paso 12, backend).
+Contrato HTTP entre el proceso `fichaitor-admin` (`python -m app.admin`) y su interfaz, `web/admin/`. Lo que puede hacer cada rol, y por qué, está en la sección 6 de `docs/admin-facturacion.md`. Fecha: 2026-11-13. Estado: implementado (paso 12, backend). Revisado el 2026-11-13: métricas comprobadas contra lo que las registra y paginación por cursor en todos los listados.
 
 ## 1. Reglas generales
 
@@ -39,6 +39,7 @@ Todos los errores tienen esta forma:
 | 409 | `enrollment_expired` | Pasaron más de 15 minutos desde que se mostró el QR: volver a empezar el alta del TOTP |
 | 422 | `validation` | Faltan campos o no tienen el formato. `fields` lista los campos, nunca sus valores |
 | 422 | `invalid` | La base rechaza la acción. `message` dice por qué |
+| 422 | `invalid_cursor` | El `cursor` no lo hizo el backoffice o no vale: volver a la primera página |
 | 422 | `password_too_short`, `password_too_long`, `password_common`, `password_has_username` | Contraseña nueva rechazada |
 | 422 | `dmarc_failed` | El mensaje pegado no prueba su remitente. `message` lleva el motivo |
 | 429 | `too_many_attempts` | 20 fallos en la última hora en todo el backoffice: esperar |
@@ -51,10 +52,10 @@ Viene de `GET /session` (`role`). La base vuelve a comprobarla en cada petición
 | Pantalla o acción | Rutas | `soporte` | `finanzas` | `propietario` |
 |---|---|---|---|---|
 | Buscar cuentas | `GET /accounts` | Sí | Sí | Sí |
-| Cuenta: resumen, nombres de las fichas (con ticket) y chats | `GET /accounts/{id}`, `POST /accounts/{id}/locations`, `GET /accounts/{id}/channels` | Sí | Sí | Sí |
+| Cuenta: resumen, nombres de las fichas (con ticket) y chats | `GET /accounts/{id}`, `GET /accounts/{id}/lists/{locations, entitlements, seats, blocks, activations, offboardings}`, `POST /accounts/{id}/locations`, `GET /accounts/{id}/channels` | Sí | Sí | Sí |
 | Baja por correo | `POST /accounts/{id}/offboarding/check`, `POST /accounts/{id}/offboarding` | Sí | No | Sí |
-| Salud y sincronización | `GET /health/overview`, `GET /accounts/{id}/sync` | Sí | No | Sí |
-| Cobro de una cuenta, datos fiscales y revisión | `GET /accounts/{id}/billing`, `POST /accounts/{id}/billing/contact`, `GET /billing/review` | No | Sí | Sí |
+| Salud y sincronización | `GET /health/overview`, `GET /health/failed-jobs`, `GET /health/retention-runs`, `GET /health/sync-errors`, `GET /accounts/{id}/sync` | Sí | No | Sí |
+| Cobro de una cuenta, datos fiscales y revisión | `GET /accounts/{id}/billing`, `GET /accounts/{id}/lists/{billing_seats, charges, documents, refunds, billing_blocks}`, `POST /accounts/{id}/billing/contact`, `GET /billing/review`, `GET /billing/review/lists/{nombre}` | No | Sí | Sí |
 | Reembolso excepcional | `POST /refunds` | No | Sí | Sí |
 | Métricas | `GET /metrics` | No | Sí | Sí |
 | Conceder y recortar derechos | `POST /accounts/{id}/entitlements`, `POST /entitlements/{id}/trim` | No | No | Sí |
@@ -64,7 +65,51 @@ Viene de `GET /session` (`role`). La base vuelve a comprobarla en cada petición
 
 Todas las rutas empiezan por `/admin/api`.
 
-### 1.3 Acciones sensibles
+### 1.3 Paginación
+
+Todos los listados van por páginas **con cursor (keyset), nunca con desplazamiento** (2026-11-13). Así, una fila que se inserta mientras pasas de página ni repite otra ni deja un hueco: si cae antes del cursor no sale, y si cae después sale en su sitio.
+
+- **Petición:** `limit` (cuántas filas) y `cursor` (opcional), como parámetros de la URL. Sin `cursor`, la primera página. También en `POST /accounts/{id}/locations`, en la URL.
+- **Tope de `limit`:** 200 en todos los listados y 500 en `GET /audit`. Un valor mayor o menor que 1 da `422 validation`.
+- **Respuesta:** el listado y `next_cursor`. `null` si no hay más páginas. Para la siguiente, repite la petición con `cursor = next_cursor`.
+- **El cursor es opaco.** No lo construyas ni lo guardes: es la clave de la última fila enseñada (base64url de un JSON pequeño). Uno que no sea del backoffice da `422 invalid_cursor`.
+- **Pantallas con varios listados** (el resumen y el cobro de una cuenta, la revisión del cobro y la salud): traen la primera página de cada uno y un objeto `next_cursors` con el cursor de cada listado, o `null`. Las páginas siguientes se piden a su ruta (tabla de abajo).
+- **Orden.** Cada listado tiene una clave estable, respaldada por un índice (una clave primaria, un índice único o uno de los índices `*_keyset` de `db/schema_admin.sql`):
+
+| Listado | Ruta de las páginas siguientes | Primera página en | Orden (clave) | `limit` por defecto |
+|---|---|---|---|---|
+| Búsqueda de cuentas | `GET /accounts?q=…` | — | `created_at`, `account_id`, de la más vieja a la más nueva | 20 |
+| Fichas de una cuenta (resumen, sin nombres) | `GET /accounts/{id}/lists/locations` | `GET /accounts/{id}` | `id` | 50 |
+| Derechos | `GET /accounts/{id}/lists/entitlements` | `GET /accounts/{id}` | `starts_at`, `id`, del más nuevo al más viejo | 50 |
+| Plazas (resumen) | `GET /accounts/{id}/lists/seats` | `GET /accounts/{id}` | `created_at`, `id`, de la más vieja a la más nueva | 50 |
+| Bloqueos (resumen) | `GET /accounts/{id}/lists/blocks` | `GET /accounts/{id}` | `blocked_at`, `id`, del más nuevo al más viejo | 50 |
+| Activaciones | `GET /accounts/{id}/lists/activations` | `GET /accounts/{id}` | `at`, `id`, de la más nueva a la más vieja | 50 |
+| Bajas | `GET /accounts/{id}/lists/offboardings` | `GET /accounts/{id}` | `confirmed_at`, `id`, de la más nueva a la más vieja | 50 |
+| Nombres de las fichas (con ticket) | `POST /accounts/{id}/locations` | — | `location_id` | 50 |
+| Sincronización de una cuenta | `GET /accounts/{id}/sync` | — | `status_at`, `location_id`, de lo más nuevo a lo más viejo | 50 |
+| Chats de una cuenta | `GET /accounts/{id}/channels` | — | `verified_at`, `identity_id`, de lo más viejo a lo más nuevo | 50 |
+| Plazas (cobro) | `GET /accounts/{id}/lists/billing_seats` | `GET /accounts/{id}/billing` (`seats`) | `created_at`, `id`, de la más vieja a la más nueva | 50 |
+| Cobros | `GET /accounts/{id}/lists/charges` | `GET /accounts/{id}/billing` | `created_at`, `stripe_invoice_id`, del más nuevo al más viejo | 50 |
+| Facturas legales | `GET /accounts/{id}/lists/documents` | `GET /accounts/{id}/billing` | `created_at`, `id`, de la más nueva a la más vieja | 50 |
+| Reembolsos | `GET /accounts/{id}/lists/refunds` | `GET /accounts/{id}/billing` | `created_at`, `id`, del más nuevo al más viejo | 50 |
+| Bloqueos (cobro) | `GET /accounts/{id}/lists/billing_blocks` | `GET /accounts/{id}/billing` (`blocks`) | `blocked_at`, `id`, del más nuevo al más viejo | 50 |
+| Revisión: facturas | `GET /billing/review/lists/documents` | `GET /billing/review` | `created_at`, `id`, de la más vieja a la más nueva | 50 |
+| Revisión: plazas | `GET /billing/review/lists/seats` | `GET /billing/review` | `updated_at`, `id`, de la más vieja a la más nueva | 50 |
+| Revisión: reembolsos | `GET /billing/review/lists/refunds` | `GET /billing/review` | `created_at`, `id`, del más nuevo al más viejo | 50 |
+| Revisión: eventos de Stripe | `GET /billing/review/lists/events` | `GET /billing/review` | `received_at`, `id`, del más nuevo al más viejo | 50 |
+| Revisión: pagados sin factura | `GET /billing/review/lists/paid_without_document` | `GET /billing/review` | `starts_at`, `id`, del más viejo al más nuevo | 50 |
+| Revisión: bloqueos abiertos | `GET /billing/review/lists/blocks` | `GET /billing/review` | `blocked_at`, `id`, del más viejo al más nuevo | 50 |
+| Jobs fallidos | `GET /health/failed-jobs` | `GET /health/overview` | `finished_at` (los que no tienen, al final), `job_id`, de lo más nuevo a lo más viejo | 50 |
+| Pasadas de la retención | `GET /health/retention-runs` | `GET /health/overview` | `at`, `run_id`, de la más nueva a la más vieja | 10 |
+| Sincronizaciones con error | `GET /health/sync-errors` | `GET /health/overview` | `status_at`, `location_id`, de lo más nuevo a lo más viejo | 50 |
+| Lista de espera (celdas) | `GET /waitlist` | — | `week`, y canal, tramo y origen | 100 |
+| Personas | `GET /users` | — | `username` | 50 |
+| Auditoría | `GET /audit` | — | `id`, de lo más nuevo a lo más viejo | 100 |
+
+- `GET /accounts/{id}/lists/{nombre}` y `GET /billing/review/lists/{nombre}` responden `{"items": [...], "next_cursor": "…" | null}`, con las filas en la misma forma que en la pantalla que trae la primera página. Las de cobro llevan sus enlaces ya construidos, y las de la revisión, además, `links` y `odoo_link`. Un nombre que no está en la tabla da `404 not_found`.
+- **No es un listado** `jobs` de `GET /health/overview`: una fila por tipo y estado de job, acotada por el código.
+
+### 1.4 Acciones sensibles
 
 Piden un TOTP de menos de 5 minutos: reembolsar, conceder o recortar derechos, cerrar un bloqueo, tramitar la baja y cambiar la contraseña. `GET /session` devuelve `totp_fresh_until`: antes de esa hora la acción pasa sin pedir código. Si la respuesta es `403 totp_required`, pide un código, llama a `POST /session/totp` y repite la petición.
 
@@ -205,7 +250,7 @@ Respuesta `200 {"username": "ana", "recovery_codes": ["…", "… (10)"]}`. Desp
 
 ### `GET /admin/api/accounts?q=<búsqueda>`
 
-Busca por id de cuenta (UUID), id de ficha (`loc_…`), correo exacto, NIF o razón social (contiene). Nunca por el nombre de una ficha. De 3 a 254 caracteres. Como mucho, 20 resultados.
+Busca por id de cuenta (UUID), id de ficha (`loc_…`), correo exacto, NIF o razón social (contiene). Nunca por el nombre de una ficha. De 3 a 254 caracteres. Por páginas (`limit`, por defecto 20, y `cursor`; sección 1.3).
 
 ```json
 {
@@ -219,7 +264,8 @@ Busca por id de cuenta (UUID), id de ficha (`loc_…`), correo exacto, NIF o raz
       "locations": 2,
       "active_locations": 1
     }
-  ]
+  ],
+  "next_cursor": null
 }
 ```
 
@@ -257,13 +303,15 @@ Resumen: plan, plazas, derechos, bloqueos, activaciones y bajas. Sin nombres de 
   "offboardings": [
     { "id": "…", "scope": "ficha", "confirmed_at": "…", "delete_at": "…",
       "restored_at": null, "effective_at": null, "reason": "email_request" }
-  ]
+  ],
+  "next_cursors": { "locations": null, "entitlements": null, "seats": null, "blocks": null,
+                    "activations": "eyJ…", "offboardings": null }
 }
 ```
 
 - `source` de un derecho: `beta`, `manual`, `pago`, `cortesia` o `recomendacion`. Solo los que no son `pago` se pueden recortar.
 - `next_price_key` → precio: `pro_first_yearly` 3500, `pro_additional_yearly` 3325, `whatsapp_first_yearly` 5900, `whatsapp_additional_yearly` 5605.
-- Las activaciones, las 100 últimas.
+- Cada listado trae su primera página (50 filas). Las siguientes, con `GET /accounts/{id}/lists/{nombre}` y el cursor de `next_cursors` (sección 1.3).
 
 ### `POST /admin/api/accounts/{account_id}/locations`
 
@@ -273,15 +321,15 @@ Los nombres de las fichas (dato de Google). Solo con la referencia del ticket, q
 { "ticket_ref": "Ticket 4321" }
 ```
 
-Respuesta: `{"locations": [{"location_id", "title", "active_since", "plan", "deactivated_at", "removed_at", "verified"}]}`.
+Respuesta: `{"locations": [{"location_id", "title", "active_since", "plan", "deactivated_at", "removed_at", "verified"}], "next_cursor"}`. Por páginas, con `limit` y `cursor` en la URL. Cada página es una lectura con ticket y se audita.
 
 ### `GET /admin/api/accounts/{account_id}/sync`
 
-`{"sync": [{"account_id", "location_id", "status", "status_at", "synced_at"}]}`. `status`: `ok`, `needs_reconnect` o `error`.
+`{"sync": [{"account_id", "location_id", "status", "status_at", "synced_at"}], "next_cursor"}`. `status`: `ok`, `needs_reconnect` o `error`. Por páginas.
 
 ### `GET /admin/api/accounts/{account_id}/channels`
 
-Los chats vinculados, sin direcciones ni teléfonos: `{"channels": [{"identity_id", "channel", "verified_at", "last_inbound_at", "unlinked_at"}]}`.
+Los chats vinculados, sin direcciones ni teléfonos: `{"channels": [{"identity_id", "channel", "verified_at", "last_inbound_at", "unlinked_at"}], "next_cursor"}`. Por páginas.
 
 ### Baja por correo
 
@@ -353,11 +401,14 @@ El espejo de las tablas de cobro, con los enlaces ya construidos. Sin el PDF, si
                  "finished_at": null } ],
   "blocks": [ { "id": 12, "blocked_at": "…", "reason": "payment_failed",
                 "stripe_invoice_id": "in_…", "seat_id": "seat_…", "unblocked_at": null,
-                "unblocked_by": null } ]
+                "unblocked_by": null } ],
+  "next_cursors": { "seats": null, "charges": null, "documents": null, "refunds": null,
+                    "blocks": null }
 }
 ```
 
 - `customer` es `null` si la cuenta no ha rellenado sus datos fiscales.
+- Cada listado trae su primera página (50 filas). Las siguientes: `seats` con `GET /accounts/{id}/lists/billing_seats`, `blocks` con `…/lists/billing_blocks`, y `charges`, `documents` y `refunds` con la lista de su mismo nombre.
 - `livemode` es el modo de los últimos eventos de Stripe recibidos (`false` si aún no hay ninguno). Decide si los enlaces van a `/test/`.
 - Estado de una factura legal: `pendiente`, `emitida` o `revision`. Estado de un reembolso: `pendiente`, `hecho` o `fallido`.
 
@@ -391,6 +442,8 @@ Cola de revisión y salud del cobro, para «Cobro > Revisión»:
   "paid_without_document": [ { "entitlement_id", "account_id", "stripe_invoice_id", "seat_id",
                                "starts_at" } ],
   "blocks": [ { "id", "account_id", "blocked_at", "reason", "stripe_invoice_id", "seat_id" } ],
+  "next_cursors": { "documents": null, "seats": null, "refunds": null, "events": null,
+                    "paid_without_document": null, "blocks": null },
   "links": { "customer": "https://dashboard.stripe.com/test/customers/{id}",
              "invoice": "…/invoices/{id}", "subscription": "…/subscriptions/{id}",
              "payment": "…/payments/{id}" },
@@ -400,7 +453,7 @@ Cola de revisión y salud del cobro, para «Cobro > Revisión»:
 
 - `documents`: en revisión, o pendientes desde hace más de una hora.
 - `events`: huérfanos (`outcome = "orphan"`) o sin procesar desde hace más de una hora.
-- Cada lista, como mucho 200 filas. Sustituye `{id}` en las plantillas de `links` y `odoo_link`.
+- Cada lista trae su primera página (50 filas); las siguientes, con `GET /billing/review/lists/{nombre}` (sección 1.3). Los recuentos de `counts` son totales, no de la página. Sustituye `{id}` en las plantillas de `links` y `odoo_link`.
 
 ### `POST /admin/api/refunds`
 
@@ -481,18 +534,19 @@ Respuesta `200 {"account_id": "…"}`. `404` si el bloqueo no existe o ya estaba
               "oldest_run_at": "…", "stuck": 0 } ],
   "failed_jobs": [ { "job_id": "…", "kind": "send_mail", "attempts": 3,
                      "finished_at": "…", "last_error": "… (200 caracteres como mucho)" } ],
-  "retention_runs": [ { "at": "…", "deleted": { "review": 10 } } ],
+  "retention_runs": [ { "run_id": 31, "at": "…", "deleted": { "review": 10 } } ],
   "sync_errors": [ { "account_id": "…", "location_id": "loc_…", "status": "error",
-                     "status_at": "…", "synced_at": "…" } ]
+                     "status_at": "…", "synced_at": "…" } ],
+  "next_cursors": { "failed_jobs": "eyJ…", "retention_runs": null, "sync_errors": null }
 }
 ```
 
 - `summaries_stale`: fichas sin una lectura correcta en las últimas 24 horas.
-- `failed_jobs`: los 50 últimos. `retention_runs`: las 10 últimas pasadas. `sync_errors`: fichas con estado distinto de `ok`, 200 como mucho.
+- `failed_jobs` (50), `retention_runs` (10) y `sync_errors` (fichas con estado distinto de `ok`, 50): la primera página. Las siguientes, con `GET /health/failed-jobs`, `GET /health/retention-runs` y `GET /health/sync-errors`, que responden `{"failed_jobs" | "retention_runs" | "sync_errors": [...], "next_cursor"}`. Cada pasada de la retención lleva ahora su `run_id`.
 
 ### `GET /admin/api/metrics?from=AAAA-MM-DD&to=AAAA-MM-DD`
 
-Totales del periodo `[from, to)`, en días UTC. Por defecto, los 30 últimos días hasta hoy incluido. Como mucho, 400 días.
+Totales del periodo `[from, to)`, en días UTC. Por defecto, los 30 últimos días hasta hoy incluido. Como mucho, 400 días. No es un listado: no lleva páginas.
 
 ```json
 {
@@ -500,32 +554,57 @@ Totales del periodo `[from, to)`, en días UTC. Por defecto, los 30 últimos dí
   "revenue": { "arr_cents": 125600, "mrr_cents": 10467, "estimated_seats": 0 },
   "seats_in_force": [ { "plan": "pro", "next_price_key": "pro_first_yearly", "seats": 20 } ],
   "signups": { "accounts": 40, "first_seats": 6, "new_seats": 9 },
-  "churn": { "seats_canceled": 1, "seats_lost_unpaid": 0, "seats_to_cancel": 2,
-             "account_leaves": 1 },
+  "churn": { "seats_canceled": 1, "seats_to_cancel": 2, "account_leaves": 1 },
   "blocks": { "opened": 2, "closed": 1, "open_now": 1 },
   "conversion": { "beta_accounts": 30, "beta_paid": 12, "free_accounts": 25, "free_paid": 3 },
-  "funnel": { "visit": 900, "diagnosis": 300, "signup": 40, "connected": 35,
-              "checkout_started": 10, "paid": 6 }
+  "funnel": { "visit": 900, "diagnosis": 40, "screenshot_diagnosis": 260, "signup": 40,
+              "connected": 35, "checkout_started": 10, "paid": 6 }
 }
 ```
 
-Definiciones:
+**Revisión del 2026-11-13.** Cada cifra se ha comprobado contra el código que la registra. Cambios:
 
-| Campo | Definición |
-|---|---|
-| `revenue.arr_cents` | La suma del precio siguiente de las plazas activas que no están marcadas para cancelarse. Sin IVA. Una plaza sin precio siguiente fijado cuenta con el de su plan para la primera plaza (`estimated_seats`) |
-| `revenue.mrr_cents` | `arr_cents / 12`, redondeado |
-| `signups.accounts` | Cuentas creadas en el periodo |
-| `signups.first_seats` | Plazas creadas en el periodo que son la primera plaza de su cuenta (sin contar las que no llegaron a pagarse) |
-| `signups.new_seats` | Plazas creadas en el periodo (sin contar las pendientes) |
-| `churn.seats_canceled` | Plazas que pasaron a canceladas en el periodo |
-| `churn.seats_lost_unpaid` | De ellas, las que tuvieron un bloqueo por impago |
-| `churn.seats_to_cancel` | Plazas activas marcadas para cancelarse en su renovación (hoy) |
-| `churn.account_leaves` | Bajas de cuenta que se hicieron efectivas en el periodo |
-| `blocks` | Bloqueos abiertos y cerrados en el periodo, y abiertos ahora |
-| `conversion.beta_*` | Cuentas con un derecho `beta` (de siempre) y, de ellas, las que tienen algún derecho pagado |
-| `conversion.free_*` | Cuentas creadas en el periodo sin derecho `beta` y, de ellas, las que tienen algún derecho pagado |
-| `funnel` | Eventos del embudo de cada tipo en el periodo |
+- **Fuera `churn.seats_lost_unpaid`.** Contaba las plazas canceladas que alguna vez tuvieron un bloqueo. Con las reglas del propietario (`docs/admin-facturacion.md`, 1.1 P3 y 9.0, preguntas 2 y 3) el bloqueo por impago **no tiene límite** y **no se pierde la plaza a los 30 días**: no existe la «plaza perdida por impago». Además sumaba plazas que se bloquearon, se pagaron y luego se cancelaron por decisión del cliente. Lo que hay sin pagar se ve en `blocks.open_now`.
+- **Una plaza «contratada» es la que tiene un derecho `pago`.** `signups.first_seats`, `signups.new_seats` y `churn.seats_canceled` contaban también las plazas cuyo primer pago nunca llegó a completarse (acaban `canceled` sin derecho): ni eran altas ni eran bajas.
+- **«Pagan», en la conversión, es un cobro con dinero** (`billing_charge` pagado con `amount_paid > 0`). Antes bastaba un derecho `pago`, y una cuenta de la beta que contrata en su ventana de 30 días recibe ese derecho con una factura de 0 € (decisión 9.0, 11): aún no ha pagado nada.
+- **Cuentas de la beta: solo las del derecho beta automático** (el que recibe cada cuenta creada antes del lanzamiento, sin `granted_by`). Una ampliación de la beta desde el backoffice no convierte en «de la beta» a una cuenta creada después.
+- **Embudo:** se añade `screenshot_diagnosis` (la prueba por captura, la entrada principal de la portada). `visit` se registra desde la portada (`POST /api/v1/public/visit`, antes nada lo registraba) y `connected`, solo la primera conexión de cada identidad de Google (antes contaba cada inicio de sesión).
+
+#### Métricas
+
+| Campo | Qué es | De dónde sale |
+|---|---|---|
+| `revenue.arr_cents` | La suma del precio siguiente de las plazas activas que no están marcadas para cancelarse. Sin IVA. Una plaza sin precio siguiente fijado cuenta con el de su plan para la primera plaza (`estimated_seats`). Incluye las plazas de la ventana de la beta que aún no han tenido su primer cobro | `billing_seat` (`status = 'active'` y `cancel_at_period_end = false`), que copia `fichaitor-billing` de Stripe; precios de `app/domain/billing.py` |
+| `revenue.mrr_cents` | `arr_cents / 12`, redondeado | El ARR |
+| `seats_in_force` | Esas mismas plazas, por plan y precio siguiente | `billing_seat` |
+| `signups.accounts` | Cuentas creadas en el periodo (primera conexión con Google) | `account.created_at`. La API crea la cuenta al volver de Google |
+| `signups.first_seats` | Plazas contratadas en el periodo que son la primera plaza contratada de su cuenta | `billing_seat` con un derecho `pago` (lo crea `fichaitor-billing` cuando Stripe da por pagada la primera factura de la plaza, también la de 0 € de la ventana de la beta) |
+| `signups.new_seats` | Plazas contratadas en el periodo | Ídem |
+| `churn.seats_canceled` | Plazas contratadas que están canceladas y cuya última actualización cae en el periodo. Normalmente es el día de la cancelación; si Stripe vuelve a mandar un evento de una plaza cancelada, la fecha se mueve | `billing_seat.status = 'canceled'` y `updated_at` |
+| `churn.seats_to_cancel` | Plazas activas marcadas para cancelarse en su renovación (hoy, sin periodo) | `billing_seat.cancel_at_period_end` |
+| `churn.account_leaves` | Bajas de cuenta que se hicieron efectivas en el periodo (no las restauradas en las 48 horas) | `offboarding.effective_at`, que fija el worker |
+| `blocks.opened`, `blocks.closed` | Bloqueos por impago abiertos y cerrados en el periodo | `account_billing_block` (`blocked_at`, `unblocked_at`). Los abre `fichaitor-billing` con el impago; los cierra un pago o el propietario a mano |
+| `blocks.open_now` | Bloqueos abiertos ahora, sin periodo. Un bloqueo no caduca: sigue abierto hasta que se paga | `account_billing_block.unblocked_at IS NULL` |
+| `conversion.beta_accounts` | Cuentas de la beta, de siempre (sin periodo) | `plan_entitlement` con `source = 'beta'` y sin `granted_by` (el disparador `account_beta_entitlement`, antes de `launch_at`) |
+| `conversion.beta_paid` | De ellas, las que han pagado algún cobro con dinero, hasta hoy | `billing_charge` con `status = 'paid'` y `amount_paid > 0` |
+| `conversion.free_accounts` | Cuentas creadas en el periodo que no son de la beta (empiezan en el plan Gratis) | `account.created_at` sin derecho beta automático |
+| `conversion.free_paid` | De ellas, las que han pagado algún cobro con dinero, hasta hoy (aunque pagaran después del periodo) | `billing_charge`, como arriba |
+
+Mientras no haya `launch_at`, todas las cuentas nuevas reciben el derecho beta: `free_accounts` sale a 0 hasta el lanzamiento, y nada se cobra.
+
+#### Embudo
+
+`funnel`: eventos de `funnel_event` de cada tipo en el periodo. Sin datos personales. Los pasos no son una secuencia estricta: los dos diagnósticos son entradas distintas de la portada, y la lista de espera es anterior al lanzamiento. El porcentaje entre pasos tiene sentido de `connected` a `checkout_started` y de `checkout_started` a `paid`.
+
+| Paso | Qué lo registra | Desde | Cuándo no se registra |
+|---|---|---|---|
+| `visit` | La portada, con `navigator.sendBeacon` a `POST /api/v1/public/visit` (`app/api/visit.py`). Con `source` (`utm_source` o `ref`) | 2026-11-13 en la API. Cuenta cuando la portada haga la llamada (la pone la sesión de interfaz) | Modo «solo web» (no hay API). Robots, vistas previas y clientes que no son navegadores. Más de 10 por dirección y hora. Navegadores que bloquean `sendBeacon`. Al reiniciar la API, el límite vuelve a cero |
+| `diagnosis` | `POST /api/v1/public/diagnosis` cuando encuentra el negocio (`app/api/main.py`). Con `source` | 2026-11-11 | Modo «solo web». En la portada, el buscador por nombre solo sale con `?v=buscador`. Un negocio no encontrado registra `not_found`, que no está en el embudo. Límites por IP y diarios (429 y 503) |
+| `screenshot_diagnosis` | `POST /api/v1/public/diagnosis/screenshot` cuando lee la captura (`app/api/screenshot.py`). Con `source` | 2026-11-11 | Modo «solo web». Sin `FICHAITOR_GEMINI_API_KEY` ni `FICHAITOR_FAKE_SCREENSHOT` la ruta no existe. Una captura rechazada registra `screenshot_rejected`, que no está en el embudo |
+| `signup` | `POST /api/v1/public/waitlist`: alta en la lista de espera (`app/api/waitlist.py`). Con `source` | 2026-11-11 | Modo «solo web» (el formulario no sale). Cuenta envíos: el mismo contacto apuntado dos veces cuenta dos. Si no se pudo guardar el alta, no cuenta |
+| `connected` | La vuelta de Google (`app/api/google_oauth.py`) cuando la identidad de Google **no tenía cuenta**: la primera conexión | 2026-11-11 (cada conexión); solo la primera desde 2026-11-13 | Modo «solo web». Volver a entrar con la misma cuenta de Google. Una conexión que falla (permiso denegado, error de Google) |
+| `checkout_started` | `fichaitor-billing`, al abrir un Checkout de Stripe para una plaza (`app/billing/requests.py`). `source` = el plan | 2026-11-13 | Antes del lanzamiento (`launch_at` vacío: no se vende). Cuenta cada Checkout abierto: si alguien lo abre dos veces, cuenta dos |
+| `paid` | `fichaitor-billing`, cuando Stripe da por pagada la primera factura de una plaza y se crea su derecho (`app/adapters/billing_store/postgres_billing.py`). `source` = el plan | 2026-11-13 | Las renovaciones. Cuenta plazas, no cuentas: una cuenta que compra tres plazas cuenta tres. Incluye la factura de 0 € de una plaza contratada en la ventana de la beta |
 
 ### `GET /admin/api/waitlist`
 
@@ -535,9 +614,12 @@ Solo totales anónimos, por semana (lunes, hora de Madrid), canal, tramo de nota
 {
   "min_cell": 5,
   "cells": [ { "week": "2027-03-01", "channel": "email", "score_band": "70-89",
-               "source": "instagram", "people": 7 } ]
+               "source": "instagram", "people": 7 } ],
+  "next_cursor": null
 }
 ```
+
+Por páginas (`limit`, por defecto 100, y `cursor`).
 
 `score_band`: `0-49`, `50-69`, `70-89`, `90-100` o `sin_nota`.
 
@@ -549,15 +631,16 @@ Solo totales anónimos, por semana (lunes, hora de Madrid), canal, tramo de nota
 {
   "users": [ { "admin_user_id": "…", "username": "ana", "role": "soporte", "active": true,
                "must_enroll": false, "locked_until": null, "created_at": "…",
-               "password_changed_at": "…" } ]
+               "password_changed_at": "…" } ],
+  "next_cursor": null
 }
 ```
 
 Solo lectura: las altas, los restablecimientos y las bajas se hacen con `scripts/admin_usuario.py`, en el servidor.
 
-### `GET /admin/api/audit?limit=100&before=<id>`
+### `GET /admin/api/audit?limit=100&cursor=<next_cursor>`
 
-El registro, de lo más nuevo a lo más viejo. `limit`, de 1 a 500. Para la página siguiente, pasa `before` = `next_before` de la respuesta.
+El registro, de lo más nuevo a lo más viejo. `limit`, de 1 a 500. Para la página siguiente, pasa `cursor` = `next_cursor` de la respuesta. **Cambio del 2026-11-13:** sustituye a `before` y `next_before`.
 
 ```json
 {
@@ -565,7 +648,7 @@ El registro, de lo más nuevo a lo más viejo. `limit`, de 1 a 500. Para la pág
               "admin_user": "…", "username": "ana", "role": "soporte",
               "action": "account_detail_read", "account_id": "…", "target": null,
               "ticket_ref": "Ticket 4321", "detail": {} } ],
-  "next_before": 812
+  "next_cursor": "WyI4MTIiLCI4MTIiXQ"
 }
 ```
 
@@ -575,7 +658,7 @@ Acciones que verás:
 |---|---|
 | Sesión | `login_password_ok`, `login_ok`, `login_failed` (`detail.stage`), `locked`, `totp_stepup`, `recovery_code_used`, `logout` |
 | Personas | `enrolled`, `totp_changed`, `password_changed`, `password_rehashed`, `user_created`, `user_reset`, `user_activated`, `user_deactivated` |
-| Lecturas | `find_accounts` (solo el tipo de búsqueda), `account_overview_read`, `account_detail_read`, `account_billing_read`, `billing_contact_read`, `billing_review_read`, `health_read`, `metrics_read`, `waitlist_totals_read`, `audit_read`, `app_sync_read`, `app_channels_read`, `app_jobs_read`, `app_users_read` |
+| Lecturas | `find_accounts` (solo el tipo de búsqueda), `account_overview_read`, `account_detail_read`, `account_billing_read`, `billing_contact_read`, `billing_review_read`, `health_read`, `metrics_read`, `list_read` (`detail.list`: el listado de la página pedida), `waitlist_totals_read`, `audit_read`, `app_sync_read`, `app_channels_read`, `app_jobs_read`, `app_users_read` |
 | Acciones | `offboarding_email_checked`, `offboarding_email`, `entitlement_granted`, `entitlement_trimmed`, `block_closed`, `refund_requested` |
 | Rechazos | `app_denied` (`target` = la ruta, `detail.code` = `role_not_allowed` o `totp_required`), `app_offboarding_dmarc_failed` (`detail.reason`) |
 

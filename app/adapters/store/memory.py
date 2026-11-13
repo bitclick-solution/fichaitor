@@ -248,6 +248,10 @@ class MemoryStore:
     def _account(self, account_id: str) -> AccountRow:
         return next(a for a in self.accounts.values() if a.id == account_id)
 
+    async def account_exists(self, google_sub: str) -> bool:
+        self._check()
+        return google_sub in self.accounts
+
     async def upsert_account(self, google_sub: str, email: str) -> str:
         self._check()
         row = self.accounts.setdefault(google_sub, AccountRow(str(uuid.uuid4()), google_sub, email))

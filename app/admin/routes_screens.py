@@ -22,6 +22,7 @@ from app.admin.audit import (
     audit_read,
 )
 from app.admin.auth import AuthKit
+from app.admin.pagination import MAX_AUDIT_LIMIT, MAX_LIMIT, decode, from_next, page
 from app.admin.session import Actor, current_actor
 from app.admin.store import AdminError, AdminStore
 from app.domain.billing import PriceKey, parse_dmarc, price_cents
@@ -121,6 +122,36 @@ def recurring_revenue(seats_in_force: list[dict]) -> dict:
     return {"arr_cents": arr, "mrr_cents": round(arr / 12), "estimated_seats": estimated}
 
 
+# Listings of an account and of the review queue served by admin_list, by name (the name
+# of the database; the review ones without their "review_" prefix in the route).
+ACCOUNT_LISTS = {
+    "locations",
+    "entitlements",
+    "seats",
+    "blocks",
+    "activations",
+    "offboardings",
+    "billing_seats",
+    "charges",
+    "documents",
+    "refunds",
+    "billing_blocks",
+}
+REVIEW_LISTS = {"documents", "seats", "refunds", "events", "paid_without_document", "blocks"}
+# The key of each billing listing in the answer of GET /accounts/{id}/billing.
+_BILLING_KEY = {"billing_seats": "seats", "charges": "charges", "documents": "documents"}
+
+Limit = Annotated[int, Query(ge=1, le=MAX_LIMIT)]
+Cursor = Annotated[str | None, Query(max_length=1000)]
+
+
+def next_cursors(result: dict) -> dict:
+    """The `next` of each first page (admin_list_page) as cursors, in `next_cursors`."""
+    nexts = result.pop("next", None) or {}
+    result["next_cursors"] = {k: from_next(v) for k, v in nexts.items()}
+    return result
+
+
 def build_router(kit: AuthKit, store: AdminStore, authserv_id: str, erp_base_url: str) -> APIRouter:
     router = APIRouter(prefix="/admin/api")
 
@@ -130,44 +161,81 @@ def build_router(kit: AuthKit, store: AdminStore, authserv_id: str, erp_base_url
     # --- accounts ------------------------------------------------------------------------
 
     @router.get("/accounts")
-    async def find_accounts(request: Request, q: str = Query(min_length=3, max_length=254)) -> dict:
+    async def find_accounts(
+        request: Request,
+        q: str = Query(min_length=3, max_length=254),
+        limit: Limit = 20,
+        cursor: Cursor = None,
+    ) -> dict:
         me = await actor(request)
-        return {"accounts": await store.find_accounts(me.hash, q)}
+        rows = await store.find_accounts(me.hash, q, limit + 1, decode(cursor))
+        shown, nxt = page(rows, limit, lambda r: (r["created_at"], r["account_id"]))
+        return {"accounts": shown, "next_cursor": nxt}
 
     @router.get("/accounts/{account_id}")
     async def account_overview(request: Request, account_id: str) -> dict:
         me = await actor(request)
         _uuid(account_id)
-        return await store.account_overview(me.hash, account_id)
+        return next_cursors(await store.account_overview(me.hash, account_id))
+
+    @router.get("/accounts/{account_id}/lists/{name}")
+    async def account_list(
+        request: Request, account_id: str, name: str, limit: Limit = 50, cursor: Cursor = None
+    ) -> dict:
+        """The next pages of a listing of the account (Resumen and Cobro)."""
+        me = await actor(request)
+        _uuid(account_id)
+        if name not in ACCOUNT_LISTS:
+            raise AdminError(404, "not_found", "Ese listado no existe.")
+        result = await store.list_page(me.hash, name, account_id, limit, decode(cursor))
+        items = result.get("items") or []
+        if name in _BILLING_KEY:
+            key = _BILLING_KEY[name]
+            billing = {"livemode": result.get("livemode"), key: items}
+            items = with_links(billing, erp_base_url)[key]
+        return {"items": items, "next_cursor": from_next(result.get("next"))}
 
     @router.post("/accounts/{account_id}/locations")
-    async def account_locations(request: Request, account_id: str, body: TicketIn) -> dict:
+    async def account_locations(
+        request: Request, account_id: str, body: TicketIn, limit: Limit = 50, cursor: Cursor = None
+    ) -> dict:
         """The names of the profiles (Google data): only with the ticket, audited."""
         me = await actor(request)
         _uuid(account_id)
-        return {"locations": await store.account_detail(me.hash, account_id, body.ticket_ref)}
+        rows = await store.account_detail(
+            me.hash, account_id, body.ticket_ref, limit + 1, decode(cursor)
+        )
+        shown, nxt = page(rows, limit, lambda r: (r["location_id"], r["location_id"]))
+        return {"locations": shown, "next_cursor": nxt}
 
     @router.get("/accounts/{account_id}/sync")
-    async def account_sync(request: Request, account_id: str) -> dict:
+    async def account_sync(
+        request: Request, account_id: str, limit: Limit = 50, cursor: Cursor = None
+    ) -> dict:
         me = await actor(request)
         _uuid(account_id)
-        rows = await store.sync_status(me.hash, account_id)
+        rows = await store.sync_status(me.hash, account_id, limit + 1, decode(cursor))
         await audit_read(store, me, APP_SYNC_READ, account_id=account_id)
-        return {"sync": rows}
+        shown, nxt = page(rows, limit, _sync_key)
+        return {"sync": shown, "next_cursor": nxt}
 
     @router.get("/accounts/{account_id}/channels")
-    async def account_channels(request: Request, account_id: str) -> dict:
+    async def account_channels(
+        request: Request, account_id: str, limit: Limit = 50, cursor: Cursor = None
+    ) -> dict:
         me = await actor(request)
         _uuid(account_id)
-        rows = await store.channel_links(me.hash, account_id)
+        rows = await store.channel_links(me.hash, account_id, limit + 1, decode(cursor))
         await audit_read(store, me, APP_CHANNELS_READ, account_id=account_id)
-        return {"channels": rows}
+        shown, nxt = page(rows, limit, lambda r: (r["verified_at"], r["identity_id"]))
+        return {"channels": shown, "next_cursor": nxt}
 
     @router.get("/accounts/{account_id}/billing")
     async def account_billing(request: Request, account_id: str) -> dict:
         me = await actor(request)
         _uuid(account_id)
-        return with_links(await store.account_billing(me.hash, account_id), erp_base_url)
+        billing = next_cursors(await store.account_billing(me.hash, account_id))
+        return with_links(billing, erp_base_url)
 
     @router.post("/accounts/{account_id}/billing/contact")
     async def billing_contact(request: Request, account_id: str, body: TicketIn) -> dict:
@@ -261,26 +329,82 @@ def build_router(kit: AuthKit, store: AdminStore, authserv_id: str, erp_base_url
     @router.get("/billing/review")
     async def billing_review(request: Request) -> dict:
         me = await actor(request)
-        review = await store.billing_review(me.hash)
+        review = next_cursors(await store.billing_review(me.hash))
         review["links"] = stripe_links(bool(review.get("livemode")))
         review["odoo_link"] = erp_base_url.rstrip("/") + "/odoo/account.move/{id}"
         return review
+
+    @router.get("/billing/review/lists/{name}")
+    async def billing_review_list(
+        request: Request, name: str, limit: Limit = 50, cursor: Cursor = None
+    ) -> dict:
+        """The next pages of a listing of the review queue."""
+        me = await actor(request)
+        if name not in REVIEW_LISTS:
+            raise AdminError(404, "not_found", "Ese listado no existe.")
+        result = await store.list_page(me.hash, f"review_{name}", None, limit, decode(cursor))
+        return {
+            "items": result.get("items") or [],
+            "next_cursor": from_next(result.get("next")),
+            "links": stripe_links(bool(result.get("livemode"))),
+            "odoo_link": erp_base_url.rstrip("/") + "/odoo/account.move/{id}",
+        }
 
     # --- health, metrics, waiting list, users and audit -------------------------------------
 
     @router.get("/health/overview")
     async def health_overview(request: Request) -> dict:
+        """The counts and the first page of each listing; the next ones, below."""
         me = await actor(request)
         summary = await store.health_summary(me.hash)
+        failed, failed_next = page(await store.failed_jobs(me.hash, 51), 50, _job_key)
+        runs, runs_next = page(await store.retention_runs(me.hash, 11), 10, _run_key)
+        errors, errors_next = page(await store.sync_status(me.hash, None, 51), 50, _sync_key)
         result = {
             **summary,
+            # One row per kind and state of job: bounded by the code, not a listing.
             "jobs": await store.job_stats(me.hash),
-            "failed_jobs": await store.failed_jobs(me.hash),
-            "retention_runs": await store.retention_runs(me.hash),
-            "sync_errors": await store.sync_status(me.hash, None),
+            "failed_jobs": failed,
+            "retention_runs": runs,
+            "sync_errors": errors,
+            "next_cursors": {
+                "failed_jobs": failed_next,
+                "retention_runs": runs_next,
+                "sync_errors": errors_next,
+            },
         }
         await audit_read(store, me, APP_JOBS_READ)
         return result
+
+    @router.get("/health/failed-jobs")
+    async def health_failed_jobs(
+        request: Request, limit: Limit = 50, cursor: Cursor = None
+    ) -> dict:
+        me = await actor(request)
+        rows = await store.failed_jobs(me.hash, limit + 1, decode(cursor))
+        await audit_read(store, me, APP_JOBS_READ)
+        shown, nxt = page(rows, limit, _job_key)
+        return {"failed_jobs": shown, "next_cursor": nxt}
+
+    @router.get("/health/retention-runs")
+    async def health_retention_runs(
+        request: Request, limit: Limit = 10, cursor: Cursor = None
+    ) -> dict:
+        me = await actor(request)
+        rows = await store.retention_runs(me.hash, limit + 1, decode(cursor))
+        await audit_read(store, me, APP_JOBS_READ)
+        shown, nxt = page(rows, limit, _run_key)
+        return {"retention_runs": shown, "next_cursor": nxt}
+
+    @router.get("/health/sync-errors")
+    async def health_sync_errors(
+        request: Request, limit: Limit = 50, cursor: Cursor = None
+    ) -> dict:
+        me = await actor(request)
+        rows = await store.sync_status(me.hash, None, limit + 1, decode(cursor))
+        await audit_read(store, me, APP_SYNC_READ)
+        shown, nxt = page(rows, limit, _sync_key)
+        return {"sync_errors": shown, "next_cursor": nxt}
 
     @router.get("/metrics")
     async def metrics(
@@ -302,28 +426,57 @@ def build_router(kit: AuthKit, store: AdminStore, authserv_id: str, erp_base_url
         return result
 
     @router.get("/waitlist")
-    async def waitlist(request: Request) -> dict:
+    async def waitlist(request: Request, limit: Limit = 100, cursor: Cursor = None) -> dict:
         me = await actor(request)
-        return {"cells": await store.waitlist_totals(me.hash), "min_cell": 5}
+        rows = await store.waitlist_totals(me.hash, limit + 1, decode(cursor))
+        shown, nxt = page(
+            rows,
+            limit,
+            lambda r: (r["week"], f"{r['channel']}|{r['score_band']}|{r['source']}"),
+        )
+        return {"cells": shown, "min_cell": 5, "next_cursor": nxt}
 
     @router.get("/users")
-    async def users(request: Request) -> dict:
+    async def users(request: Request, limit: Limit = 50, cursor: Cursor = None) -> dict:
         me = await actor(request)
-        rows = await store.users(me.hash)
+        rows = await store.users(me.hash, limit + 1, decode(cursor))
         await audit_read(store, me, APP_USERS_READ)
-        return {"users": rows}
+        shown, nxt = page(rows, limit, lambda r: (r["username"], r["username"]))
+        return {"users": shown, "next_cursor": nxt}
 
     @router.get("/audit")
     async def audit(
         request: Request,
-        limit: int = Query(default=100, ge=1, le=500),
-        before: int | None = Query(default=None, ge=1),
+        limit: int = Query(default=100, ge=1, le=MAX_AUDIT_LIMIT),
+        cursor: Cursor = None,
     ) -> dict:
         me = await actor(request)
-        rows = await store.audit_read(me.hash, limit, before)
-        return {"rows": rows, "next_before": rows[-1]["id"] if rows else None}
+        after = decode(cursor)
+        before = _audit_id(after[1]) if after else None
+        rows = await store.audit_read(me.hash, limit + 1, before)
+        shown, nxt = page(rows, limit, lambda r: (r["id"], r["id"]))
+        return {"rows": shown, "next_cursor": nxt}
 
     return router
+
+
+def _job_key(row: dict) -> tuple:
+    # Jobs without an end date go last: the same key the database orders by.
+    return (row["finished_at"] or "-infinity", row["job_id"])
+
+
+def _run_key(row: dict) -> tuple:
+    return (row["at"], row["run_id"])
+
+
+def _sync_key(row: dict) -> tuple:
+    return (row["status_at"], row["location_id"])
+
+
+def _audit_id(value: str) -> int:
+    if not value.isdigit():
+        raise AdminError(422, "invalid_cursor", "El cursor no vale: vuelve a la primera página.")
+    return int(value)
 
 
 def _uuid(value: str) -> None:

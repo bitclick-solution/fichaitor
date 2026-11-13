@@ -336,6 +336,13 @@ class PostgresStore:
             score,
         )
 
+    async def account_exists(self, google_sub: str) -> bool:
+        return bool(
+            await self._require_pool().fetchval(
+                "SELECT EXISTS (SELECT 1 FROM account WHERE google_sub = $1)", google_sub
+            )
+        )
+
     async def upsert_account(self, google_sub: str, email: str) -> str:
         return await self._require_pool().fetchval(
             """
