@@ -44,7 +44,7 @@ Mientras `/app` siga en «Muy pronto», el enlace lleva a la portada y al diagn�
 | Categoría | Software o «Aplicaciones». Si no aparece, «Servicios profesionales» |
 | Correo | `soporte@fichaitor.es` |
 
-> **Nota:** Si TikTok todavía no te deja añadir el enlace, cambia la biografía por esta hasta que te lo permita: `Tu ficha de Google, al día. Reseñas y festivos. Mira tu nota en fichaitor.es` (77 caracteres).
+> **Nota:** Si TikTok todavía no te deja añadir el enlace, cambia la biografía por esta hasta que te lo permita: `Tu ficha de Google, al día. Reseñas y festivos. Mira tu nota en fichaitor.es` (76 caracteres).
 
 ### Ajustes
 
@@ -92,7 +92,7 @@ Para pegarlas en mensajes directos, solo a quien nos ha escrito.
 | Botón de contacto | Correo: `soporte@fichaitor.es`. Sin teléfono |
 | Pronombres | Vacío |
 
-Biografía, en cuatro líneas (125 caracteres):
+Biografía, en cuatro líneas (122 caracteres):
 
 ```text
 Tu ficha de Google, al día.
