@@ -77,9 +77,11 @@ Borra el botón «Ficha» que hay ahora y crea estos tres, en este orden:
 
 | Botón | Palabra clave que activa | Lo que contesta |
 |---|---|---|
-| `Quiero la nota de mi ficha` | `ficha` | Pide el nombre del negocio y la localidad |
+| `Nota de mi ficha` | `ficha` | Pide el nombre del negocio y la localidad |
 | `¿Cuánto cuesta?` | `cuánto` | El precio de la beta y de después |
-| `¿Cómo entro en la beta?` | `beta` | Qué es la beta y cómo entrar |
+| `Entrar en la beta` | `beta` | Qué es la beta y cómo entrar |
+
+Cada botón admite unos 18 caracteres.
 
 > **Importante:** Ningún botón puede llevar dos palabras clave de reglas distintas. Por ejemplo, «¿Cuánto cuesta la ficha?» activaría dos respuestas. Si cambias un botón, comprueba la tabla de palabras clave.
 
