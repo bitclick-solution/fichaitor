@@ -1,5 +1,5 @@
 import { useEffect, useId, useRef, useState } from "react";
-import { api, ApiError, type Location, type Me, type PerfilFiscal, type PlanPago } from "./api";
+import { api, ApiError, type Location, type Me, type PaisFacturacion, type PerfilFiscal, type PlanPago, type RegionFiscal } from "./api";
 import { Modal } from "./Ajustes";
 import { finDePrueba, urlDePago } from "./cobro";
 
@@ -46,36 +46,89 @@ function euros(me: Me, centimos: number): string {
   }).format(centimos / 100);
 }
 
-// Países de la UE para el NIF-IVA. España incluye Canarias, Ceuta y Melilla.
-const PAISES: [string, string][] = [
-  ["ES", "España"],
-  ["DE", "Alemania"],
-  ["AT", "Austria"],
-  ["BE", "Bélgica"],
-  ["BG", "Bulgaria"],
-  ["CY", "Chipre"],
-  ["HR", "Croacia"],
-  ["DK", "Dinamarca"],
-  ["SK", "Eslovaquia"],
-  ["SI", "Eslovenia"],
-  ["EE", "Estonia"],
-  ["FI", "Finlandia"],
-  ["FR", "Francia"],
-  ["GR", "Grecia"],
-  ["HU", "Hungría"],
-  ["IE", "Irlanda"],
-  ["IT", "Italia"],
-  ["LV", "Letonia"],
-  ["LT", "Lituania"],
-  ["LU", "Luxemburgo"],
-  ["MT", "Malta"],
-  ["NL", "Países Bajos"],
-  ["PL", "Polonia"],
-  ["PT", "Portugal"],
-  ["CZ", "República Checa"],
-  ["RO", "Rumanía"],
-  ["SE", "Suecia"],
-];
+// Respaldo si GET /me/billing/countries no responde: España y la UE, que ya se facturaban antes.
+const PAISES_RESPALDO: PaisFacturacion[] = [
+  "AT",
+  "BE",
+  "BG",
+  "CY",
+  "CZ",
+  "DE",
+  "DK",
+  "EE",
+  "FI",
+  "FR",
+  "GR",
+  "HR",
+  "HU",
+  "IE",
+  "IT",
+  "LT",
+  "LU",
+  "LV",
+  "MT",
+  "NL",
+  "PL",
+  "PT",
+  "RO",
+  "SE",
+  "SI",
+  "SK",
+].map((code) => ({ code, region: "ue" as const }));
+
+// Países que usan el euro (zona euro y los que lo usan por acuerdo): fuera de ellos se avisa de la conversión.
+const EURO = new Set([
+  "AT",
+  "BE",
+  "HR",
+  "CY",
+  "EE",
+  "FI",
+  "FR",
+  "DE",
+  "GR",
+  "IE",
+  "IT",
+  "LV",
+  "LT",
+  "LU",
+  "MT",
+  "NL",
+  "PT",
+  "SK",
+  "SI",
+  "ES",
+  "AD",
+  "MC",
+  "SM",
+  "VA",
+  "ME",
+  "XK",
+]);
+export const usaEuro = (pais: string | null | undefined) => !pais || EURO.has(pais);
+
+const nombresPais = (() => {
+  try {
+    return new Intl.DisplayNames(["es"], { type: "region" });
+  } catch {
+    return null;
+  }
+})();
+export const nombrePais = (code: string) => nombresPais?.of(code) ?? code;
+
+/** España primero; el resto, por su nombre en español. */
+function ordenar(paises: PaisFacturacion[]): { code: string; region: RegionFiscal; nombre: string }[] {
+  const con = paises.map((x) => ({ ...x, nombre: nombrePais(x.code) }));
+  const es = con.filter((x) => x.code === "ES");
+  const resto = con.filter((x) => x.code !== "ES").sort((a, b) => a.nombre.localeCompare(b.nombre, "es"));
+  return [...es, ...resto];
+}
+
+const ETIQUETA_FISCAL: Record<RegionFiscal, string> = {
+  es: "NIF",
+  ue: "NIF-IVA (con el prefijo del país)",
+  fuera_ue: "Identificación fiscal de tu empresa (Tax ID / EIN / RFC…)",
+};
 
 type Paso = { n: "elegir" } | { n: "datos" } | { n: "pagando" } | { n: "activando" } | { n: "error"; mensaje: string };
 
@@ -352,6 +405,7 @@ export function Paywall({
 }
 
 type Campo = "legal_name" | "tax_id" | "line1" | "postal_code" | "city" | "country" | "invoice_email";
+type Clave = Campo | "line2" | "province";
 
 /** Datos fiscales que se piden antes del primer pago (GET y PUT /me/billing/profile). */
 export function DatosFiscales({
@@ -388,6 +442,19 @@ export function DatosFiscales({
   const [cargando, setCargando] = useState(true);
   const [guardando, setGuardando] = useState(false);
   const [error, setError] = useState<{ campo: Campo | null; mensaje: string } | null>(null);
+  // Los países a los que se factura, de la API (sin los bloqueados). Si no responde, España y la UE.
+  const [paises, setPaises] = useState<PaisFacturacion[]>([{ code: "ES", region: "es" }, ...PAISES_RESPALDO]);
+
+  useEffect(() => {
+    let vivo = true;
+    api
+      .paisesFacturacion()
+      .then((r) => vivo && r.countries.length > 0 && setPaises(r.countries))
+      .catch(() => undefined);
+    return () => {
+      vivo = false;
+    };
+  }, []);
 
   // Si ya hay algo guardado, se parte de ello.
   useEffect(() => {
@@ -420,8 +487,16 @@ export function DatosFiscales({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  const poner = (k: keyof typeof datos) => (e: { target: { value: string } }) => setDatos((d) => ({ ...d, [k]: e.target.value }));
-  const OBLIGATORIOS = ["legal_name", "tax_id", "line1", "postal_code", "city", "invoice_email"] as const;
+  const poner = (k: keyof typeof datos) => (e: { target: { value: string } }) => {
+    setDatos((d) => ({ ...d, [k]: e.target.value }));
+    // Al cambiar de país cambian la etiqueta y las reglas: el error de antes ya no vale.
+    if (k === "country") setError(null);
+  };
+  const opciones = ordenar(paises);
+  const region: RegionFiscal = paises.find((x) => x.code === datos.country)?.region ?? (datos.country === "ES" ? "es" : "fuera_ue");
+  const fuera = region === "fuera_ue";
+  // Fuera de la UE el código postal es opcional; en España y la UE, obligatorio.
+  const OBLIGATORIOS: Campo[] = ["legal_name", "tax_id", "line1", ...(fuera ? [] : (["postal_code"] as Campo[])), "city", "invoice_email"];
   const enfocar = (k: string) => setTimeout(() => document.getElementById(`${id}-${k}`)?.focus(), 0);
 
   const guardar = async () => {
@@ -437,11 +512,12 @@ export function DatosFiscales({
     try {
       await api.guardarPerfilFiscal({
         legal_name: datos.legal_name.trim(),
-        tax_id: datos.tax_id.replace(/[\s.-]/g, "").toUpperCase(),
+        // En España y la UE se quitan espacios, puntos y guiones; fuera de la UE se respetan sus separadores (12-3456789).
+        tax_id: fuera ? datos.tax_id.trim().toUpperCase() : datos.tax_id.replace(/[\s.-]/g, "").toUpperCase(),
         address: {
           line1: datos.line1.trim(),
           line2: datos.line2.trim() || null,
-          postal_code: datos.postal_code.trim(),
+          postal_code: datos.postal_code.trim() || null,
           city: datos.city.trim(),
           province: datos.province.trim() || null,
           country: datos.country,
@@ -479,8 +555,16 @@ export function DatosFiscales({
       </p>
     );
 
-  const campo = (k: Campo | "line2" | "province", etiqueta: string, extra: { type?: string; autoComplete?: string; opcional?: boolean } = {}) => {
+  const errorDe = (k: Clave) =>
+    error?.campo === k ? (
+      <small className="error-campo" id={`${id}-error`} role="alert">
+        {error.mensaje}
+      </small>
+    ) : null;
+
+  const campo = (k: Clave, etiqueta: string, extra: { type?: string; autoComplete?: string; opcional?: boolean; ayuda?: string } = {}) => {
     const conError = error?.campo === k;
+    const ayuda = extra.ayuda ? `${id}-${k}-ayuda` : undefined;
     return (
       <label className="campo-fiscal" htmlFor={`${id}-${k}`}>
         <span>
@@ -496,8 +580,14 @@ export function DatosFiscales({
           disabled={guardando}
           required={!extra.opcional}
           aria-invalid={conError}
-          aria-describedby={conError ? `${id}-error` : undefined}
+          aria-describedby={[conError ? `${id}-error` : "", ayuda ?? ""].filter(Boolean).join(" ") || undefined}
         />
+        {extra.ayuda && (
+          <small className="ayuda-campo" id={ayuda}>
+            {extra.ayuda}
+          </small>
+        )}
+        {errorDe(k)}
       </label>
     );
   };
@@ -512,36 +602,42 @@ export function DatosFiscales({
       }}
     >
       <p>{intro}</p>
-      {campo("legal_name", "Razón social o nombre", { autoComplete: "organization" })}
-      {campo("tax_id", "NIF (o NIF-IVA si no estás en España)")}
+      {campo("legal_name", fuera ? "Nombre de tu empresa" : "Razón social o nombre", { autoComplete: "organization" })}
+      <label className="campo-fiscal" htmlFor={`${id}-country`}>
+        <span>País</span>
+        <select
+          id={`${id}-country`}
+          value={datos.country}
+          onChange={poner("country")}
+          disabled={guardando}
+          autoComplete="country"
+          aria-invalid={error?.campo === "country"}
+          aria-describedby={error?.campo === "country" ? `${id}-error` : undefined}
+        >
+          {/* Un país guardado que ya no está en la lista se conserva para que se vea (la API dirá por qué). */}
+          {!opciones.some((x) => x.code === datos.country) && <option value={datos.country}>{nombrePais(datos.country)}</option>}
+          {opciones.map((x) => (
+            <option key={x.code} value={x.code}>
+              {x.nombre}
+            </option>
+          ))}
+        </select>
+        {!usaEuro(datos.country) && <small className="ayuda-campo">Precios en euros. Tu banco hace la conversión.</small>}
+        {errorDe("country")}
+      </label>
+      {campo("tax_id", ETIQUETA_FISCAL[region], {
+        autoComplete: "off",
+        ...(fuera ? { ayuda: "Fuera de la UE solo facturamos a empresas. Escribe la identificación fiscal de tu empresa tal como aparece en tus documentos." } : {}),
+      })}
       {campo("line1", "Dirección", { autoComplete: "address-line1" })}
       {campo("line2", "Piso, puerta…", { autoComplete: "address-line2", opcional: true })}
       <div className="fila-fiscal">
-        {campo("postal_code", "Código postal", { autoComplete: "postal-code" })}
+        {campo("postal_code", "Código postal", { autoComplete: "postal-code", opcional: fuera })}
         {campo("city", "Población", { autoComplete: "address-level2" })}
       </div>
-      <div className="fila-fiscal">
-        {campo("province", "Provincia", { autoComplete: "address-level1", opcional: true })}
-        <label className="campo-fiscal" htmlFor={`${id}-country`}>
-          <span>País</span>
-          <select
-            id={`${id}-country`}
-            value={datos.country}
-            onChange={poner("country")}
-            disabled={guardando}
-            aria-invalid={error?.campo === "country"}
-            aria-describedby={error?.campo === "country" ? `${id}-error` : undefined}
-          >
-            {PAISES.map(([c, n]) => (
-              <option key={c} value={c}>
-                {n}
-              </option>
-            ))}
-          </select>
-        </label>
-      </div>
+      {campo("province", fuera ? "Provincia, estado o región" : "Provincia", { autoComplete: "address-level1", opcional: true })}
       {campo("invoice_email", "Correo para las facturas", { type: "email", autoComplete: "email" })}
-      {error && (
+      {error && error.campo === null && (
         <p className="aviso" role="alert" id={`${id}-error`}>
           {error.mensaje}
         </p>

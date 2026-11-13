@@ -3,11 +3,14 @@ import { api, ApiError, type Factura, type Me, type PerfilFiscal, type Plaza } f
 import { Ajustes, Modal } from "./Ajustes";
 import { esperarPeticion, euros, TARDA, urlDePago } from "./cobro";
 import { Seccion } from "./movimiento";
-import { DatosFiscales, NOMBRE_PAGO } from "./Paywall";
+import { DatosFiscales, NOMBRE_PAGO, nombrePais, usaEuro } from "./Paywall";
 
 // «Facturación» (docs/contrato-web-api.md, «Cobro y paywall»): las plazas pagadas con su renovación,
 // cancelar o reanudar, cambiar la tarjeta, los datos fiscales y las facturas de Odoo.
 // Precios e importes salen de la API; aquí no se calcula ninguno.
+
+// Texto del tratamiento fiscal en el resumen (contrato, «Fuera de la UE»). Solo el que pide el contrato.
+const TRATAMIENTO: Record<string, string> = { extracomunitario: "Operación no sujeta al IVA español." };
 
 const fechaLarga = new Intl.DateTimeFormat("es-ES", { day: "numeric", month: "long", year: "numeric", timeZone: "UTC" });
 
@@ -200,12 +203,20 @@ export function Facturacion({
                     {perfil.address.line1}
                     {perfil.address.line2 ? `, ${perfil.address.line2}` : ""}
                     <br />
-                    {perfil.address.postal_code} {perfil.address.city}
+                    {[perfil.address.postal_code, perfil.address.city].filter(Boolean).join(" ")}
+                    {perfil.address.country !== "ES" && (
+                      <>
+                        <br />
+                        {nombrePais(perfil.address.country)}
+                      </>
+                    )}
                   </>
                 )}
                 <br />
                 {perfil.invoice_email}
               </p>
+              {TRATAMIENTO[perfil.tax_treatment ?? ""] && <p className="sec">{TRATAMIENTO[perfil.tax_treatment ?? ""]}</p>}
+              {perfil.address && !usaEuro(perfil.address.country) && <p className="sec">Precios en euros. Tu banco hace la conversión.</p>}
               <button className="btn sec" type="button" disabled={ocupado} onClick={() => setEditando(true)}>
                 Cambiar mis datos
               </button>

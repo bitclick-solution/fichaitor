@@ -135,7 +135,8 @@ export interface Cobro {
 export interface Direccion {
   line1: string;
   line2?: string | null;
-  postal_code: string;
+  /** Obligatorio en España y en la UE; fuera de la UE puede ir a null. */
+  postal_code: string | null;
   city: string;
   province?: string | null;
   /** ISO 3166-1 alfa-2: ES, PT, FR… */
@@ -147,6 +148,16 @@ export interface PerfilFiscal {
   tax_id: string | null;
   address: Direccion | null;
   invoice_email: string | null;
+  /** iva_21, no_sujeto (Canarias, Ceuta y Melilla), isp_ue (UE y Mónaco) o extracomunitario. Solo en la respuesta. */
+  tax_treatment?: string | null;
+  complete?: boolean;
+}
+
+/** Región fiscal de un país: decide la etiqueta del campo fiscal y si el código postal es obligatorio. */
+export type RegionFiscal = "es" | "ue" | "fuera_ue";
+export interface PaisFacturacion {
+  code: string;
+  region: RegionFiscal;
 }
 
 /** Factura o rectificativa de Odoo (GET /me/billing/invoices). */
@@ -329,7 +340,6 @@ export const GENERICO = "Algo ha fallado. Prueba de nuevo en un minuto.";
 /** Se emite cuando una ruta responde 402 `account_blocked`. */
 export const EVENTO_BLOQUEO = "fichaitor:cuenta-bloqueada";
 
-
 async function pedir<T>(method: "GET" | "POST" | "PUT" | "DELETE", path: string, body?: unknown): Promise<T> {
   const headers: Record<string, string> = {};
   if (method !== "GET") headers["X-Requested-With"] = "fichaitor";
@@ -429,19 +439,18 @@ export const api = {
   // ── Canales (contrato previsto en docs/canales.md, «Paso 3»)
   canales: async () => (await pedir<{ channels: Canal[] }>("GET", "/api/v1/me/channels")).channels ?? [],
   /** Sin fichas (null), el chat verá todas las activas, también las que se activen después. */
-  codigoVinculacion: (fichas: string[] | null = null) =>
-    pedir<CodigoVinculacion>("POST", "/api/v1/channels/link-code", fichas ? { locations: fichas } : undefined),
+  codigoVinculacion: (fichas: string[] | null = null) => pedir<CodigoVinculacion>("POST", "/api/v1/channels/link-code", fichas ? { locations: fichas } : undefined),
   /** Cambia qué fichas ve un chat ya vinculado: null para todas. Responde con el canal. */
-  filtrarCanal: (id: string, fichas: string[] | null) =>
-    pedir<Canal>("PUT", `/api/v1/me/channels/${encodeURIComponent(id)}/locations`, { locations: fichas }),
+  filtrarCanal: (id: string, fichas: string[] | null) => pedir<Canal>("PUT", `/api/v1/me/channels/${encodeURIComponent(id)}/locations`, { locations: fichas }),
   desvincularCanal: (id: string) => pedir<void>("DELETE", `/api/v1/me/channels/${encodeURIComponent(id)}`),
   // ── Multinegocio (docs/multinegocio.md, 5.3). Las dos responden con el cuerpo de GET /me.
   /** Sin plan, el servidor elige: gratis si está libre y, si no, el primer plan con hueco. 402: no queda hueco. */
-  activarFicha: (id: string, plan?: PlanFicha) =>
-    pedir<Me>("POST", `/api/v1/me/locations/${encodeURIComponent(id)}/activation`, plan ? { plan } : {}),
+  activarFicha: (id: string, plan?: PlanFicha) => pedir<Me>("POST", `/api/v1/me/locations/${encodeURIComponent(id)}/activation`, plan ? { plan } : {}),
   desactivarFicha: (id: string) => pedir<Me>("DELETE", `/api/v1/me/locations/${encodeURIComponent(id)}/activation`),
   // ── Cobro (docs/admin-facturacion.md, 4.7)
   perfilFiscal: () => pedir<PerfilFiscal>("GET", "/api/v1/me/billing/profile"),
+  /** Países a los que se factura, sin los bloqueados (contrato, «Fuera de la UE»). Ordenados por código. */
+  paisesFacturacion: () => pedir<{ countries: PaisFacturacion[] }>("GET", "/api/v1/me/billing/countries"),
   guardarPerfilFiscal: (p: { legal_name: string; tax_id: string; address: Direccion; invoice_email: string }) =>
     pedir<PerfilFiscal>("PUT", "/api/v1/me/billing/profile", p),
   /** Plaza nueva para una ficha. Al cobrarse, el backend activa la ficha en ella. */

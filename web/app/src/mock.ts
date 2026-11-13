@@ -120,7 +120,14 @@ interface ResenaSimulada {
 }
 
 const RESENAS: ResenaSimulada[] = [
-  { id: "rev_1", stars: 2, text: "Tardaron mucho en servir y la mesa estaba sin limpiar. La comida, bien.", created_at: "2026-11-08T20:15:00Z", replied: false, reply: null },
+  {
+    id: "rev_1",
+    stars: 2,
+    text: "Tardaron mucho en servir y la mesa estaba sin limpiar. La comida, bien.",
+    created_at: "2026-11-08T20:15:00Z",
+    replied: false,
+    reply: null,
+  },
   { id: "rev_2", stars: 5, text: "El arroz, espectacular. Volveremos.", created_at: "2026-11-05T14:02:00Z", replied: false, reply: null },
   { id: "rev_3", stars: 4, text: "", created_at: "2026-10-28T21:40:00Z", replied: false, reply: null },
   {
@@ -150,11 +157,19 @@ const ACCIONES: AccionSimulada[] = [];
 
 /** La acción tal como la devuelve la API, sin los campos internos del simulador. */
 function publica(a: AccionSimulada) {
-  return { id: a.id, type: a.type, review_id: a.review_id, status: a.status, message: a.message, error: a.error, confirmed_at: a.confirmed_at, finished_at: a.finished_at };
+  return {
+    id: a.id,
+    type: a.type,
+    review_id: a.review_id,
+    status: a.status,
+    message: a.message,
+    error: a.error,
+    confirmed_at: a.confirmed_at,
+    finished_at: a.finished_at,
+  };
 }
 
-const json = (status: number, cuerpo: unknown) =>
-  new Response(JSON.stringify(cuerpo), { status, headers: { "content-type": "application/json" } });
+const json = (status: number, cuerpo: unknown) => new Response(JSON.stringify(cuerpo), { status, headers: { "content-type": "application/json" } });
 
 let llamadasResumen = 0;
 let consultasCodigoBaja = 0;
@@ -187,8 +202,28 @@ const yo = (e: Estado) => {
   const desconectada = escenario() === "desconectada";
   // «sin-acceso»: Google niega la ficha elegida; sigue elegida, pero desaparece de la lista.
   if (escenario() === "sin-acceso")
-    return { email: "dueno@example.com", locations: conPlanes(e, FICHAS.slice(1)), selected_location_id: FICHAS[0]!.id, pending_deletion: null, connected: true, plans: planesCuenta(e), pricing: precios(e), billing: cobroDe(e), whatsapp: bolsaDe(e) };
-  return { email: "dueno@example.com", plans: planesCuenta(e), pricing: precios(e), billing: cobroDe(e), whatsapp: bolsaDe(e), locations: desconectada ? [] : conPlanes(e, fichas()), selected_location_id: desconectada ? null : e.elegida, pending_deletion: e.baja ?? null, connected: !desconectada };
+    return {
+      email: "dueno@example.com",
+      locations: conPlanes(e, FICHAS.slice(1)),
+      selected_location_id: FICHAS[0]!.id,
+      pending_deletion: null,
+      connected: true,
+      plans: planesCuenta(e),
+      pricing: precios(e),
+      billing: cobroDe(e),
+      whatsapp: bolsaDe(e),
+    };
+  return {
+    email: "dueno@example.com",
+    plans: planesCuenta(e),
+    pricing: precios(e),
+    billing: cobroDe(e),
+    whatsapp: bolsaDe(e),
+    locations: desconectada ? [] : conPlanes(e, fichas()),
+    selected_location_id: desconectada ? null : e.elegida,
+    pending_deletion: e.baja ?? null,
+    connected: !desconectada,
+  };
 };
 
 // Fechas clave (docs/contrato-web-api.md, «Fechas clave»). Se calculan desde hoy para que siempre estén
@@ -212,12 +247,23 @@ interface FechaSim {
   vueltas: number;
 }
 const pendiente = (id: string, dias: number, name: string, regular_hours: FranjaSim[] | null): FechaSim => ({
-  id, date: enDias(dias), name, regular_hours, status: "pendiente", answerable: true, answer: null, action: null, vueltas: 0,
+  id,
+  date: enDias(dias),
+  name,
+  regular_hours,
+  status: "pendiente",
+  answerable: true,
+  answer: null,
+  action: null,
+  vueltas: 0,
 });
 let FECHAS: FechaSim[] | null = null;
 const fechasClave = () =>
   (FECHAS ??= [
-    pendiente("kd_1", 12, "Inmaculada Concepción", [{ open: "09:00", close: "14:00" }, { open: "17:00", close: "20:30" }]),
+    pendiente("kd_1", 12, "Inmaculada Concepción", [
+      { open: "09:00", close: "14:00" },
+      { open: "17:00", close: "20:30" },
+    ]),
     pendiente("kd_2", 30, "Nochebuena", null),
     pendiente("kd_3", 37, "Nochevieja", []),
   ]);
@@ -288,7 +334,16 @@ function precios(e: Estado) {
     plans: TARIFAS,
     total: totalDe(usados),
     if_activate: { pro: totalDe([...usados, "pro"]), pro_whatsapp: totalDe([...usados, "pro_whatsapp"]) },
-    if_deactivate: Object.fromEntries(Object.keys(actuales).map((id) => [id, totalDe(Object.entries(actuales).filter(([k]) => k !== id).map(([, v]) => v))])),
+    if_deactivate: Object.fromEntries(
+      Object.keys(actuales).map((id) => [
+        id,
+        totalDe(
+          Object.entries(actuales)
+            .filter(([k]) => k !== id)
+            .map(([, v]) => v),
+        ),
+      ]),
+    ),
   };
 }
 
@@ -341,8 +396,7 @@ export async function mockFetch(method: string, path: string, body: unknown): Pr
           payment_method: "card",
           collection: "auto",
           // En la ventana de la beta, el primer cobro llega al terminarla.
-          trial_ends_at:
-            escenario() === "lanzamiento" ? fechaLocal(new Date(hoy.getFullYear(), hoy.getMonth(), hoy.getDate() + 18)) : null,
+          trial_ends_at: escenario() === "lanzamiento" ? fechaLocal(new Date(hoy.getFullYear(), hoy.getMonth(), hoy.getDate() + 18)) : null,
         },
       ];
       e.pagoEnCurso = null;
@@ -352,18 +406,90 @@ export async function mockFetch(method: string, path: string, body: unknown): Pr
   }
 
   // ── Cobro (docs/admin-facturacion.md, 4.7). NIF válido en el simulador: 8 cifras y una letra (12345678Z) o B88994777.
+  // Países: una muestra de los tres tipos (la API real trae todos los del mundo menos los bloqueados).
+  if (method === "GET" && path === "/api/v1/me/billing/countries") {
+    const ue = [
+      "AT",
+      "BE",
+      "BG",
+      "CY",
+      "CZ",
+      "DE",
+      "DK",
+      "EE",
+      "FI",
+      "FR",
+      "GR",
+      "HR",
+      "HU",
+      "IE",
+      "IT",
+      "LT",
+      "LU",
+      "LV",
+      "MC",
+      "MT",
+      "NL",
+      "PL",
+      "PT",
+      "RO",
+      "SE",
+      "SI",
+      "SK",
+    ];
+    const fuera = ["AD", "AR", "AU", "BR", "CA", "CH", "CL", "CO", "GB", "JP", "MA", "MX", "NO", "PE", "US"];
+    const lista = [{ code: "ES", region: "es" }, ...ue.map((code) => ({ code, region: "ue" })), ...fuera.map((code) => ({ code, region: "fuera_ue" }))];
+    return json(200, { countries: lista.sort((a, b) => a.code.localeCompare(b.code)) });
+  }
   if (path === "/api/v1/me/billing/profile") {
-    if (method === "GET") return json(200, e.perfil ?? { legal_name: null, tax_id: null, address: null, invoice_email: null });
+    if (method === "GET") return json(200, e.perfil ?? { legal_name: null, tax_id: null, address: null, invoice_email: null, complete: false });
     const p = body as NonNullable<Estado["perfil"]>;
     const pais = String(p.address?.["country"] ?? "");
-    if (pais !== "ES" && pais.length !== 2) return json(422, { detail: "Solo facturamos en España y en la Unión Europea.", code: "country_not_supported" });
-    if (pais === "ES" && !/^([0-9]{8}[A-Z]|[A-Z][0-9]{7}[0-9A-Z])$/.test(p.tax_id))
+    const cp = String(p.address?.["postal_code"] ?? "");
+    const ue = [
+      "AT",
+      "BE",
+      "BG",
+      "CY",
+      "CZ",
+      "DE",
+      "DK",
+      "EE",
+      "FI",
+      "FR",
+      "GR",
+      "HR",
+      "HU",
+      "IE",
+      "IT",
+      "LT",
+      "LU",
+      "LV",
+      "MC",
+      "MT",
+      "NL",
+      "PL",
+      "PT",
+      "RO",
+      "SE",
+      "SI",
+      "SK",
+    ];
+    if (["CU", "IR", "KP", "SY", "RU", "BY"].includes(pais) || !/^[A-Z]{2}$/.test(pais))
+      return json(422, { detail: "No facturamos en ese país.", code: "country_not_supported" });
+    const region = pais === "ES" ? "es" : ue.includes(pais) ? "ue" : "fuera_ue";
+    if (region === "es" && !/^([0-9]{8}[A-Z]|[A-Z][0-9]{7}[0-9A-Z])$/.test(p.tax_id))
       return json(422, { detail: "Ese NIF no es válido. Revísalo.", code: "tax_id_invalid" });
-    if (pais === "ES" && !/^[0-9]{5}$/.test(String(p.address?.["postal_code"] ?? "")))
-      return json(422, { detail: "El código postal debe tener 5 cifras.", code: "postal_code_invalid" });
-    e.perfil = p;
+    if (region === "ue" && !new RegExp(`^${pais === "MC" ? "FR" : pais}[0-9A-Z]{8,12}$`).test(p.tax_id))
+      return json(422, { detail: "Ese NIF-IVA no tiene el formato de ese país. Escríbelo con su prefijo (por ejemplo, FR40303265045).", code: "tax_id_invalid" });
+    if (region === "fuera_ue" && (!/^[0-9A-ZÑ&\-./ ]{3,32}$/.test(p.tax_id) || !/[0-9]/.test(p.tax_id)))
+      return json(422, { detail: "Esa identificación fiscal no es válida. Escríbela tal como aparece en los documentos de tu empresa.", code: "tax_id_invalid" });
+    if (region === "es" && !/^[0-9]{5}$/.test(cp)) return json(422, { detail: "El código postal debe tener 5 cifras.", code: "postal_code_invalid" });
+    if (region === "ue" && !cp) return json(422, { detail: "Falta el código postal.", code: "postal_code_invalid" });
+    const tax_treatment = region === "fuera_ue" ? "extracomunitario" : region === "ue" ? "isp_ue" : "iva_21";
+    e.perfil = { ...p, tax_treatment } as NonNullable<Estado["perfil"]>;
     guardar(e);
-    return json(200, p);
+    return json(200, { ...e.perfil, complete: true });
   }
   if (method === "POST" && path === "/api/v1/me/billing/seats") {
     if (!e.perfil) return json(409, { detail: "Faltan tus datos para la factura.", code: "profile_incomplete" });
@@ -464,7 +590,11 @@ export async function mockFetch(method: string, path: string, body: unknown): Pr
       } else if (f.vueltas >= 1) f.action = { ...f.action, status: "en_curso", message: "Estamos enviando tu cambio de horario a Google." };
     }
     const todas = path.includes("filter=all");
-    return json(200, { dates: fechasClave().filter((f) => todas || f.status === "pendiente").map(sinVueltas) });
+    return json(200, {
+      dates: fechasClave()
+        .filter((f) => todas || f.status === "pendiente")
+        .map(sinVueltas),
+    });
   }
   const fecha = /^\/api\/v1\/me\/key-dates\/([^/]+)\/(answer|dismiss)$/.exec(path);
   if (method === "POST" && fecha) {
@@ -484,8 +614,7 @@ export async function mockFetch(method: string, path: string, body: unknown): Pr
     }
     const r = body as { kind?: string; ranges?: FranjaSim[] } | undefined;
     // Como el servidor: 422 con el mensaje para los campos. En el simulador, cualquier franja que empiece a medianoche.
-    if (r?.kind === "custom" && r.ranges?.some((x) => x.open === "00:00"))
-      return json(422, { detail: "Google no acepta franjas que empiezan a medianoche." });
+    if (r?.kind === "custom" && r.ranges?.some((x) => x.open === "00:00")) return json(422, { detail: "Google no acepta franjas que empiezan a medianoche." });
     if (escenario() === "falla") return json(503, { detail: "No hemos podido guardarlo. Prueba otra vez en un minuto." });
     const ranges = r?.kind === "custom" ? (r.ranges ?? []) : r?.kind === "regular" ? (f.regular_hours ?? []) : [];
     f.status = "en_curso";
@@ -574,18 +703,34 @@ export async function mockFetch(method: string, path: string, body: unknown): Pr
     if (!e.elegida) return json(409, { detail: "Elige primero una ficha." });
     llamadasResumen += 1;
     const vacio = {
-      synced_at: null, review_count: null, average_rating: null, unanswered_count: null, unanswered_low_count: null,
-      last_review_at: null, has_regular_hours: null, upcoming_special_hours: null, google_changed: null,
-      google_changed_fields: null, google_changed_labels: null, stale: false,
+      synced_at: null,
+      review_count: null,
+      average_rating: null,
+      unanswered_count: null,
+      unanswered_low_count: null,
+      last_review_at: null,
+      has_regular_hours: null,
+      upcoming_special_hours: null,
+      google_changed: null,
+      google_changed_fields: null,
+      google_changed_labels: null,
+      stale: false,
     };
     // Las dos primeras llamadas responden `pendiente`, como tras elegir ficha.
     if (llamadasResumen <= 2) return json(200, { status: "pendiente", ...vacio });
     return json(200, {
       status: escenario() === "caducado" ? "needs_reconnect" : "ok",
       synced_at: new Date().toISOString(),
-      review_count: 13, average_rating: 4.7, unanswered_count: 13, unanswered_low_count: 1,
-      last_review_at: "2025-02-06", has_regular_hours: true, upcoming_special_hours: 0,
-      google_changed: true, google_changed_fields: ["specialHours"], google_changed_labels: ["Horarios especiales"],
+      review_count: 13,
+      average_rating: 4.7,
+      unanswered_count: 13,
+      unanswered_low_count: 1,
+      last_review_at: "2025-02-06",
+      has_regular_hours: true,
+      upcoming_special_hours: 0,
+      google_changed: true,
+      google_changed_fields: ["specialHours"],
+      google_changed_labels: ["Horarios especiales"],
       stale: false,
     });
   }
