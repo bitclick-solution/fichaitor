@@ -262,7 +262,7 @@ export function TusNegocios({
       if (e instanceof ApiError && e.status === 401) onSinSesion();
       // 402: no queda hueco en ningún plan. El paywall ofrece una plaza de pago para esa ficha.
       // Los 409 (code free_taken, offboarding_pending, location_removed) traen su `detail`, que se muestra tal cual.
-      else if (e instanceof ApiError && e.status === 402) {
+      else if (e instanceof ApiError && e.status === 402 && e.codigo !== "account_blocked") {
         const id = pregunta.id;
         cerrar();
         setPaywall({ id, motivo: "no_seat" });

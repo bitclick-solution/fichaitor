@@ -534,7 +534,7 @@ function Elegir({ me, onElegida }: { me: Me; onElegida: (me: Me) => void }) {
       onElegida(await api.elegirFicha(id));
     } catch (e) {
       // 402: no queda hueco en ningún plan. El paywall ofrece una plaza de pago para esa ficha.
-      if (e instanceof ApiError && e.status === 402 && me.plans) setPaywall(id);
+      if (e instanceof ApiError && e.status === 402 && e.codigo !== "account_blocked" && me.plans) setPaywall(id);
       else setError(e instanceof Error ? e.message : "No hemos podido elegir esa ficha.");
       setEnviando(null);
     }
