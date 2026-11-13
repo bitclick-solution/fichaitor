@@ -1,3 +1,12 @@
+# Interfaz del backoffice (web/admin): la sirve app.admin en el mismo origen, por el túnel.
+FROM node:22-alpine AS admin_ui
+WORKDIR /src
+COPY web/admin/package.json web/admin/package-lock.json web/admin/
+RUN cd web/admin && npm ci --no-audit --no-fund
+COPY web/site/fonts web/site/fonts
+COPY web/admin web/admin
+RUN cd web/admin && npm run build
+
 FROM python:3.12-slim AS base
 
 ENV PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1
@@ -13,6 +22,8 @@ COPY data ./data
 COPY scripts/baja_manual.py ./scripts/baja_manual.py
 # Alta, restablecimiento y desactivación de las personas del backoffice (docs/despliegue.md).
 COPY scripts/admin_usuario.py ./scripts/admin_usuario.py
+# Solo el resultado de la compilación: ni el código fuente ni node_modules.
+COPY --from=admin_ui /src/web/admin/dist ./web/admin/dist
 
 RUN useradd --system --uid 10001 fichaitor
 USER fichaitor

@@ -128,6 +128,31 @@ services:
     stop_grace_period: 250s
     restart: on-failure:3
 
+  # Backoffice (docs/contrato-backoffice.md): solo en 127.0.0.1:8090, como en producción
+  # por el túnel. Sin env_file: de .env solo recibe su clave de TOTP, su pimienta y su
+  # authserv-id. Perfil "backoffice": `docker compose --profile backoffice up -d admin`.
+  # Alta local: docker compose run --rm --entrypoint python admin scripts/admin_usuario.py ...
+  admin:
+    build: .
+    profiles: ["backoffice"]
+    command: ["python", "-m", "app.admin"]
+    environment:
+      FICHAITOR_ADMIN_DATABASE_URL: ${FICHAITOR_ADMIN_DATABASE_URL:-postgresql://fichaitor_admin_dev:dev@db:5432/fichaitor}
+      FICHAITOR_ADMIN_TOTP_KEY: ${FICHAITOR_ADMIN_TOTP_KEY:-}
+      FICHAITOR_ADMIN_PASSWORD_PEPPER: ${FICHAITOR_ADMIN_PASSWORD_PEPPER:-}
+      FICHAITOR_ADMIN_AUTHSERV_ID: ${FICHAITOR_ADMIN_AUTHSERV_ID:-mx.ionos.es}
+    depends_on:
+      db:
+        condition: service_healthy
+    ports:
+      - "127.0.0.1:8090:8090"
+    healthcheck:
+      disable: true
+    read_only: true
+    tmpfs:
+      - /tmp
+    restart: on-failure:3
+
   # Sitio público y aplicación /app. Redirige /api/ a la API: mismo origen, sin CORS.
   web:
     build:
