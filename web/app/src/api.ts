@@ -299,6 +299,13 @@ export interface CodigoVinculacion {
 
 export const OAUTH_START = "/api/v1/google/oauth/start";
 
+/** Si la cuenta recibe las comunicaciones comerciales, y el último cambio (null si nunca cambió). */
+export interface PreferenciaCorreos {
+  commercial: boolean;
+  changed_at: string | null;
+  source: "signup" | "settings" | "enlace" | "un_clic" | null;
+}
+
 export class ApiError extends Error {
   constructor(
     readonly status: number,
@@ -457,6 +464,9 @@ export const api = {
   pedirCodigoBaja: (scope: AlcanceBaja) => pedir<{ sent_to: string; expires_in: number }>("POST", "/api/v1/me/offboarding/code", { scope }),
   confirmarBaja: (scope: AlcanceBaja, code: string) => pedir<BajaPendiente>("POST", "/api/v1/me/offboarding/confirm", { scope, code }),
   restaurarBaja: () => pedir<void>("POST", "/api/v1/me/offboarding/restore"),
+  // ── Comunicaciones comerciales (contrato, «Comunicaciones comerciales: en el alta y en Ajustes»)
+  correos: () => pedir<PreferenciaCorreos>("GET", "/api/v1/me/communications"),
+  guardarCorreos: (commercial: boolean) => pedir<PreferenciaCorreos>("PUT", "/api/v1/me/communications", { commercial }),
   /** Si el correo del último código ha salido: lo envía el worker después de responder al POST. */
   estadoCodigoBaja: () => pedir<{ status: "pendiente" | "enviado" | "fallido" | "ninguno" }>("GET", "/api/v1/me/offboarding/code"),
   /** Restauración desde el enlace del correo, sin sesión. 410 si el enlace no vale, está usado o ha caducado. */

@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
 import logo from "../../../brand/logo.svg";
 import { api, ApiError, EVENTO_BLOQUEO, OAUTH_START, type BajaPendiente, type Diagnosis, type Location, type Me, type Summary } from "./api";
 import { Ajustes, AvisoBaja, cuando } from "./Ajustes";
@@ -513,14 +513,11 @@ function Conectar({ aviso }: { aviso?: string }) {
         Inicia sesión con la cuenta de Google que administra tu ficha. Fichaitor pide un único permiso: ver y gestionar tu ficha de
         Google Business Profile.
       </p>
-      <div className="acciones">
-        <a className="btn" href={OAUTH_START}>
-          Conectar con Google <Flecha />
-        </a>
+      <ConectarGoogle>
         <a className="btn sec" href="/">
           Volver al inicio
         </a>
-      </div>
+      </ConectarGoogle>
       <ul className="lista-puntos">
         <li>No accede a tu correo, tus contactos, tu calendario ni tus archivos.</li>
         <li>Nunca cambia nada en tu ficha sin tu confirmación.</li>
@@ -556,12 +553,30 @@ function SinFichas({ email }: { email: string }) {
         La cuenta <strong>{email}</strong> no administra ninguna ficha de Google Business Profile. Conecta la cuenta con la que gestionas tu
         negocio en Google.
       </p>
-      <div className="acciones">
-        <a className="btn" href={OAUTH_START}>
-          Conectar otra cuenta <Flecha />
-        </a>
-      </div>
+      <ConectarGoogle etiqueta="Conectar otra cuenta" />
     </section>
+  );
+}
+
+/**
+ * «Conectar con Google» donde se crea la cuenta, con la casilla de oposición a las comunicaciones
+ * comerciales (art. 21.2 LSSI): sin marcar. Es un formulario GET a OAUTH_START: marcada añade
+ * `commercial_optout=1`; sin marcar no añade nada. No se guarda en el navegador.
+ */
+function ConectarGoogle({ etiqueta = "Conectar con Google", children }: { etiqueta?: string; children?: ReactNode }) {
+  return (
+    <form className="conectar" action={OAUTH_START} method="get">
+      <div className="acciones">
+        <button className="btn" type="submit">
+          {etiqueta} <Flecha />
+        </button>
+        {children}
+      </div>
+      <label className="optout">
+        <input type="checkbox" name="commercial_optout" value="1" />
+        <span>No quiero recibir novedades ni ofertas de Fichaitor por correo. Los correos de servicio te llegarán igual.</span>
+      </label>
+    </form>
   );
 }
 

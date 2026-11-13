@@ -1,6 +1,6 @@
 import { useEffect, useId, useRef, useState, type ReactNode } from "react";
 import { createPortal } from "react-dom";
-import { api, ApiError, type AlcanceBaja, type BajaPendiente } from "./api";
+import { api, ApiError, type AlcanceBaja, type BajaPendiente, type PreferenciaCorreos } from "./api";
 import { pausarScroll, Seccion } from "./movimiento";
 import { EVENTO_RECORRIDO } from "./Tour";
 
@@ -102,6 +102,7 @@ export function Ajustes({
           </>
         )}
       </p>
+      <CorreosFichaitor onSinSesion={onSinSesion} />
       <div className="ajustes-lista">
         {onDesactivarFicha && (
           <div>
@@ -144,6 +145,88 @@ export function Ajustes({
         />
       )}
     </Seccion>
+  );
+}
+
+const MEDIO: Record<string, string> = {
+  signup: "al crear tu cuenta",
+  settings: "desde Ajustes",
+  enlace: "desde el enlace de un correo",
+  un_clic: "desde tu programa de correo",
+};
+const soloDia = new Intl.DateTimeFormat("es-ES", { day: "numeric", month: "long", year: "numeric" });
+
+/**
+ * «Correos de Fichaitor»: oponerse a las comunicaciones comerciales o volver a recibirlas (art. 21.2 LSSI).
+ * Sin confirmación: cada cambio hace el PUT y se pinta lo que responde. Funciona también con la cuenta en
+ * pausa o con una baja programada. Los correos de servicio no se pueden desactivar.
+ */
+function CorreosFichaitor({ onSinSesion }: { onSinSesion: () => void }) {
+  const id = useId();
+  const [pref, setPref] = useState<PreferenciaCorreos | null>(null);
+  const [guardando, setGuardando] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const leer = () => {
+    setError(null);
+    api
+      .correos()
+      .then(setPref)
+      .catch((e: unknown) => {
+        if (e instanceof ApiError && e.status === 401) onSinSesion();
+        else setError(e instanceof ApiError && e.status === 503 ? "Ahora mismo no podemos leerlo. Prueba otra vez en un minuto." : "No hemos podido leer tu preferencia.");
+      });
+  };
+  useEffect(() => {
+    leer();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  const cambiar = (commercial: boolean) => {
+    setGuardando(true);
+    setError(null);
+    api
+      .guardarCorreos(commercial)
+      .then(setPref)
+      .catch((e: unknown) => {
+        if (e instanceof ApiError && e.status === 401) onSinSesion();
+        // El interruptor se queda como estaba: se pinta lo último que dijo el servidor.
+        else setError(e instanceof ApiError && e.status === 503 ? "Ahora mismo no podemos guardarlo. Prueba otra vez en un minuto." : "No hemos podido guardarlo.");
+      })
+      .finally(() => setGuardando(false));
+  };
+
+  const desde = pref && !pref.commercial && pref.changed_at ? new Date(pref.changed_at) : null;
+  return (
+    <div className="correos-fichaitor">
+      <h3 className="rotulo">Correos de Fichaitor</h3>
+      {pref ? (
+        <label className="interruptor" htmlFor={id}>
+          <input id={id} type="checkbox" role="switch" checked={pref.commercial} disabled={guardando} onChange={(e) => cambiar(e.target.checked)} />
+          <span className="pista" aria-hidden="true" />
+          <span>Recibir novedades y ofertas de Fichaitor por correo</span>
+        </label>
+      ) : (
+        !error && <p className="sec">Cargando…</p>
+      )}
+      <p className="sec">Los correos de servicio (avisos de tu cuenta, facturas y cambios en el servicio) te llegarán siempre.</p>
+      {desde && !Number.isNaN(desde.getTime()) && (
+        <p className="sec">
+          Desactivado el {soloDia.format(desde)}
+          {pref?.source && MEDIO[pref.source] ? ` ${MEDIO[pref.source]}` : ""}.
+        </p>
+      )}
+      {error && (
+        <p className="aviso" role="alert">
+          {error}{" "}
+          {!pref && (
+            <button className="enlace" type="button" onClick={leer}>
+              Reintentar
+            </button>
+          )}
+        </p>
+      )}
+    </div>
   );
 }
 

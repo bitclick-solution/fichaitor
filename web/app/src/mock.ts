@@ -292,6 +292,8 @@ function precios(e: Estado) {
   };
 }
 
+let correosMock: { commercial: boolean; changed_at: string | null; source: string | null } = { commercial: true, changed_at: null, source: null };
+
 export async function mockFetch(method: string, path: string, body: unknown): Promise<Response> {
   await new Promise((r) => setTimeout(r, 350));
   const e = leer();
@@ -546,6 +548,16 @@ export async function mockFetch(method: string, path: string, body: unknown): Pr
     e.baja = null;
     guardar(e);
     return new Response(null, { status: 204 });
+  }
+
+  // Comunicaciones comerciales: en memoria (se pierde al recargar). Idempotente, como el backend.
+  if (path === "/api/v1/me/communications" && (method === "GET" || method === "PUT")) {
+    if (method === "PUT") {
+      const c = (body as { commercial?: unknown } | undefined)?.commercial;
+      if (typeof c !== "boolean") return json(422, { detail: "commercial tiene que ser true o false." });
+      if (c !== correosMock.commercial) correosMock = { commercial: c, changed_at: new Date().toISOString(), source: "settings" };
+    }
+    return json(200, correosMock);
   }
 
   if (method === "POST" && path === "/api/v1/me/location") {

@@ -447,3 +447,20 @@ html.lenis, html.lenis body { height: auto; }
 .planes-pago .opcion .plan-nombre { display: block; height: auto; padding: 0; border: 0; background: transparent; font-weight: 900; font-stretch: 125%; text-transform: uppercase; letter-spacing: -0.03em; font-size: clamp(1.5rem, 4vw, 2rem); line-height: 1; }
 .planes-pago .opcion .plan-nombre .mas { display: inline; padding: 0; border: 0; background: transparent; color: var(--rojo); }
 .plan-prueba { color: inherit; font-weight: 700; }
+
+/* Casilla de oposición a las comunicaciones comerciales junto a «Conectar con Google» (art. 21.2 LSSI). Sin marcar. */
+.conectar { display: grid; gap: 14px; }
+.optout { display: grid; grid-template-columns: 20px 1fr; gap: 10px; align-items: start; max-width: 40em; font-size: 0.92rem; line-height: 1.4; color: var(--gris); cursor: pointer; }
+.optout input { width: 20px; height: 20px; margin: 1px 0 0; accent-color: var(--rojo); border-radius: 0; }
+
+/* Ajustes › Correos de Fichaitor: un interruptor (checkbox con role="switch"). */
+.correos-fichaitor { display: grid; gap: 10px; justify-items: start; margin: 0 0 clamp(18px, 3vh, 28px); padding: clamp(18px, 2.4vw, 28px); border: 2px solid var(--tinta); }
+.interruptor { display: grid; grid-template-columns: auto 1fr; align-items: center; gap: 12px; font-weight: 700; cursor: pointer; position: relative; }
+.interruptor input { position: absolute; opacity: 0; width: 52px; height: 30px; margin: 0; cursor: pointer; }
+.interruptor .pista { width: 52px; height: 30px; border: 2px solid var(--tinta); background: var(--papel); position: relative; transition: background 0.18s; }
+.interruptor .pista::after { content: ""; position: absolute; top: 3px; left: 3px; width: 20px; height: 20px; background: var(--tinta); transition: transform 0.18s; }
+.interruptor input:checked + .pista { background: var(--tinta); }
+.interruptor input:checked + .pista::after { transform: translateX(22px); background: var(--rojo); }
+.interruptor input:focus-visible + .pista { outline: 3px solid var(--rojo); outline-offset: 2px; }
+.interruptor input:disabled + .pista { opacity: 0.6; }
+@media (prefers-reduced-motion: reduce) { .interruptor .pista, .interruptor .pista::after { transition: none; } }
