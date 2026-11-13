@@ -2,6 +2,14 @@
 
 Cómo dejar las dos cuentas configuradas igual, campo por campo. Copia y pega los textos tal cual. Fecha: 2026-11-13.
 
+## Estado
+
+| Red | Estado |
+|---|---|
+| TikTok | `@fichaitor`, configurada (2026-11-13) |
+| Instagram | Pospuesta por el PM |
+| YouTube | `https://www.youtube.com/@Fichaitor`, reservada. Hay acceso a la API; no la conectamos hasta subir los primeros Shorts, y cada subida será privada hasta que el PM la apruebe |
+
 ## Lo común a las dos
 
 | Campo | Valor |
@@ -23,12 +31,12 @@ Cómo dejar las dos cuentas configuradas igual, campo por campo. Copia y pega lo
 
 ### El enlace
 
-Cada red lleva su código para saber de dónde llega cada diagnóstico:
+Cada red lleva su código para saber de dónde llega la gente. La web lee dos parámetros distintos: `ref` cuenta la visita a la portada y `s` marca el diagnóstico y la lista de espera. Por eso el enlace lleva los dos:
 
-- TikTok: `https://fichaitor.es/?s=tt_bio`
-- Instagram: `https://fichaitor.es/?s=ig_bio`
+- TikTok: `https://fichaitor.es/?ref=tt_bio&s=tt_bio`
+- Instagram: `https://fichaitor.es/?ref=ig_bio&s=ig_bio`
 
-Mientras `/app` siga en «Muy pronto», el enlace lleva a la portada y al diagnóstico gratis. Cuando se abra la beta en producción, cambiamos la última línea de la biografía (consulta «Cambios al abrir la beta»).
+> **Nota:** Hoy el diagnóstico público está cerrado en producción («Fichaitor aún no está abierto») y `/app` sigue en «Muy pronto». El enlace lleva a la portada y cuenta la visita, pero quien llega no puede sacar su nota todavía. Por eso la llamada a la acción de los vídeos es escribirnos por mensaje. Cuando se abra la beta, cambiamos la biografía (consulta «Cambios al abrir la beta»).
 
 ---
 
@@ -40,7 +48,7 @@ Mientras `/app` siga en «Muy pronto», el enlace lleva a la portada y al diagn�
 |---|---|
 | Nombre | `Fichaitor` |
 | Biografía (80 caracteres como máximo) | `Tu ficha de Google, al día. Te avisamos de cada reseña y festivo. Tú confirmas.` |
-| Sitio web | `https://fichaitor.es/?s=tt_bio` |
+| Sitio web | `https://fichaitor.es/?ref=tt_bio&s=tt_bio` |
 | Categoría | Software o «Aplicaciones». Si no aparece, «Servicios profesionales» |
 | Correo | `soporte@fichaitor.es` |
 
@@ -127,7 +135,7 @@ Para los mensajes que la respuesta automática no cubre, solo a quien nos ha esc
 | `/precio` | Ahora estamos en beta y el plan Pro es gratis hasta la versión definitiva. Después cuesta 35 € al año por ficha, y tienes 30 días para decidir si sigues. |
 | `/acceso` | Fichaitor no cambia nada en tu ficha sin que lo confirmes, y puedes desconectarlo cuando quieras desde tu cuenta de Google. |
 
-Para sacar la nota de quien la pide: escribe su negocio y su localidad en `https://fichaitor.es/?s=tt_dm` (o `?s=ig_dm` si llega por Instagram), haz una captura del resultado y mándasela con el texto `/nota`. Son 2 minutos.
+Para sacar la nota de quien la pide: mira su ficha en Google Maps con la lista de `docs/marketing/auditoria/README.md` y pásame la línea. Te devuelvo su hoja en PDF y la nota para el texto `/nota`. Son 2 minutos de tu parte. Cuando se abra el diagnóstico en producción, bastará con escribir su negocio en `https://fichaitor.es/?v=buscador&s=tt_dm`.
 
 ---
 
@@ -140,7 +148,7 @@ Para sacar la nota de quien la pide: escribe su negocio y su localidad en `https
 | Nombre (sale en las búsquedas, 64 caracteres) | `Fichaitor · Tu ficha de Google al día` |
 | Usuario | `fichaitor` |
 | Biografía (150 caracteres) | Ver abajo |
-| Enlace | `https://fichaitor.es/?s=ig_bio`, con el título «Mira la nota de tu ficha» |
+| Enlace | `https://fichaitor.es/?ref=ig_bio&s=ig_bio`, con el título «Mira la nota de tu ficha» |
 | Categoría | «Software» o «Programa informático» |
 | Mostrar la categoría | Sí |
 | Botón de contacto | Correo: `soporte@fichaitor.es`. Sin teléfono |
@@ -202,7 +210,7 @@ Comparte en tus historias cada vídeo de Fichaitor. **No publiques los vídeos e
 
 ## YouTube
 
-Para cuando subamos los Shorts. Reserva ya el identificador `@fichaitor` en YouTube, aunque no publiques nada, para que nadie lo ocupe. Tiempo: 5 minutos.
+Reservado: `https://www.youtube.com/@Fichaitor`. Lo configuramos cuando subamos los primeros Shorts.
 
 ## Cambios al abrir la beta
 
@@ -218,6 +226,6 @@ Te avisaré con el texto exacto el día que toque.
 
 ## Tu checklist de PM
 
-1. **Completa TikTok:** cuenta de empresa, foto, biografía, enlace, ajustes y el centro de mensajes (enlace de mensaje directo, instrucciones, bienvenida, las tres palabras clave y las preguntas). Tiempo: 20 min.
-2. **Crea y completa Instagram** con su apartado, y activa la verificación en dos pasos en las dos. Tiempo: 20 min.
-3. **Reserva `@fichaitor` en YouTube** y pásame el usuario exacto que te ha quedado en cada red. Tiempo: 5 min.
+1. **TikTok:** hecho. Solo falta cambiar el enlace del perfil por `https://fichaitor.es/?ref=tt_bio&s=tt_bio` y probar los botones del chat desde tu cuenta personal. Tiempo: 5 min.
+2. **Instagram:** pospuesto. Cuando lo retomes, sigue su apartado. Tiempo: 20 min.
+3. **YouTube:** reservado. Nada más hasta los primeros Shorts.

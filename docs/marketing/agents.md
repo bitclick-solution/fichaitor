@@ -64,6 +64,8 @@ Hay que aclararlos con las otras sesiones:
 2. **Las 25 respuestas gratis.** El PM dice que se dan una sola vez por ficha. `docs/fase0/precios.md` y el código dicen 25 al mes. Nuestros materiales usan la regla del PM y hay que avisar a la sesión «PM de Fichaitor».
 3. **El nombre del plan de 59 €.** Nuestros materiales lo llaman «Pro+», como la portada. Los documentos internos lo llaman «Pro WhatsApp».
 4. **El alta en la beta en producción.** `/app` sigue en «Muy pronto». Hay que confirmar con la sesión «PM de Fichaitor» la fecha en que un bar puede conectarse de verdad.
+5. **El diagnóstico público está cerrado en producción** (responde «Fichaitor aún no está abierto»). Mientras tanto, la nota se calcula a mano con `auditoria/generar.py` y los vídeos piden escribir por mensaje, no ir a la web.
+6. **La web lee dos parámetros de origen**: `ref` (o `utm_source`) para contar la visita y `s` para el diagnóstico y la lista de espera. Nuestros enlaces llevan los dos (`?ref=x&s=x`). Conviene pedir a la sesión de web que lea uno solo.
 
 ## 3. Tono y palabras
 

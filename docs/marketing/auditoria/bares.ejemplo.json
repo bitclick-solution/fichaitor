@@ -1,0 +1,21 @@
+[
+  {
+    "id": "bar-ejemplo",
+    "negocio": "Bar La Esquina",
+    "zona": "Cañadío",
+    "fecha": "18 de noviembre de 2026",
+    "abierto": true,
+    "horario": true,
+    "festivo_8_dic": false,
+    "fotos": 8,
+    "nota": 4.2,
+    "resenas": 214,
+    "sin_responder": 7,
+    "malas_sin_responder": 2,
+    "web": false,
+    "telefono": true,
+    "servicios": true,
+    "categorias_extra": null,
+    "calle": ""
+  }
+]
