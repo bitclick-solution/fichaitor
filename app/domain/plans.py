@@ -14,6 +14,8 @@ section 12, and the decisions of the owner in section 15:
 The database imposes the limits (trigger `location_active_guard` in db/schema.sql);
 these functions say the same thing beforehand, to answer the web and to price. Nothing
 here charges: the discount is worked out when charging, never stored in a profile.
+`app/domain/billing.py` (`seat_price`) applies `price_lines` to the paid seats in force
+when one is charged (docs/admin-facturacion.md, section 3.3): keep the order here.
 """
 
 from collections.abc import Iterable, Mapping, Sequence
