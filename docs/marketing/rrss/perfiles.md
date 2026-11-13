@@ -52,28 +52,66 @@ En **Configuración y privacidad**:
 
 | Ajuste | Valor | Por qué |
 |---|---|---|
-| Comentarios | Todos | Los vídeos piden «Comenta FICHA» |
+| Comentarios | Todos | Los comentarios ayudan a que TikTok enseñe el vídeo a más gente |
 | Filtro de comentarios | Activado, con palabras: insultos habituales y los nombres de bares de la zona | No queremos peleas entre locales en nuestros comentarios |
-| Mensajes directos | Todos | Quien comenta «FICHA» debe poder escribirnos |
+| Mensajes directos | Todos | La llamada a la acción es «Escríbenos FICHA» |
 | Dúos y pegas (stitch) | Activados | Un dueño que nos cita nos da visibilidad gratis |
 | Descargas de vídeos | Desactivadas | Que no circulen sin nuestro perfil |
 | Sugerir tu cuenta a otros | Activado, salvo «contactos del móvil» | Tus amigos ya te conocen; queremos llegar a hosteleros |
 
-### Mensaje de bienvenida
+### Centro de mensajes
 
-En **Herramientas para empresas → Mensajes directos → Mensaje de bienvenida**. Si la opción no aparece en tu cuenta, guárdalo como respuesta rápida y pégalo a mano.
+En **Herramientas para empresas → Centro de mensajes**. TikTok no tiene respuestas rápidas: lo automático se hace aquí y el resto se responde a mano con los textos de «Textos para responder a mano».
+
+Tu enlace de mensajes es `https://tiktok.me/fichaitor`. Sirve para ponerlo en la auditoría impresa o en otra red, si alguna vez hace falta.
+
+#### Enlace de mensaje directo
+
+**Actívalo.** Pone un botón para escribirnos en los vídeos, y la llamada a la acción de los vídeos es justo esa: «Escríbenos FICHA».
+
+#### Instrucciones de chat
+
+Lo que ve quien abre el chat antes de escribir:
+
+> Escribe FICHA y el nombre de tu negocio, y te mandamos la nota de su ficha de Google.
+
+#### Mensaje de bienvenida
 
 > Hola, somos Fichaitor. Si nos has escrito por tu ficha, dinos el nombre de tu negocio y la localidad, y te mandamos su nota y tres cosas que se pueden mejorar. Es gratis.
 
-### Respuestas rápidas
+#### Respuesta de palabras clave
 
-Para pegarlas en mensajes directos, solo a quien nos ha escrito.
+Es la pieza más útil: contesta sola cuando alguien escribe «FICHA». Solo funciona en los mensajes, no en los comentarios. Crea tres reglas:
+
+| Palabras clave | Respuesta automática |
+|---|---|
+| `ficha`, `FICHA`, `nota` | Perfecto. Dinos el nombre de tu negocio y la localidad, y te mandamos su nota y tres cosas que se pueden mejorar. Lo mira una persona del equipo, así que puede tardar unas horas. |
+| `precio`, `cuánto`, `cuanto` | En beta, el plan Pro es gratis hasta la versión definitiva. Después cuesta 35 € al año por ficha, y tienes 30 días para decidir si sigues. |
+| `beta` | La beta es para bares, restaurantes y negocios locales. El plan Pro es gratis hasta la versión definitiva. Dinos tu negocio y la localidad y te contamos cómo entrar. |
+
+#### Preguntas recomendadas
+
+Las mismas cuatro que las preguntas frecuentes de Instagram (consulta «Preguntas frecuentes del chat»).
+
+### Lo que no usamos, de momento
+
+| Opción de TikTok | Decisión | Por qué |
+|---|---|---|
+| **Consigue clientes potenciales** (formularios) | No | Los datos los recoge TikTok, fuera de nuestra web, y nuestra política de privacidad no cubre ese tratamiento. Además, perderíamos la medición del diagnóstico. Quien quiere su nota la pide por mensaje o en `fichaitor.es`, que ya tiene su texto de consentimiento. Si algún día lo usamos, antes hay que pedir a la sesión de textos legales que lo añada a la política |
+| **TikTok Ads Manager** («Empezar») | No lo abras | Sin anuncios por ahora (decisión del 2026-11-13). Al darte de alta te pide un método de pago. Cuando un vídeo funcione en orgánico, te propongo una prueba con presupuesto y la decides tú |
+| **Solicitudes de colaboración** | No | Es la red de socios de TikTok para agencias y desarrolladores, no para anunciantes |
+
+## Textos para responder a mano
+
+Para los mensajes que la respuesta automática no cubre, solo a quien nos ha escrito. Guárdalos en las notas del móvil. En Instagram se guardan como **respuestas guardadas**, con el atajo de la primera columna.
 
 | Atajo | Texto |
 |---|---|
 | `/nota` | Aquí tienes la nota de la ficha de [negocio]: [nota] sobre 100. Lo que más se nota desde fuera: [fallo 1], [fallo 2] y [fallo 3]. Si quieres, te contamos cómo te avisamos de todo esto. |
 | `/precio` | Ahora estamos en beta y el plan Pro es gratis hasta la versión definitiva. Después cuesta 35 € al año por ficha, y tienes 30 días para decidir si sigues. |
 | `/acceso` | Fichaitor no cambia nada en tu ficha sin que lo confirmes, y puedes desconectarlo cuando quieras desde tu cuenta de Google. |
+
+Para sacar la nota de quien la pide: escribe su negocio y su localidad en `https://fichaitor.es/?s=tt_dm` (o `?s=ig_dm` si llega por Instagram), haz una captura del resultado y mándasela con el texto `/nota`. Son 2 minutos.
 
 ---
 
@@ -111,7 +149,7 @@ Mira la nota de tu ficha, gratis →
 |---|---|---|
 | Cuenta privada | No | Nadie puede encontrarnos si no |
 | Comentarios | Todos, con el filtro de palabras ofensivas activado y las mismas palabras que en TikTok | Igual que en TikTok |
-| Mensajes | Todos | Quien comenta «FICHA» debe poder escribirnos |
+| Mensajes | Todos | La llamada a la acción es «Escríbenos FICHA» |
 | Compartir en historias y reutilizar reels (remix) | Activado | Visibilidad gratis |
 | Conectar con Facebook | No, de momento | No hay anuncios y es una cuenta más que vigilar |
 
@@ -128,7 +166,7 @@ En **Herramientas para empresas → Preguntas frecuentes**. Aparecen como botone
 
 ### Respuestas guardadas
 
-**Herramientas para empresas → Respuestas guardadas:** las mismas tres de TikTok (`/nota`, `/precio` y `/acceso`).
+**Herramientas para empresas → Respuestas guardadas:** los tres de «Textos para responder a mano» (`/nota`, `/precio` y `/acceso`).
 
 ### Destacadas
 
@@ -144,7 +182,7 @@ Una línea en tu biografía personal de TikTok e Instagram, cuando estén public
 Ahora llevando @fichaitor
 ```
 
-Comparte en tus historias cada vídeo de Fichaitor. **No publiques los vídeos en tu cuenta personal en lugar de la de Fichaitor**: queremos que los seguidores, los comentarios «FICHA» y las cifras se queden en la cuenta de la marca.
+Comparte en tus historias cada vídeo de Fichaitor. **No publiques los vídeos en tu cuenta personal en lugar de la de Fichaitor**: queremos que los seguidores, los mensajes «FICHA» y las cifras se queden en la cuenta de la marca.
 
 ## YouTube
 
@@ -164,6 +202,6 @@ Te avisaré con el texto exacto el día que toque.
 
 ## Tu checklist de PM
 
-1. **Completa TikTok:** pasa a cuenta de empresa y rellena la foto, la biografía, el enlace, los ajustes, el mensaje de bienvenida y las respuestas rápidas. Tiempo: 15 min.
+1. **Completa TikTok:** cuenta de empresa, foto, biografía, enlace, ajustes y el centro de mensajes (enlace de mensaje directo, instrucciones, bienvenida, las tres palabras clave y las preguntas). Tiempo: 20 min.
 2. **Crea y completa Instagram** con su apartado, y activa la verificación en dos pasos en las dos. Tiempo: 20 min.
 3. **Reserva `@fichaitor` en YouTube** y pásame el usuario exacto que te ha quedado en cada red. Tiempo: 5 min.

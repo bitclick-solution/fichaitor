@@ -134,9 +134,9 @@ Sustituye al SDR de la plantilla.
 - **Estructura de cada guion:**
   1. **Gancho visual y hablado (0–3 s):** una frase que pare el dedo de un hostelero.
   2. **Demostración (3–20 s):** el problema en Google Maps y cómo lo resuelve Fichaitor. Solo funciones que existen.
-  3. **Llamada a la acción (20–25 s):** una sola y fácil. «Comenta FICHA y te mandamos la nota de la tuya» o «Mira la nota de tu ficha, gratis, en fichaitor.es».
+  3. **Llamada a la acción (20–25 s):** una sola y fácil. «Escríbenos FICHA por mensaje y te mandamos la nota de la tuya» (TikTok contesta solo con la respuesta de palabras clave; consulta `rrss/perfiles.md`) o «Mira la nota de tu ficha, gratis, en fichaitor.es».
 - **Formatos de partida:** auditoría, error común, dato y la ruta en camper («vamos bar por bar»).
-- **Medición:** el enlace del perfil lleva `?s=` (por ejemplo, `fichaitor.es/?s=tt_bio`). Cada vídeo lleva su código en el nombre del archivo y en el registro de la semana, y se mide por comentarios «FICHA» y por las estadísticas de la red.
+- **Medición:** el enlace del perfil lleva `?s=` (por ejemplo, `fichaitor.es/?s=tt_bio`). Cada vídeo lleva su código en el nombre del archivo y en el registro de la semana, y se mide por los mensajes «FICHA» y por las estadísticas de la red.
 
 ### `[AGENTE: TEXTOS Y AUDITORÍA]`
 
@@ -189,7 +189,7 @@ Con totales, nunca con datos de personas.
 
 | Paso | Dónde se mide | Quién lo pasa |
 |---|---|---|
-| Visualizaciones, comentarios «FICHA» y seguidores por vídeo | TikTok e Instagram | El PM, con una captura de las estadísticas |
+| Visualizaciones, mensajes «FICHA» y seguidores por vídeo | TikTok e Instagram | El PM, con una captura de las estadísticas |
 | Visitas, diagnósticos y contactos por origen (`?s=`) | Tabla `funnel_event` del producto | La sesión «PM de Fichaitor», en totales |
 | Bares visitados, conversaciones, auditorías entregadas y altas en la beta | Registro de la semana en `docs/marketing/retros/` | El PM |
 

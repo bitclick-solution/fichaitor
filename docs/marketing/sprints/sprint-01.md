@@ -144,7 +144,7 @@ Código: `tt_v01`.
 | 0–3 | A cámara | EL MARTES 8 TU FICHA TE MIENTE. | «El martes 8 es festivo. ¿Tu ficha de Google lo sabe?» |
 | 3–10 | Pantalla: Google Maps, la ficha, el horario | ABIERTO, SEGÚN GOOGLE. | «Si no lo has puesto, Google enseña tu horario de un martes normal. Y alguien vendrá hasta tu puerta con la persiana bajada.» |
 | 10–20 | Pantalla: el aviso de Fichaitor con «¿Abrís?» y los botones; pulsa «Cierro» | UN TOQUE Y LISTO. | «En Fichaitor te preguntamos antes de cada festivo. Le das a un botón y lo dejamos puesto en Google. Nada cambia sin que lo confirmes.» |
-| 20–25 | A cámara | COMENTA «FICHA». | «Comenta "ficha" y te decimos cómo tienes la tuya.» |
+| 20–25 | A cámara | ESCRÍBENOS «FICHA». | «Escríbenos "ficha" por mensaje y te decimos cómo tienes la tuya.» |
 
 ### Vídeo 2, la ruta en camper: «Vamos bar por bar»
 
@@ -161,7 +161,7 @@ Código: `tt_v02`.
 | 0–3 | Selfie, saliendo de la camper | VIVIMOS EN UNA CAMPER Y REVISAMOS FICHAS DE BARES. | «Hoy toca Santander. Vamos bar por bar mirando su ficha de Google.» |
 | 3–12 | Selfie caminando | 1 DE CADA 2 SIN EL FESTIVO. *(Solo si el dato sale de las visitas de esa tarde; si no, se quita.)* | «Les llevamos esto impreso: la nota de su ficha y tres cosas que se ven desde fuera. Gratis.» |
 | 12–20 | Manos con la hoja | RESEÑAS SIN CONTESTAR. HORARIOS VIEJOS. FESTIVOS SIN PONER. | «Lo que más se repite: reseñas sin contestar, horarios viejos y festivos sin poner.» |
-| 20–25 | Selfie | COMENTA «FICHA». | «¿Tienes un bar? Comenta "ficha" y te mandamos la tuya.» |
+| 20–25 | Selfie | ESCRÍBENOS «FICHA». | «¿Tienes un bar? Escríbenos "ficha" por mensaje y te mandamos la tuya.» |
 
 ### Vídeo 3, testimonio: «Le pusimos nota a la ficha de [bar]»
 
