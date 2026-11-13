@@ -59,7 +59,7 @@ Lo que solo puedes hacer tú: cuentas, consolas, servidor, decisiones y pruebas 
 
 ## Cobro con Stripe y factura en Odoo (`docs/admin-facturacion.md`, sección 8)
 
-- [ ] Cuenta de Stripe de Bitclick: alta, verificación y modo de prueba. Pásame solo que está lista; las claves nunca por el chat.
+- [x] Cuenta de Stripe de Bitclick: alta, verificación y modo de prueba. Pásame solo que está lista; las claves nunca por el chat.
 - [ ] Gestoría: confirmar los puntos marcados «(gestoría)» del documento, sobre todo la fecha de VERI\*FACTU y la serie de facturas de Fichaitor en Odoo.
 - [ ] Alta en el ROI (operadores intracomunitarios), para vender a la UE con NIF-IVA, y presentar el modelo 349 cuando toque.
 - [ ] Odoo de Bitclick (sin módulos nuevos), valores en `billing.env` del servidor:
@@ -71,7 +71,7 @@ Lo que solo puedes hacer tú: cuentas, consolas, servidor, decisiones y pruebas 
   - [ ] Redondeo de impuestos por línea en la compañía.
   - [ ] Opcional: posiciones fiscales (`FICHAITOR_ODOO_FPOS_*`) y el campo de estado de VERI\*FACTU (`FICHAITOR_ODOO_VERIFACTU_FIELD`), según la gestoría.
 - [ ] Stripe en modo de prueba: clave restringida `rk_test_…` con los permisos mínimos de `docs/contrato-web-api.md` («Cobro y paywall»), solo en `billing.env`.
-- [ ] Ejecutar `scripts/stripe_bootstrap.py` (primero con `--dry-run`) para crear productos, precios y Tax Rates en modo de prueba.
+- [x] Ejecutar `scripts/stripe_bootstrap.py` (primero con `--dry-run`) para crear productos, precios y Tax Rates en modo de prueba.
 - [ ] Webhook de prueba en Stripe hacia `/api/v1/webhooks/stripe` con los eventos del contrato; su secreto `whsec_…` en `api.env` con `FICHAITOR_STRIPE_LIVEMODE=false`.
 - [ ] En Stripe: desactivar los reintentos automáticos de cobro, dejar solo tarjeta y el portal solo para cambiar el método de pago.
 - [ ] Antes de activar el cobro: avisar a la sesión de interfaz para pasar Stripe a proveedores activos en la política de privacidad.
