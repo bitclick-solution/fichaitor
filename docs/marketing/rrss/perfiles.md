@@ -85,7 +85,9 @@ Cada botón admite unos 18 caracteres.
 
 > **Importante:** Ningún botón puede llevar dos palabras clave de reglas distintas. Por ejemplo, «¿Cuánto cuesta la ficha?» activaría dos respuestas. Si cambias un botón, comprueba la tabla de palabras clave.
 
-Después de guardarlos, ábrelos en **Previsualizar**, pulsa cada botón y comprueba que llega la respuesta correcta.
+**Cómo se comprueba.** Previsualizar no ejecuta las respuestas automáticas. Hay que probarlo de verdad: desde otra cuenta de TikTok (por ejemplo, tu personal), abre el chat con `@fichaitor`, pulsa cada botón y comprueba que llega la respuesta correcta.
+
+**Si la respuesta no llega**, TikTok no aplica las palabras clave a los mensajes de los botones. En ese caso, borra las instrucciones de chat y deja solo las **preguntas recomendadas**, que enseñan la respuesta al pulsarlas sin depender de las palabras clave.
 
 #### Mensaje de bienvenida
 
