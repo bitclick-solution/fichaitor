@@ -211,7 +211,7 @@ CORREOS = {
         [
             b(
                 "parrafo",
-                texto=f"No hemos podido cobrar 42,35 € del plan de {FICHA}: la tarjeta ha sido rechazada. Hasta que se pague, tu cuenta queda en pausa.",
+                texto=f"Tu cuenta está en pausa porque no hemos podido cobrar 42,35 € del plan de {FICHA}: la tarjeta ha sido rechazada.",
             ),
             b("boton", etiqueta="Pagar ahora", enlace="https://fichaitor.es/app#pagar"),
             b(

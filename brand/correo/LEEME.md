@@ -188,7 +188,7 @@ Todas las variables llegan **ya formateadas** y se escapan como las demás:
 | `${numero}`, `${numero_original}` | `FCH/2027/00042` (número de Odoo) |
 | `${fecha}`, `${fecha_renovacion}`, `${fecha_fin}` | `14 de marzo de 2027` (sin hora) |
 | `${importe}` | `42,35 €` (total con IVA; en Canarias, Ceuta y Melilla, sin IVA) |
-| `${plan}` | `Pro` o `Pro WhatsApp` |
+| `${plan}` | `Pro` o `Pro+` (el plan `pro_whatsapp`: Pro con avisos por WhatsApp) |
 | `${ficha}` | `Bar La Parra` |
 | `${periodo}` | `del 14/03/2027 al 13/03/2028` |
 | `${motivo}` | `la tarjeta ha sido rechazada` o `falta confirmar el pago con tu banco` (en minúscula, sin punto final) |
@@ -302,7 +302,7 @@ Cuando un cobro falla o no se completa. Sin alarma: dice qué ha pasado, cómo s
 
 Cuerpo, en este orden:
 
-1. `parrafo`: «No hemos podido cobrar ${importe} del plan de ${ficha}: ${motivo}. Hasta que se pague, tu cuenta queda en pausa.»
+1. `parrafo`: «Tu cuenta está en pausa porque no hemos podido cobrar ${importe} del plan de ${ficha}: ${motivo}.»
 2. `boton`: «Pagar ahora», ${enlace}
 3. `parrafo`: «Durante la pausa, Fichaitor no lee ninguna de tus fichas, tampoco la del plan Gratis, no te envía avisos ni aplica cambios. No se ha borrado nada y la pausa no borra nada: en cuanto se pague, todo vuelve a funcionar.»
 4. `parrafo`: «Mientras tanto, en el panel puedes seguir usando Facturación, desactivar fichas, desvincular chats, desconectar Google o darte de baja.»
@@ -312,7 +312,7 @@ Texto plano:
 ```text
 CUENTA EN PAUSA
 
-No hemos podido cobrar ${importe} del plan de ${ficha}: ${motivo}. Hasta que se pague, tu cuenta queda en pausa.
+Tu cuenta está en pausa porque no hemos podido cobrar ${importe} del plan de ${ficha}: ${motivo}.
 
 Pagar ahora: ${enlace}
 

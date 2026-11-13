@@ -56,7 +56,7 @@ Si desactivas una ficha en «Tus negocios», dejamos de leerla y de avisarte de 
 
 Si Google deja de darnos acceso a una ficha, por ejemplo porque te han quitado como gestor, la ficha deja de mostrarse en tu panel y lo guardado de ella se borra a los 30 días, salvo que vuelvas a conectar antes con una cuenta que la gestione.
 
-Si tu cuenta queda en pausa por un pago pendiente, dejamos de leer tus fichas, pero la pausa no borra nada ni pone en marcha ningún plazo de borrado mientras dure. Durante la pausa puedes darte de baja o desconectar Google en cualquier momento.
+Si tu cuenta queda en pausa porque no hemos podido cobrar, dejamos de leer tus fichas, pero la pausa no borra nada ni pone en marcha ningún plazo de borrado mientras dure. Durante la pausa puedes darte de baja o desconectar Google en cualquier momento.
 
 ### Para qué los usamos
 
@@ -144,7 +144,7 @@ Los siguientes proveedores todavía no tratan ningún dato: lo harán cuando se 
 
 | Proveedor | Para qué | Qué datos verá | Dónde trata |
 |---|---|---|---|
-| WhatsApp Ireland Ltd. / Meta Platforms Ireland Ltd. | Envío y recepción de mensajes por WhatsApp (plan Pro WhatsApp) | Tu número de teléfono y el contenido de los mensajes | Unión Europea y Estados Unidos |
+| WhatsApp Ireland Ltd. / Meta Platforms Ireland Ltd. | Envío y recepción de mensajes por WhatsApp (plan Pro+, Pro con avisos por WhatsApp) | Tu número de teléfono y el contenido de los mensajes | Unión Europea y Estados Unidos |
 | Stripe Payments Europe Ltd. | Cobro de los planes de pago, como encargado. Para la prevención del fraude y del blanqueo de capitales, Stripe actúa como responsable independiente, según su propia política de privacidad | Razón social, NIF, dirección y correo para las facturas, y los datos del medio de pago, que recoge Stripe directamente. Nunca datos obtenidos de Google | Unión Europea y Estados Unidos |
 | Google Ireland Ltd. | Google Analytics, solo si aceptas la categoría analítica | Identificador de cookie, páginas vistas y datos de navegación | Unión Europea y Estados Unidos |
 | TikTok Technology Ltd. | Píxel de TikTok, solo si aceptas la categoría de publicidad | Identificador de cookie y eventos de navegación | Unión Europea y terceros países |

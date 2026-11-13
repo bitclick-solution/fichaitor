@@ -292,7 +292,7 @@ export function TusNegocios({
             <strong>Pro:</strong> {importe(precios, precios.plans.pro.first)}; desde la segunda ficha de pago, {importe(precios, precios.plans.pro.additional)}.
           </p>
           <p>
-            <strong>Pro+ (con WhatsApp):</strong> {importe(precios, precios.plans.pro_whatsapp.first)}; desde la segunda ficha de pago,{" "}
+            <strong>Pro+ (Pro con avisos por WhatsApp):</strong> {importe(precios, precios.plans.pro_whatsapp.first)}; desde la segunda ficha de pago,{" "}
             {importe(precios, precios.plans.pro_whatsapp.additional)}.
           </p>
           {precios.charging && (

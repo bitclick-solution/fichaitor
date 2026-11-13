@@ -15,9 +15,9 @@ Fichaitor es un producto de Bitclick Solutions S.L.U. (Atarfe, Granada, España)
 
 Precios de lanzamiento previstos, por ficha y al año, sin IVA, para empresas y autónomos:
 
-- Gratis: 0 €. Diagnóstico, avisos de reseñas y 25 respuestas redactadas al mes.
+- Gratis: 0 €. Diagnóstico, avisos de reseñas y 25 respuestas redactadas gratis por ficha (una sola vez, no se recargan).
 - Pro: 35 €. Respuestas ilimitadas, festivos y fechas clave, modo automático opcional.
-- Pro WhatsApp: 59 €. Lo mismo que Pro, por WhatsApp.
+- Pro+ (Pro con avisos por WhatsApp): 59 €. Lo mismo que Pro, por WhatsApp.
 
 ## Enlaces
 

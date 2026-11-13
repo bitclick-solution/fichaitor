@@ -298,11 +298,12 @@ export function Facturacion({
   );
 }
 
+// Detalle del motivo, debajo de la frase común «Tu cuenta está en pausa porque no hemos podido cobrar.»
 const MOTIVO: Record<string, string> = {
-  payment_failed: "No hemos podido cobrar un pago de tu cuenta: la tarjeta ha sido rechazada.",
-  action_required: "Tu banco pide que confirmes un pago de tu cuenta y todavía no se ha confirmado.",
+  payment_failed: "La tarjeta ha sido rechazada.",
+  action_required: "Tu banco pide que confirmes el pago y todavía no se ha confirmado.",
   dispute: "Se ha abierto una reclamación sobre un pago de tu cuenta.",
-  manual_unpaid: "Tienes un pago pendiente en tu cuenta.",
+  manual_unpaid: "Hay una factura sin pagar.",
 };
 
 /**
@@ -372,9 +373,12 @@ export function CuentaEnPausa({
   return (
     <section className="pantalla en-pausa">
       <h1 className="cartel">
-        Tu cuenta está en pausa<span className="pt">.</span>
+        Cuenta en pausa<span className="pt">.</span>
       </h1>
-      <p className="lead">{(bloqueo && MOTIVO[bloqueo.reason]) ?? "Tienes un pago pendiente en tu cuenta."}</p>
+      {/* La misma frase que el bot, la API y el correo. */}
+      <p className="lead">
+        Tu cuenta está en pausa porque no hemos podido cobrar. {bloqueo && MOTIVO[bloqueo.reason]}
+      </p>
       <p>
         Hasta que se pague, Fichaitor no lee ninguna de tus fichas, tampoco la del plan Gratis, no te envía avisos ni aplica cambios. No se ha
         borrado nada y la pausa no borra nada: en cuanto se pague, todo vuelve a funcionar.
