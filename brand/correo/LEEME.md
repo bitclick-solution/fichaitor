@@ -6,17 +6,18 @@ Plantillas con la marca para los correos automáticos que envía el backend. Reg
 
 | Archivo | Qué es |
 |---|---|
-| `base.html` | El marco: símbolo «F.», caja con borde de tinta sobre papel, titular con el punto rojo y pie legal. Variables: `${asunto}`, `${preencabezado}`, `${titular}`, `${contenido}`, `${motivo}` |
-| `bloques.html` | Las piezas del cuerpo: `parrafo` (`${texto}`), `codigo` (`${codigo}`), `boton` (`${enlace}`, `${etiqueta}`), `aviso` (`${texto}`), `dato` (`${etiqueta}`, `${valor}`: una fila de una tabla de datos), `datos_fin` (sin variables: cierra la tabla de datos) y `destacado` (`${texto}`: un recuadro sin alarma) |
+| `base.html` | El marco: símbolo «F.», caja con borde de tinta sobre papel, titular con el punto rojo y pie legal. Variables: `${asunto}`, `${preencabezado}`, `${titular}`, `${contenido}`, `${motivo}`, `${baja}` |
+| `bloques.html` | Las piezas del cuerpo: `parrafo` (`${texto}`), `codigo` (`${codigo}`), `boton` (`${enlace}`, `${etiqueta}`), `aviso` (`${texto}`), `dato` (`${etiqueta}`, `${valor}`: una fila de una tabla de datos), `datos_fin` (sin variables: cierra la tabla de datos) y `destacado` (`${texto}`: un recuadro sin alarma). Y una pieza del pie: `baja` (`${enlace_baja}`), solo para las comunicaciones comerciales |
 | `vista.py` | Genera en `vista/` una página por correo con datos de ejemplo, para revisarlos en el navegador. Rellena las plantillas igual que debe hacerlo el backend |
 
 ## Cómo se usan
 
 1. Con `string.Template` de la biblioteca estándar de Python. No hace falta ninguna dependencia.
 2. **Escapa cada valor antes de sustituirlo** con `html.escape(valor)`. Por defecto escapa también las comillas, que es lo que necesitan los enlaces dentro de `href="…"`. Las plantillas no escapan nada.
-3. Rellena los bloques del cuerpo en el orden de la tabla de cada correo y concaténalos en `${contenido}`. `${contenido}` es lo único que no se escapa, porque ya es HTML de los bloques.
-4. Usa `substitute`, no `safe_substitute`: si falta una variable, mejor un error que un correo con `${hueco}` a la vista.
-5. Envía siempre también la versión de texto plano (`multipart/alternative`). Está al final de cada correo.
+3. Rellena los bloques del cuerpo en el orden de la tabla de cada correo y concaténalos en `${contenido}`. `${contenido}` y `${baja}` son lo único que no se escapa, porque ya son HTML de los bloques.
+4. `${baja}` es la cadena vacía en todos los correos menos en la comunicación comercial (apartado 12), que lleva ahí el bloque `baja` relleno.
+5. Usa `substitute`, no `safe_substitute`: si falta una variable, mejor un error que un correo con `${hueco}` a la vista.
+6. Envía siempre también la versión de texto plano (`multipart/alternative`). Está al final de cada correo.
 
 ### Cabeceras
 
@@ -447,3 +448,62 @@ Después, el plan se renueva solo cada año, salvo que canceles la renovación. 
 
 Te avisamos 7 días antes del primer cobro de una plaza contratada durante la beta, como dicen las condiciones de uso.
 ```
+
+## Comunicaciones desde el backoffice
+
+### 12. Comunicación (`comunicacion`)
+
+La redacta una persona con el rol propietario en el backoffice y la envía el worker en cola (diseño en `docs/admin-facturacion.md`, anexo «Comunicaciones por correo desde el backoffice»). Hay dos tipos, y solo cambia el pie:
+
+| Tipo | Para qué | A quién | Pie |
+|---|---|---|---|
+| **Servicio** | Cambios en el producto o en las condiciones, incidencias, fin de la beta | Todas las cuentas del público elegido | Motivo de servicio. `${baja}` vacío |
+| **Comercial** | Ofertas, novedades con intención de venta, boletín | Solo las cuentas que no se han dado de baja de las comunicaciones comerciales | Motivo comercial y el bloque `baja` con su `${enlace_baja}` |
+
+Si dudas entre los dos, es comercial: un correo de servicio que vende algo deja de ser de servicio (LSSI, art. 21).
+
+| Campo | Valor |
+|---|---|
+| Asunto | `${asunto}`, lo que escribe quien redacta |
+| Preencabezado | `${preencabezado}`, lo que escribe quien redacta |
+| Titular | `${titular}`, lo que escribe quien redacta, **sin punto final**: la plantilla ya pone el punto rojo |
+| Motivo (pie), servicio | Te escribimos porque tienes una cuenta en Fichaitor y esto afecta a tu servicio. |
+| Motivo (pie), comercial | Te escribimos porque eres cliente de Fichaitor. |
+| `${baja}` | Servicio: la cadena vacía. Comercial: el bloque `baja` con `${enlace_baja}` |
+
+Cuerpo, en este orden:
+
+1. `parrafo`: el primer párrafo.
+2. `boton` (opcional): «${etiqueta}», ${enlace}. Va detrás del primer párrafo, como en el resto de correos: una sola acción y arriba.
+3. `parrafo`: cada uno de los párrafos siguientes, en su orden.
+
+Lo que redacta la persona son datos, no HTML: cada valor se escapa con `html.escape` como en el resto de correos, también los párrafos. Un salto de línea dentro de un párrafo no se convierte en `<br>`: cada párrafo es un bloque `parrafo`.
+
+Reglas para el backend:
+
+- `${enlace}` del botón: solo `https://fichaitor.es/…`. Se rechaza cualquier otro esquema o dominio al guardar la comunicación, no al enviarla.
+- `${enlace_baja}`: `https://fichaitor.es/baja-comunicaciones#<token>`, con un token por cuenta que monta el backend. En el fragmento, como el resto de tokens.
+- Comercial: además, las cabeceras `List-Unsubscribe` (con la URL de baja de un clic que decida el backend, que reciba un `POST`) y `List-Unsubscribe-Post: List-Unsubscribe=One-Click` (RFC 8058). Gmail y Yahoo las piden a quien envía en volumen.
+- Nada obtenido de Google en el texto, como en el resto de correos.
+- Topes recomendados, que valida el backoffice y el backend: asunto, 90 caracteres; preencabezado, 120; titular, 40 (va en mayúsculas y grande: tres o cuatro palabras); etiqueta del botón, 30; de 1 a 8 párrafos de hasta 1000 caracteres.
+
+Texto plano. Las dos líneas del botón (la del enlace y la línea en blanco que la sigue) solo van si hay botón; la línea de la baja solo en la comercial:
+
+```text
+${TITULAR}
+
+${parrafo_1}
+
+${etiqueta}: ${enlace}
+
+${parrafo_2}
+
+${parrafo_n}
+
+${motivo}
+Darme de baja de estas comunicaciones: ${enlace_baja}
+```
+
+`${TITULAR}` es el titular en mayúsculas, como en el resto de correos de texto plano.
+
+Ejemplos en `vista.py`: `12-comunicacion-servicio` (un cambio en las condiciones de uso) y `12-comunicacion-comercial` (una novedad, con botón).

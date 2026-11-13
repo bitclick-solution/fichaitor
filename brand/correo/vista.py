@@ -38,14 +38,22 @@ def datos(*filas: tuple[str, str]) -> list[str]:
     return [b("dato", etiqueta=e, valor=v) for e, v in filas] + [BLOQUES["datos_fin"].substitute()]
 
 
-def correo(asunto: str, pre: str, titular: str, bloques: list[str], motivo: str) -> str:
+def correo(asunto: str, pre: str, titular: str, bloques: list[str], motivo: str, baja: str = "") -> str:
+    """`baja`: el bloque `baja` ya relleno, solo en las comunicaciones comerciales; en el resto, vacío."""
     return BASE.substitute(
         asunto=html.escape(asunto),
         preencabezado=html.escape(pre),
         titular=html.escape(titular),
         contenido="\n".join(bloques),
         motivo=html.escape(motivo),
+        baja=baja,
     )
+
+
+# Comunicaciones desde el backoffice (apartado 12 de LEEME.md): solo cambia el pie.
+MOTIVO_SERVICIO = "Te escribimos porque tienes una cuenta en Fichaitor y esto afecta a tu servicio."
+MOTIVO_COMERCIAL = "Te escribimos porque eres cliente de Fichaitor."
+BAJA = "https://fichaitor.es/baja-comunicaciones#ejemplo-de-token-de-baja"
 
 
 CORREOS = {
@@ -319,6 +327,46 @@ CORREOS = {
             ),
         ],
         "Te avisamos 7 días antes del primer cobro de una plaza contratada durante la beta, como dicen las condiciones de uso.",
+    ),
+    # ── Comunicaciones desde el backoffice (textos de ejemplo: los escribe quien envía) ──
+    "12-comunicacion-servicio": correo(
+        "Cambian las condiciones de uso de Fichaitor el 1 de febrero de 2027",
+        "Qué cambia y qué puedes hacer si no estás de acuerdo.",
+        "Cambian las condiciones",
+        [
+            b(
+                "parrafo",
+                texto="El 1 de febrero de 2027 cambian las condiciones de uso de Fichaitor. Te contamos qué cambia antes de que entre en vigor.",
+            ),
+            b("boton", etiqueta="Leer las condiciones", enlace="https://fichaitor.es/condiciones-de-uso/"),
+            b(
+                "parrafo",
+                texto="Explicamos mejor cuándo borramos lo que tenemos de una ficha desactivada y cómo pedir la factura a nombre de tu empresa. "
+                "Los precios y lo que incluye cada plan no cambian.",
+            ),
+            b(
+                "parrafo",
+                texto="Si no estás de acuerdo, puedes darte de baja desde Ajustes antes de esa fecha, sin ningún coste. Si sigues usando Fichaitor "
+                "después, se aplicarán las condiciones nuevas.",
+            ),
+        ],
+        MOTIVO_SERVICIO,
+    ),
+    "12-comunicacion-comercial": correo(
+        "Novedad en Fichaitor: contesta tus reseñas desde WhatsApp",
+        "Te avisamos de cada reseña nueva y la respondes desde el mismo chat.",
+        "Reseñas por WhatsApp",
+        [
+            b(
+                "parrafo",
+                texto="Con el plan Pro+, Fichaitor te avisa por WhatsApp cuando entra una reseña nueva en tu ficha. Te propone una respuesta "
+                "y la publicas desde el mismo chat, sin abrir el panel.",
+            ),
+            b("boton", etiqueta="Ver el plan Pro+", enlace=FACTURACION),
+            b("parrafo", texto="Puedes pasar a Pro+ cualquier ficha desde Facturación. Nada se publica en tu ficha sin que lo confirmes."),
+        ],
+        MOTIVO_COMERCIAL,
+        BLOQUES["baja"].substitute(enlace_baja=html.escape(BAJA, quote=True)),
     ),
 }
 
