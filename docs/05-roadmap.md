@@ -116,7 +116,7 @@ Orden propuesto, a confirmar con lo que pidan los clientes:
 
 - Precios y descuento por volumen editables desde el backoffice.
 - Ofertas con inicio y fin que cambian el precio que ve la web mientras están vigentes.
-- Por madurar: avisos dentro del panel creados desde el backoffice (ver `docs/admin-facturacion.md`, anexo de precios y ofertas).
+- Avisos en el panel como **banner discreto**, creados desde el backoffice con inicio y fin (ver `docs/admin-facturacion.md`, anexo de precios y ofertas).
 
 ## Ideas para después del MVP
 

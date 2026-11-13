@@ -906,7 +906,7 @@ Todas consultadas el 2026-11-13. Las del BOE y la AEAT no se pudieron abrir con 
 5. `docker-compose.yml`: montar `db/schema_admin.sql` en `initdb` como último archivo.
 6. `deploy/init-roles.sh`: usuario `fichaitor_admin_prod IN ROLE fichaitor_admin`, sin `TEMPORARY`; volver a aplicar `schema_admin.sql` después.
 7. `deploy/deploy.sh`: aplicar `schema_admin.sql` el último (concede las tablas de cobro que encuentre; si se aplica antes, basta con reaplicarlo).
-8. Paso 2 o 12, cuando existan las tablas de cobro: `admin_grant_entitlement`, `admin_request_refund`, cerrar un bloqueo (rol propietario), las funciones de finanzas con dirección e `invoice_email`, y métricas y embudo. Mismo patrón: `admin_actor`, fila en `admin_audit_write` y `GRANT EXECUTE`.
+8. Paso 2 o 12, cuando existan las tablas de cobro: `admin_grant_entitlement`, `admin_request_refund`, cerrar un bloqueo (rol propietario), las funciones de finanzas con dirección e `invoice_email`, y métricas y embudo. Mismo patrón: `admin_actor`, fila en `admin_audit_write` y `GRANT EXECUTE`. **Hecho en el paso 12** (2026-11-13): `admin_grant_entitlement`, `admin_trim_entitlement`, `admin_close_block`, `admin_request_refund`, `admin_account_overview`, `admin_account_billing`, `admin_billing_contact`, `admin_billing_review`, `admin_health_summary` y `admin_metrics`, más `admin_session_pending_user` y `admin_session_username` para el inicio de sesión. El contrato HTTP está en `docs/contrato-backoffice.md`.
 9. Paso 13: purga de `admin_audit_log` a los 2 años (el disparador ya lo permite; falta quién la hace).
 10. Paso 13: `scripts/baja_manual.py` pasa a llamar a `fichaitor_email_offboarding(NULL, …)`, con `p_immediate = true` para `--inmediata`.
 
@@ -924,6 +924,6 @@ Límite asumido: la contraseña y el TOTP se comprueban en el proceso `fichaitor
    - En Stripe: cupón o precio específico aplicado en el Checkout; se decide en su diseño.
    - Reglas por decidir en el diseño: si la oferta dura solo el primer año o también las renovaciones, si se acumula con el 5 % por volumen y si aplica a las cuentas beta en su ventana.
 
-**Idea por madurar (no decidida): avisos dentro del panel** (`/app`), creados desde el backoffice, por ejemplo para invitar a una newsletter o anunciar una novedad.
+**Decidido (2026-11-13): avisos en el panel como banner discreto** (no modal) en `/app`, creados desde el backoffice con inicio y fin, por ejemplo para invitar a una newsletter o anunciar una novedad.
 - Opinión del PM: útil para anunciar novedades y pedir opiniones durante la beta. Con condiciones: que se pueda cerrar y no vuelva a salir, con un tope de frecuencia, nunca bloqueante, y sin datos personales en el texto. Si se usa para una newsletter, el alta tiene que ser un consentimiento expreso aparte (casilla sin marcar, con su base y su texto en la política), nunca implícito al cerrar el aviso.
-- Alternativa más sencilla: un banner discreto en lugar de un modal.
+- Formato: banner discreto, no modal (decisión del propietario).
