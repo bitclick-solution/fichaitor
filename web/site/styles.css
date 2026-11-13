@@ -119,7 +119,9 @@ h1, h2, h3, p { margin: 0; }
 .sec2 { color: var(--gris); }
 
 /* Entradas (solo con JS) */
-.ln { display: block; overflow: hidden; padding-bottom: 0.06em; margin-bottom: -0.06em; }
+/* El recorte de cada línea deja sitio arriba para las tildes de las mayúsculas (Ñ, Í, Ó…): sin el
+   padding superior, overflow:hidden cortaba la virgulilla de «RESEÑA». El margen negativo compensa. */
+.ln { display: block; overflow: hidden; padding-top: 0.16em; margin-top: -0.16em; padding-bottom: 0.06em; margin-bottom: -0.06em; }
 .ln > span { display: block; }
 .js .ln > span { transform: translateY(130%); }
 .js [data-sube] { opacity: 0; transform: translateY(36px); }
