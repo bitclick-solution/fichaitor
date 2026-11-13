@@ -386,7 +386,7 @@ def tax_treatment(country: object, postal_code: object, tax_id: object) -> TaxPr
 
 PRODUCT_NAME: Mapping[Plan, str] = {
     Plan.PRO: "Fichaitor Pro",
-    Plan.PRO_WHATSAPP: "Fichaitor Pro WhatsApp",
+    Plan.PRO_WHATSAPP: "Fichaitor Pro+ (con avisos por WhatsApp)",
 }
 ADDITIONAL_NOTE = "(segunda ficha y siguientes, 5 % de descuento)"
 MAX_TITLE_CHARS = 80

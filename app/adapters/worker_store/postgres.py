@@ -401,6 +401,8 @@ class PostgresWorkerStore:
         # outlives its review (12 months against 30 days).
         # Multinegocio (docs/multinegocio.md, section 4): and that its profile is still in
         # use in the account. One deactivated after the owner confirmed is not sent.
+        # Cobro (step 7 of docs/admin-facturacion.md): and that its account is not blocked
+        # for non-payment. One of a blocked account fails as billing_blocked.
         row = await self._pool.fetchrow(
             f"""
             UPDATE action a
@@ -418,7 +420,8 @@ class PostgresWorkerStore:
                           AND l.removed_at IS NULL) AS owned,
                 EXISTS (SELECT 1 FROM account c JOIN location l ON l.account_id = c.id
                         WHERE c.id = a.account_id AND l.gbp_location = a.location
-                          AND {_IN_USE}) AS active
+                          AND {_IN_USE}) AS active,
+                fichaitor_account_blocked(a.account_id) AS blocked
             """,  # noqa: S608
             action_id,
             job_id,
@@ -441,6 +444,7 @@ class PostgresWorkerStore:
             type=row["type"],
             special_date=row["special_date"],
             active=row["active"],
+            blocked=row["blocked"],
         )
 
     async def finish_action(
@@ -779,6 +783,17 @@ class PostgresWorkerStore:
             SELECT EXISTS (SELECT 1 FROM offboarding
                            WHERE google_sub = $1 AND restored_at IS NULL
                              AND effective_at IS NULL)
+            """,
+            google_sub,
+        )
+
+    async def billing_blocked(self, google_sub: str) -> bool:
+        # The same condition as the API and the conversation (db/schema_billing.sql). One
+        # Google user has one account (account.google_sub is unique).
+        return await self._pool.fetchval(
+            """
+            SELECT EXISTS (SELECT 1 FROM account c
+                           WHERE c.google_sub = $1 AND fichaitor_account_blocked(c.id))
             """,
             google_sub,
         )

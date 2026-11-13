@@ -36,6 +36,7 @@ RESULT_RECONNECT = "reconnect"
 RESULT_FAILED = "failed"
 RESULT_TOO_LATE = "too_late"  # special hours: the day passed before they could be sent
 RESULT_NO_REGULAR_HOURS = "no_regular_hours"  # "horario normal" without regular hours
+RESULT_BILLING_BLOCKED = "billing_blocked"  # the account is blocked for non-payment
 
 
 def inbound_key(channel: str, update_id: int) -> str:
@@ -63,6 +64,8 @@ def result_error(error_code: str | None) -> str | None:
         return RESULT_TOO_LATE
     if error_code == "no_regular_hours":
         return RESULT_NO_REGULAR_HOURS
+    if error_code == "billing_blocked":
+        return RESULT_BILLING_BLOCKED
     return RESULT_FAILED
 
 

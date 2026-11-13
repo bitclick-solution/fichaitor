@@ -148,6 +148,10 @@ class AnalyzeSentiment:
             # A scheduled leave: no review of that account goes to the model.
             log.event("account_suspended", job_id=job.id, kind=job.kind)
             return
+        if await self._store.billing_blocked(google_sub):
+            # Blocked for non-payment: no review goes to the model until it pays.
+            log.event("account_billing_blocked", job_id=job.id, kind=job.kind)
+            return
         now = self._clock()
         context = await self._store.sentiment_context(google_sub, location)
         reviews = await self._store.sentiment_reviews(google_sub, location)

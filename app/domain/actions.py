@@ -27,6 +27,9 @@ ERROR_SUSPENDED = "suspended"  # the account has a scheduled leave: nothing is s
 # Its profile stopped being active after it was confirmed (multinegocio): nothing is sent.
 # The same code as the outcome of the proposals cancelled then (OUTCOME_LOCATION_INACTIVE).
 ERROR_LOCATION_INACTIVE = "location_inactive"
+# The account is blocked for non-payment (step 7 of docs/admin-facturacion.md): nothing is
+# sent to Google until it pays. The action is not kept waiting: it fails.
+ERROR_BILLING_BLOCKED = "billing_blocked"
 # Special hours only.
 ERROR_DATE_PASSED = "date_passed"  # its day had passed before it could be applied
 ERROR_NO_REGULAR_HOURS = "no_regular_hours"  # "horario normal" without regular hours
@@ -57,12 +60,17 @@ MSG_RUNNING = "Estamos enviando tu respuesta a Google."
 # "Enviada", never "publicada": Google reviews the reply and may take a while to show it.
 MSG_DONE = "Enviada a Google. Puede tardar unos minutos en verse en tu ficha."
 MSG_RECONNECT = "Tu acceso a Google ha caducado; vuelve a conectar."
+MSG_BILLING_BLOCKED = (
+    "No se ha enviado: tu cuenta está en pausa porque no hemos podido cobrar. "
+    "Paga desde Facturación y vuelve a intentarlo."
+)
 _FAILED_MESSAGES = {
     ERROR_RECONNECT: MSG_RECONNECT,
     ERROR_REJECTED: "Google no ha aceptado la respuesta. Revisa el texto y vuelve a enviarla.",
     ERROR_REVIEW_GONE: "Esa reseña ya no está en Google. No hay nada que responder.",
     ERROR_SUSPENDED: "No se ha enviado: tienes una baja programada.",
     ERROR_LOCATION_INACTIVE: "No se ha enviado: esa ficha ya no está activa.",
+    ERROR_BILLING_BLOCKED: MSG_BILLING_BLOCKED,
     ERROR_UNAVAILABLE: (
         "No hemos podido enviar tu respuesta a Google. Prueba otra vez en unos minutos."
     ),
@@ -79,6 +87,7 @@ _HOURS_FAILED_MESSAGES = {
     ERROR_REJECTED: "Google no ha aceptado ese horario. Tu ficha sigue como estaba.",
     ERROR_SUSPENDED: "No se ha enviado: tienes una baja programada.",
     ERROR_LOCATION_INACTIVE: "No se ha enviado: esa ficha ya no está activa.",
+    ERROR_BILLING_BLOCKED: MSG_BILLING_BLOCKED,
     ERROR_DATE_PASSED: (
         "Ese día ya ha pasado y no se ha podido aplicar a tiempo. No se ha cambiado nada."
     ),

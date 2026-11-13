@@ -11,6 +11,9 @@ Same rules as `MemoryConversationStore`, plus what only a database gives:
   docs/seguridad/revision-2026-11-12.md): the attempt of a chat is counted before its
   code is looked at, and the wrong codes of every chat together are counted per window.
 - No row is deleted here: the role has no DELETE. Leaving and retention are the worker's.
+- Cobro (step 7 of docs/admin-facturacion.md): an account blocked for non-payment
+  (`fichaitor_account_blocked`, the condition the API and the worker use too) is left out
+  of the planner, of the review targets, of the key dates and of the lanes with work.
 - Multinegocio (docs/multinegocio.md, step 6a): one lane per profile
   (`conversation_lane`), the filter of each chat and its focus. A new proposal must be
   of an active profile of its account: the database refuses it otherwise
@@ -28,6 +31,7 @@ import asyncpg
 
 from app.domain.channel_messages import business_label
 from app.domain.conversation import (
+    BILLING_NOTICE_EVERY,
     DEFAULT_TIMEZONE,
     AccountInfo,
     ChannelIdentity,
@@ -678,6 +682,7 @@ class PostgresConversationStore:
                 WHERE p.state = ANY($1::text[]) AND p.location_id IS NOT NULL
                   AND NOT EXISTS (SELECT 1 FROM offboarding o
                                   WHERE o.account_id = p.account_id AND {_SCHEDULED})
+                  AND NOT fichaitor_account_blocked(p.account_id)
                 ORDER BY 1, 2
                 """,  # noqa: S608
                 _UNFINISHED,
@@ -693,6 +698,31 @@ class PostgresConversationStore:
                 """,  # noqa: S608
                 account_id,
             )
+
+    async def billing_blocked(self, account_id: str) -> bool:
+        async with self._conn() as conn:
+            return await conn.fetchval("SELECT fichaitor_account_blocked($1::uuid)", account_id)
+
+    async def claim_paused_notice(self, account_id: str, now: datetime) -> bool:
+        # One statement: two messages at once tell the account once.
+        async with self._conn() as conn:
+            await conn.execute(
+                "INSERT INTO conversation (account_id) VALUES ($1::uuid) ON CONFLICT DO NOTHING",
+                account_id,
+            )
+            claimed = await conn.fetchval(
+                """
+                UPDATE conversation SET billing_notice_at = $2, updated_at = now()
+                WHERE account_id = $1::uuid
+                  AND (billing_notice_at IS NULL
+                       OR billing_notice_at <= $2::timestamptz - $3::interval)
+                RETURNING 1
+                """,
+                account_id,
+                now,
+                BILLING_NOTICE_EVERY,
+            )
+        return claimed is not None
 
     # --- messages -----------------------------------------------------------------------
 
@@ -905,10 +935,10 @@ class PostgresConversationStore:
 
     async def review_targets(self, review_id: str) -> ReviewTarget | None:
         """The review and whom it may be proposed to (ReviewTarget.targets): every
-        active profile with it (same Google user and profile), of an account not deleted
-        and without a scheduled leave, whose last sync is "ok" (docs/multinegocio.md,
-        6.5) and with an address that sees that profile linked before the review was
-        written."""
+        active profile with it (same Google user and profile), of an account not deleted,
+        without a scheduled leave and not blocked for non-payment, whose last sync is
+        "ok" (docs/multinegocio.md, 6.5) and with an address that sees that profile
+        linked before the review was written."""
         async with self._conn() as conn:
             row = await conn.fetchrow(
                 """
@@ -934,6 +964,7 @@ class PostgresConversationStore:
                 WHERE r.id = $1 AND a.deleted_at IS NULL
                   AND NOT EXISTS (SELECT 1 FROM offboarding o
                                   WHERE o.account_id = a.id AND {_SCHEDULED})
+                  AND NOT fichaitor_account_blocked(a.id)
                   AND (SELECT min(ci.verified_at) FROM channel_identity ci
                        WHERE ci.account_id = a.id AND ci.unlinked_at IS NULL
                          AND (ci.location_filter IS NULL OR l.id = ANY(ci.location_filter)))
@@ -953,8 +984,9 @@ class PostgresConversationStore:
 
     async def linked_profiles(self) -> list[tuple[str, str]]:
         """(google_sub, Google location) of every active profile of an account not
-        deleted and without a scheduled leave, with a linked address that sees it: what
-        the planner keeps in sync."""
+        deleted, without a scheduled leave and not blocked for non-payment, with a linked
+        address that sees it: what the planner keeps in sync. Once a blocked account
+        pays, its profiles are back in the next round."""
         async with self._conn() as conn:
             rows = await conn.fetch(
                 """
@@ -969,6 +1001,7 @@ class PostgresConversationStore:
                   AND NOT EXISTS (SELECT 1 FROM offboarding o
                                   WHERE o.google_sub = a.google_sub
                                     AND o.restored_at IS NULL AND o.purged_at IS NULL)
+                  AND NOT fichaitor_account_blocked(a.id)
                 ORDER BY 1, 2
                 """
             )
@@ -992,6 +1025,7 @@ class PostgresConversationStore:
                   AND NOT EXISTS (SELECT 1 FROM offboarding o
                                   WHERE o.google_sub = a.google_sub
                                     AND o.restored_at IS NULL AND o.purged_at IS NULL)
+                  AND NOT fichaitor_account_blocked(a.id)
                 ORDER BY a.id, l.id
                 """
             )

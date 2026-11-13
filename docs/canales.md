@@ -135,6 +135,22 @@ Seis dígitos de un chat vinculado son un código, salvo que alguna propuesta qu
 - **Limpieza perezosa.** En cada `tick`, si la ficha de un carril ya no está activa (la desactivó el dueño, el worker la retiró o una reconexión la dejó fuera), sus propuestas sin confirmar pasan a `cancelada` con `outcome_reason = 'location_inactive'`, **sin enviar nada**, y su carril queda libre. Lo que está en `ejecutando` sigue su curso.
 - Sus botones responden `stale.inactive`.
 
+### Cuenta en pausa por impago
+
+Paso 7 de `docs/admin-facturacion.md`, con las decisiones del propietario de sus secciones 1.1 y 9.0: un impago bloquea **toda la cuenta**, también la ficha Gratis, **sin límite de tiempo**, hasta que se paga. La pausa no borra nada. La condición es `fichaitor_account_blocked(cuenta)`, la misma de la API y del worker.
+
+- **No se crea ninguna propuesta.** `submit_review` y `submit_key_date` devuelven `None`. Además, `review_targets`, `linked_profiles` y `key_date_profiles` dejan fuera la cuenta: el planificador no la sincroniza ni le planifica fechas clave, y `propose_review` no se la propone.
+- **No se entrega ni se recuerda nada.** `tick`, `_pump` y la entrega se saltan la cuenta, y `lanes_with_open_work` no devuelve sus carriles.
+- **Las propuestas abiertas se quedan como están.** No se cancelan ni caducan mientras dura el bloqueo. Al pagar, el siguiente `tick` las retoma donde estaban: recordatorios, caducidades (por ejemplo, una fecha clave que ya ha pasado) y entregas.
+- **Si el dueño escribe**, como mucho una vez al día por cuenta (`conversation.billing_notice_at`, reclamado con un solo `UPDATE`), recibe `billing.paused`:
+
+  > Tu cuenta está en pausa porque no hemos podido cobrar. Paga desde Facturación, en el panel, y todo vuelve a funcionar. `<base>/app`
+
+  El mensaje entrante se guarda como siempre. El resto del día, sus mensajes no tienen respuesta.
+- **Los botones de sus propuestas** no actúan: responden con el mismo texto, como mensaje si toca el aviso del día o como aviso del canal (`answerCallbackQuery`) si no.
+- **`/ayuda` y `/privacidad`** responden siempre.
+- **Una acción ya confirmada** que llega al worker con la cuenta bloqueada acaba `fallida` con `billing_blocked`, sin llamar a Google. `channel_action_result` cierra la propuesta como `fallida` y envía `billing.paused` a los chats que ven esa ficha.
+
 ### Límite semanal por ficha
 
 El límite semanal se cuenta por ficha (`count_capped_sent_since(..., location_id=)`): cada negocio recibe su servicio. El horario de silencio sigue siendo el de la cuenta.
@@ -362,12 +378,12 @@ Tres roles. La API es la sesión web; la conversación (`fichaitor_conversation`
 | `link_failure_window` | Códigos incorrectos de todos los chats, por hora | Nada | Lee y suma en una sentencia |
 | `channel_sender` | Direcciones sin vincular, por huella: intentos, bloqueo y última respuesta genérica | Nada | Lee y escribe |
 | `proposal` | Propuestas con su estado, paso, testigo y confirmación registrada | Lee | Crea y mueve. No puede cambiar la cuenta, el tipo, el origen ni `payload` |
-| `conversation` | Un hilo por cuenta: el bloqueo y los textos no entendidos. Su `active_proposal_id` se borró en el paso 9: la propuesta activa de cada ficha está en `conversation_lane` | Bloquea la fila | Lee, crea y bloquea |
+| `conversation` | Un hilo por cuenta: el bloqueo, los textos no entendidos y `billing_notice_at` (último aviso de cuenta en pausa por impago). Su `active_proposal_id` se borró en el paso 9: la propuesta activa de cada ficha está en `conversation_lane` | Bloquea la fila | Lee, crea, bloquea y anota el aviso de pausa |
 | `conversation_lane` | Un carril por ficha con su propuesta activa | Lee y la libera | Lee, crea y cambia la propuesta activa |
 | `channel_inbound_event` | Eventos entrantes ya vistos: el mismo se atiende una vez | Nada | Lee y escribe |
 | `channel_message` | Mensajes en los dos sentidos. Solo se añaden | Nada | Solo inserta |
 
-Solo el worker tiene `DELETE`, y solo lee las columnas que usan sus `WHERE`. La conversación recibe además lo que necesita para hacer lo mismo que el panel: leer `account` (sin el correo), `location`, `offboarding` y `review`; escribir `review_draft` y el tope de borradores de `usage_counter`; crear `action` (sin poder cambiarla), su fila `reply_confirmed` de `audit_log` (política de fila) y los jobs. No lee `google_connection` ni `session`.
+Solo el worker tiene `DELETE`, y solo lee las columnas que usan sus `WHERE`. La conversación recibe además lo que necesita para hacer lo mismo que el panel: leer `account` (sin el correo), `location`, `offboarding`, `review` y, de `account_billing_block`, solo `account_id` y `unblocked_at` (a través de `fichaitor_account_blocked`); escribir `review_draft` y el tope de borradores de `usage_counter`; crear `action` (sin poder cambiarla), su fila `reply_confirmed` de `audit_log` (política de fila) y los jobs. No lee `google_connection` ni `session`.
 
 Datos personales: la dirección en `channel_identity` y el contenido de `channel_message` (lo que escribe el dueño y el extracto de la reseña). Plazos en `docs/retencion.md`: 90 días para los mensajes, los eventos vistos, las propuestas terminadas y los chats desvinculados; al confirmar la baja de la cuenta se desvinculan los chats, y al hacerse efectiva se borran sus chats, mensajes, propuestas y códigos. Falta añadirlo a `docs/legal/privacidad.md` (es de la sesión de interfaz).
 

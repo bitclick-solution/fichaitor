@@ -1450,11 +1450,24 @@ Todas llevan sesión y funcionan **también con la cuenta bloqueada**: pagar es 
 | `POST /api/v1/me/billing/pay` | — | 202 `{request_id}`. El resultado es la factura pendiente alojada en Stripe, para desbloquear |
 | `POST /api/v1/me/billing/portal` | — | 202 `{request_id}`. El portal de Stripe, solo para cambiar la tarjeta |
 | `GET /api/v1/me/billing/requests/{id}` | — | `{state, url, code, detail}`. 404 si es de otra cuenta o no existe |
-| `GET /api/v1/me/billing/invoices` | — | `{"invoices": [{id, kind, number, amount_total, issued_at}]}`. Las facturas legales de Odoo: **lista vacía** hasta el paso 9 |
-| `GET /api/v1/me/billing/invoices/{id}/pdf` | — | El PDF (`application/pdf`), o 404 |
+| `GET /api/v1/me/billing/invoices` | — | `{"invoices": [{id, kind, number, amount_total, issued_at}]}`. Las facturas y rectificativas legales de Odoo, ya emitidas ([Facturas](#facturas)) |
+| `GET /api/v1/me/billing/invoices/{id}/pdf` | — | El PDF (`application/pdf`) con su nombre, o 404 |
 | `POST /api/v1/webhooks/stripe` | — | Sin sesión: lo verifica la firma de Stripe. No es para la web |
 
 La ruta de asignar una plaza libre a otra ficha (`…/seats/{id}/assign`) queda para un paso siguiente.
+
+#### Facturas
+
+Cada cobro tiene su factura legal, que emite el Odoo de Bitclick (serie `FTR`); cada reembolso excepcional, su rectificativa (serie `RFTR`). Solo salen cuando ya están emitidas: una pendiente (Odoo caído) o en revisión no aparece. Al emitirse, llegan también por correo con el PDF adjunto.
+
+| Campo | Valor |
+|---|---|
+| `kind` | `factura` o `rectificativa`, en español |
+| `number` | El número de Odoo, por ejemplo `FTR/2027/00001` |
+| `amount_total` | Céntimos, **con IVA**. **Negativo en una rectificativa** (`-4235`): devuelve |
+| `issued_at` | Cuándo se emitió |
+
+El PDF se descarga con `Content-Disposition: attachment; filename="<numero>.pdf"; filename*=UTF-8''<numero>.pdf`, donde `<numero>` es el número de Odoo con `/` cambiado por `_` y solo los caracteres `[A-Za-z0-9_-]` (por ejemplo, `FTR_2027_00001.pdf`).
 
 #### Perfil fiscal
 

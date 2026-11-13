@@ -14,6 +14,8 @@ Rules:
   fails without calling Google.
 - No action on a profile that is no longer active (multinegocio): one the owner
   deactivated after confirming fails as `location_inactive` without calling Google.
+- No action of an account blocked for non-payment (step 7 of docs/admin-facturacion.md):
+  it fails as `billing_blocked` without calling Google, and the owner is told.
 - The change is read back from the action's text, strictly; a text that is not exactly
   the canonical form, or whose day is not the action's, fails as `internal`.
 - Too late is too late: once the day has passed (in the local time of the peninsula),
@@ -36,6 +38,7 @@ from datetime import UTC, datetime, tzinfo
 from app.adapters.crypto.sealed import unseal
 from app.domain.actions import (
     ACTION_ID,
+    ERROR_BILLING_BLOCKED,
     ERROR_DATE_PASSED,
     ERROR_INTERNAL,
     ERROR_LOCATION_INACTIVE,
@@ -116,6 +119,12 @@ class SetSpecialHours:
             # The owner deactivated that profile after confirming: nothing is sent.
             await self._fail(action, job, ERROR_LOCATION_INACTIVE)
             log.event("action_location_inactive", job_id=job.id, action_id=action.id)
+            return
+
+        if action.blocked:
+            # The account is blocked for non-payment: nothing is sent until it pays.
+            await self._fail(action, job, ERROR_BILLING_BLOCKED)
+            log.event("action_billing_blocked", job_id=job.id, action_id=action.id)
             return
 
         if await self._store.is_suspended(action.google_sub):

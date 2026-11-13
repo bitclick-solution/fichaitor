@@ -170,6 +170,11 @@ CREATE TABLE IF NOT EXISTS conversation (
     updated_at         timestamptz NOT NULL DEFAULT now()
 );
 
+-- Cuenta en pausa por impago (paso 7 de docs/admin-facturacion.md): cuándo se dijo por
+-- última vez a esta cuenta «Tu cuenta está en pausa…». Como mucho una vez al día: la
+-- conversación lo reclama con un solo UPDATE condicionado (claim_paused_notice).
+ALTER TABLE conversation ADD COLUMN IF NOT EXISTS billing_notice_at timestamptz;
+
 -- Mensajes entrantes ya vistos, de direcciones vinculadas o no: el mismo evento de un
 -- canal se atiende una sola vez (Telegram repite la entrega si el webhook falla).
 CREATE TABLE IF NOT EXISTS channel_inbound_event (
@@ -250,7 +255,8 @@ GRANT UPDATE (used_at) ON link_code TO fichaitor_conversation;
 GRANT SELECT, INSERT, UPDATE ON channel_sender, link_failure_window, channel_inbound_event
     TO fichaitor_conversation;
 GRANT SELECT, INSERT ON conversation TO fichaitor_conversation;
-GRANT UPDATE (unknown_streak, updated_at) ON conversation TO fichaitor_conversation;
+GRANT UPDATE (unknown_streak, billing_notice_at, updated_at) ON conversation
+    TO fichaitor_conversation;
 
 -- Propuestas: las crea y las mueve, sin poder cambiar de quién son ni con qué se crearon.
 GRANT SELECT, INSERT ON proposal TO fichaitor_conversation;

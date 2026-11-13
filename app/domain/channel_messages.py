@@ -475,6 +475,13 @@ TEXTS: dict[str, str] = {
         "Ahora mismo no puedo comprobar códigos escritos. Abre el enlace de vinculación "
         "del panel desde este móvil: {enlace_panel}"
     ),
+    # NEW (cobro, step 7 of docs/admin-facturacion.md): the account is blocked for
+    # non-payment. The answer to the owner (at most once a day), to a button of a proposal
+    # and to an action that could not be sent. Nothing else is proposed until it pays.
+    "billing.paused": (
+        "Tu cuenta está en pausa porque no hemos podido cobrar. Paga desde Facturación, "
+        "en el panel, y todo vuelve a funcionar. {enlace_panel}"
+    ),
     # NEW: the two commands besides /start.
     "command.help": (
         "Soy Fichaitor. Te aviso de las reseñas nuevas de tu ficha de Google y te "

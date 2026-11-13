@@ -382,6 +382,14 @@ class FakePayments:
             i for i in self.invoices.values() if i.customer_id == customer_id and i.status == "open"
         ]
 
+    async def paid_invoices_since(self, since: datetime) -> list[InvoiceInfo]:
+        self._start("invoices.list")
+        return [
+            i
+            for i in self.invoices.values()
+            if i.status == "paid" and i.paid_at is not None and i.paid_at >= since
+        ]
+
     async def portal_url(self, customer_id: str, return_url: str) -> str:
         self._start("billing_portal.sessions.create")
         self._customer(customer_id)
@@ -423,6 +431,10 @@ class FakePayments:
         if refund is None:
             raise PaymentsNotFound("Stripe: no existe", status=404, code="resource_missing")
         return refund
+
+    async def refunds_since(self, since: datetime) -> list[RefundInfo]:
+        self._start("refunds.list")
+        return list(self.refunds.values())
 
     async def dispute(self, dispute_id: str) -> DisputeInfo:
         self._start("disputes.retrieve")

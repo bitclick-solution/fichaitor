@@ -15,7 +15,14 @@ ERROR_LIMIT = 500
 
 
 class JobError(Exception):
-    """A failure whose message is safe to store in job.last_error and to log."""
+    """A failure whose message is safe to store in job.last_error and to log.
+
+    `retry_in`: seconds until the next attempt, when the handler knows better than the
+    default backoff (a slow outage of Odoo, retried for days)."""
+
+    def __init__(self, message: str = "", *, retry_in: int | None = None) -> None:
+        super().__init__(message)
+        self.retry_in = retry_in
 
 
 class PermanentJobError(JobError):
@@ -47,6 +54,9 @@ def retry_delay(job: Job, error: BaseException) -> int | None:
     """Seconds until the next attempt, or None when the job must end as failed."""
     if isinstance(error, PermanentJobError) or job.is_last_attempt:
         return None
+    retry_in = getattr(error, "retry_in", None)
+    if isinstance(retry_in, int) and retry_in > 0:
+        return retry_in
     return backoff_seconds(job.attempts)
 
 

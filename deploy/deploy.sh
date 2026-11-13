@@ -18,7 +18,8 @@
 #      db/schema_billing.sql y db/schema_admin.sql en una sola transacción.
 #      Si falla, no se aplica nada y las vuelve a arrancar con la versión anterior.
 #   5. Crea los usuarios de base de datos que falten (init-roles.sh).
-#   6. Recrea la API, el worker, la conversación y la web con la etiqueta nueva.
+#   6. Recrea la API, el worker, la conversación, el cobro y la web con la etiqueta nueva.
+#      El backoffice (perfil "backoffice", paso 12) no arranca todavía.
 #   7. Comprueba la salud. Si falla, vuelve a la etiqueta anterior y termina con error.
 #
 # La vuelta atrás cambia las imágenes, no el esquema: el esquema solo añade, así
@@ -36,6 +37,7 @@ DB_CONTAINER="fichaitor-db"
 API_CONTAINER="fichaitor-api"
 WORKER_CONTAINER="fichaitor-worker"
 CONVERSATION_CONTAINER="fichaitor-conversation"
+BILLING_CONTAINER="fichaitor-billing"
 WEB_CONTAINER="fichaitor-web"
 DB_USER="fichaitor"
 DB_NAME="fichaitor"
@@ -61,8 +63,9 @@ API_ENV="${DEPLOY_DIR}/api.env"
 WORKER_ENV="${DEPLOY_DIR}/worker.env"
 CONVERSATION_ENV="${DEPLOY_DIR}/conversation.env"
 DB_ENV="${DEPLOY_DIR}/db.env"
-# Opcional hasta que existan los procesos de cobro y del backoffice (paso 11).
+# Cobro y backoffice (paso 11 de docs/admin-facturacion.md): obligatorios.
 BILLING_ENV="${DEPLOY_DIR}/billing.env"
+ADMIN_ENV="${DEPLOY_DIR}/admin.env"
 API_IMAGE_BASE="${REGISTRY}/${OWNER}/fichaitor-api"
 WEB_IMAGE_BASE="${REGISTRY}/${OWNER}/fichaitor-web"
 
@@ -154,28 +157,45 @@ comprobar_pimienta_gratis() {
         die "FICHAITOR_ALLOWANCE_PEPPER no coincide entre api.env y conversation.env."
 }
 
-# Cobro (docs/admin-facturacion.md). La API solo tiene el secreto de firma del webhook de
-# Stripe; si está, tiene que ser uno de verdad (whsec_...). La clave de Stripe vive solo en
-# billing.env: nunca en api.env ni en los demás. Una clave live exige
-# FICHAITOR_STRIPE_LIVEMODE=true, y al revés.
+# Cobro (docs/admin-facturacion.md, 4.1 y 9.0.1). La API solo tiene el secreto de firma
+# del webhook de Stripe; si está, tiene que ser uno de verdad (whsec_...). La clave de
+# Stripe y la de Odoo viven solo en billing.env: nunca en api.env, worker.env,
+# conversation.env ni admin.env. Una clave live exige FICHAITOR_STRIPE_LIVEMODE=true, y al
+# revés. admin.env (el backoffice) no lleva nada de Stripe ni de Odoo. Solo se miden: el
+# valor nunca se imprime.
 comprobar_cobro() {
-    local secreto clave modo archivo
+    local secreto clave modo archivo variable
     secreto="$(valor_env "${API_ENV}" FICHAITOR_STRIPE_WEBHOOK_SECRET)"
     if [[ -n "${secreto}" && ! "${secreto}" =~ ^whsec_[A-Za-z0-9]{16,}$ ]]; then
         die "FICHAITOR_STRIPE_WEBHOOK_SECRET de api.env no es un secreto de firma de Stripe (whsec_...)."
     fi
-    for archivo in "${API_ENV}" "${WORKER_ENV}" "${CONVERSATION_ENV}"; do
-        [[ -z "$(valor_env "${archivo}" FICHAITOR_STRIPE_SECRET_KEY)" ]] ||
-            die "$(basename "${archivo}") contiene FICHAITOR_STRIPE_SECRET_KEY. Solo va en billing.env."
+    for archivo in "${API_ENV}" "${WORKER_ENV}" "${CONVERSATION_ENV}" "${ADMIN_ENV}"; do
+        for variable in FICHAITOR_STRIPE_SECRET_KEY FICHAITOR_ODOO_API_KEY; do
+            [[ -z "$(valor_env "${archivo}" "${variable}")" ]] ||
+                die "$(basename "${archivo}") contiene ${variable}. Solo va en billing.env."
+        done
     done
-    [[ -f "${BILLING_ENV}" ]] || return 0
+    # El backoffice no recibe ninguna variable de Stripe ni de Odoo, ni vacía.
+    if grep -qE '^[[:space:]]*(export[[:space:]]+)?[A-Z0-9_]*(STRIPE_|ODOO_)[A-Z0-9_]*=' "${ADMIN_ENV}"; then
+        die "admin.env contiene variables de Stripe u Odoo (STRIPE_ u ODOO_). Quítalas: el backoffice no habla con ninguno."
+    fi
     clave="$(valor_env "${BILLING_ENV}" FICHAITOR_STRIPE_SECRET_KEY)"
     modo="$(valor_env "${BILLING_ENV}" FICHAITOR_STRIPE_LIVEMODE)"
+    [[ "${clave}" =~ ^(rk|sk)_(test|live)_[A-Za-z0-9]{16,}$ ]] ||
+        die "FICHAITOR_STRIPE_SECRET_KEY de billing.env falta o no es una clave de Stripe (rk_test_... o rk_live_...)."
     if [[ "${clave}" == *_live_* && "${modo,,}" != "true" ]]; then
         die "billing.env tiene una clave live sin FICHAITOR_STRIPE_LIVEMODE=true."
     fi
-    if [[ -n "${clave}" && "${clave}" != *_live_* && "${modo,,}" == "true" ]]; then
+    if [[ "${clave}" != *_live_* && "${modo,,}" == "true" ]]; then
         die "billing.env pide FICHAITOR_STRIPE_LIVEMODE=true con una clave de prueba."
+    fi
+    if [[ -z "$(valor_env "${BILLING_ENV}" FICHAITOR_ODOO_URL)" ]]; then
+        log "AVISO: billing.env sin FICHAITOR_ODOO_URL: no se emitirá ninguna factura hasta configurarlo."
+    else
+        exigir_variables "${BILLING_ENV}" FICHAITOR_ODOO_DB FICHAITOR_ODOO_API_KEY \
+            FICHAITOR_ODOO_JOURNAL_ID FICHAITOR_ODOO_PAYMENT_JOURNAL_ID FICHAITOR_ODOO_TAX_IVA_21 \
+            FICHAITOR_ODOO_TAX_NO_SUJETO FICHAITOR_ODOO_TAX_ISP_UE FICHAITOR_ODOO_PRODUCT_PRO \
+            FICHAITOR_ODOO_PRODUCT_PRO_WHATSAPP
     fi
 }
 
@@ -199,6 +219,8 @@ comprobar_entorno() {
     exigir_privado "${API_ENV}"
     exigir_privado "${WORKER_ENV}"
     exigir_privado "${CONVERSATION_ENV}"
+    exigir_privado "${BILLING_ENV}"
+    exigir_privado "${ADMIN_ENV}"
 
     exigir_variables "${DB_ENV}" POSTGRES_PASSWORD
     # FICHAITOR_DATABASE_URL, FICHAITOR_WORKER_DATABASE_URL y
@@ -233,6 +255,8 @@ comprobar_entorno() {
     prohibir_modos_falsos "${API_ENV}"
     prohibir_modos_falsos "${WORKER_ENV}"
     prohibir_modos_falsos "${CONVERSATION_ENV}"
+    prohibir_modos_falsos "${BILLING_ENV}"
+    prohibir_modos_falsos "${ADMIN_ENV}"
 }
 
 # ── Versiones ────────────────────────────────────────────────────────────────
@@ -393,9 +417,14 @@ health_check() {
             { mostrar_logs "${CONVERSATION_CONTAINER}"; fallo=1; }
     fi
     if [[ "${fallo}" == "0" ]]; then
+        comprobar_worker "${BILLING_CONTAINER}" ||
+            { mostrar_logs "${BILLING_CONTAINER}"; fallo=1; }
+    fi
+    if [[ "${fallo}" == "0" ]]; then
         if [[ "$(imagen_en_uso "${API_CONTAINER}")" != "${API_IMAGE_BASE}:${tag}" ||
             "$(imagen_en_uso "${WORKER_CONTAINER}")" != "${API_IMAGE_BASE}:${tag}" ||
             "$(imagen_en_uso "${CONVERSATION_CONTAINER}")" != "${API_IMAGE_BASE}:${tag}" ||
+            "$(imagen_en_uso "${BILLING_CONTAINER}")" != "${API_IMAGE_BASE}:${tag}" ||
             "$(imagen_en_uso "${WEB_CONTAINER}")" != "${WEB_IMAGE_BASE}:${tag}" ]]; then
             err "Algún contenedor no usa la etiqueta ${tag}."
             fallo=1
@@ -452,6 +481,7 @@ do_rollback() {
     exigir_variables "${API_ENV}" FICHAITOR_DATABASE_URL
     exigir_variables "${WORKER_ENV}" FICHAITOR_WORKER_DATABASE_URL
     exigir_variables "${CONVERSATION_ENV}" FICHAITOR_CONVERSATION_DATABASE_URL
+    exigir_variables "${BILLING_ENV}" FICHAITOR_BILLING_DATABASE_URL
     pull_images "${TAG}" || die "No se pueden descargar las imágenes de ${TAG}."
     arrancar_db
     # No se aplica el esquema: el del servidor ya es igual o más nuevo.
@@ -501,6 +531,7 @@ do_deploy() {
     exigir_variables "${API_ENV}" FICHAITOR_DATABASE_URL
     exigir_variables "${WORKER_ENV}" FICHAITOR_WORKER_DATABASE_URL
     exigir_variables "${CONVERSATION_ENV}" FICHAITOR_CONVERSATION_DATABASE_URL
+    exigir_variables "${BILLING_ENV}" FICHAITOR_BILLING_DATABASE_URL
 
     if deploy_tag "${TAG}"; then
         write_versions "${TAG}"

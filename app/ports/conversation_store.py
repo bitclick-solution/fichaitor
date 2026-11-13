@@ -64,6 +64,18 @@ class ConversationStore(Protocol):
         is restored (B12 of docs/seguridad/revision-2026-11-12-b.md)."""
         ...
 
+    async def billing_blocked(self, account_id: str) -> bool:
+        """The account is blocked for non-payment (step 7 of docs/admin-facturacion.md):
+        nothing is proposed, reminded or delivered, and its open proposals wait as they
+        are, until it pays. Nothing is cancelled nor deleted meanwhile."""
+        ...
+
+    async def claim_paused_notice(self, account_id: str, now: datetime) -> bool:
+        """Whether that account may be told now that it is paused for non-payment (at
+        most once every `conversation.BILLING_NOTICE_EVERY`), recording it in the same
+        atomic step. Called with the lock of the account held."""
+        ...
+
     # --- linked addresses -------------------------------------------------------
     async def get_identity(self, channel: str, address: str) -> ChannelIdentity | None:
         """The ACTIVE link of that address, or None. An unlinked address is unknown."""
@@ -198,8 +210,8 @@ class ConversationStore(Protocol):
 
     async def lanes_with_open_work(self) -> Sequence[tuple[str, str]]:
         """(account, profile) with any proposal that is not finished, of accounts
-        without a scheduled leave. Inactive profiles too: their proposals are cancelled
-        there (`location_inactive`)."""
+        without a scheduled leave nor a block for non-payment. Inactive profiles too:
+        their proposals are cancelled there (`location_inactive`)."""
         ...
 
     # --- messages ---------------------------------------------------------------
@@ -258,8 +270,8 @@ class ReviewTarget:
     unanswered: bool
     live: bool  # still returned by Google
     # (account, profile) of every ACTIVE profile with it, of an account
-    # without a scheduled leave, whose last sync is "ok" and with an address that sees
-    # that profile linked before the review was written.
+    # without a scheduled leave nor a block for non-payment, whose last sync is "ok" and
+    # with an address that sees that profile linked before the review was written.
     targets: tuple[tuple[str, str], ...] = ()
 
 
@@ -270,8 +282,8 @@ class ReviewTargets(Protocol):
 class LinkedProfiles(Protocol):
     async def linked_profiles(self) -> Sequence[tuple[str, str]]:
         """(google_sub, Google location) of the active profiles of the accounts without
-        a leave that have a linked address that sees them: what the planner keeps in
-        sync."""
+        a leave nor a block for non-payment that have a linked address that sees them:
+        what the planner keeps in sync."""
         ...
 
 
@@ -293,6 +305,7 @@ class KeyDateProfile:
 class KeyDateProfiles(Protocol):
     async def key_date_profiles(self) -> Sequence[KeyDateProfile]:
         """Every active profile of an account that is not deleted nor disconnected,
-        without a scheduled leave, whose last sync did not lose the access to Google and
-        stored its facts. Linked chat or not: the panel shows them too."""
+        without a scheduled leave nor a block for non-payment, whose last sync did not
+        lose the access to Google and stored its facts. Linked chat or not: the panel
+        shows them too."""
         ...

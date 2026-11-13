@@ -42,6 +42,8 @@ class MemoryWorkerStore:
         self.summaries: dict[tuple[str, str], StoredSummary] = {}
         self.categories: dict[tuple[str, str], str] = {}  # set by tests and the demo
         self.suspended: set[str] = set()  # Google users with a scheduled leave
+        # Google users whose account is blocked for non-payment (account_billing_block).
+        self.blocked: set[str] = set()
         self.denied: dict[tuple[str, str], int] = {}  # refusals in a row, by profile
         # Profiles retired for lack of access (the real store sets location.removed_at).
         self.lost_access: set[tuple[str, str]] = set()
@@ -186,6 +188,7 @@ class MemoryWorkerStore:
             type=action.type,
             special_date=action.special_date,
             active=(action.account_id, action.location) not in self.inactive,
+            blocked=action.google_sub in self.blocked,
         )
 
     async def finish_action(
@@ -240,6 +243,9 @@ class MemoryWorkerStore:
 
     async def is_suspended(self, google_sub: str) -> bool:
         return google_sub in self.suspended
+
+    async def billing_blocked(self, google_sub: str) -> bool:
+        return google_sub in self.blocked
 
     async def purge_superseded(self, google_sub: str, now: datetime) -> dict[str, int]:
         return {}

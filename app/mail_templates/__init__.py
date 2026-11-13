@@ -1,6 +1,7 @@
 """The brand templates of the emails, read once when the module is imported.
 
-`base.html` and `bloques.html` are copies of brand/correo/, where the interface session
+`base.html` and `bloques.html` are copies of brand/correo/ (the emails of a leave and of
+the charging), where the interface session
 keeps them (guide in brand/correo/LEEME.md). They live here so that they travel inside
 the `app` package, which is what the Docker image copies; tests/test_offboarding_mail.py
 fails as soon as a copy differs from its original. To change a template, change it in
@@ -29,4 +30,5 @@ BASE = Template(_read("base.html"))
 BLOCKS: dict[str, Template] = {
     name: Template(body.strip()) for name, body in _BLOCK.findall(_read("bloques.html"))
 }
-"""The pieces of the body: parrafo, codigo, boton and aviso."""
+"""The pieces of the body: parrafo, codigo, boton, aviso and, for the billing emails, dato
+(a row of a table of data), datos_fin (closes it) and destacado (a highlight)."""

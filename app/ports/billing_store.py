@@ -19,6 +19,7 @@ from datetime import datetime
 from typing import Protocol
 
 from app.domain.billing import BlockReason, PriceKey, Seat, SeatStatus, TaxTreatment, Territory
+from app.domain.jobs import DEFAULT_MAX_ATTEMPTS
 from app.domain.plans import Plan
 from app.ports.payments import InvoiceInfo
 
@@ -38,6 +39,25 @@ FAILED = "fallida"
 # The job kinds of the billing process, with their idempotency key "<kind>:<id>".
 REQUEST_JOB = "billing_request"
 EVENT_JOB = "stripe_event"
+ISSUE_INVOICE_JOB = "issue_invoice"
+CREDIT_NOTE_JOB = "issue_credit_note"
+REFUND_JOB = "billing_refund"
+MAIL_JOB = "send_mail"
+# issue_invoice and issue_credit_note: retried for about three days while Odoo is down
+# (docs/admin-facturacion.md, 4.5), with a wait that grows up to two hours.
+DOCUMENT_MAX_ATTEMPTS = 40
+
+# billing_document.kind and .state
+INVOICE = "factura"
+CREDIT_NOTE = "rectificativa"
+DOC_PENDING = "pendiente"
+DOC_ISSUED = "emitida"
+DOC_REVIEW = "revision"
+
+# billing_refund_request.state
+REFUND_PENDING = "pendiente"
+REFUND_DONE = "hecho"
+REFUND_FAILED = "fallido"
 
 
 @dataclass(frozen=True)
@@ -232,6 +252,11 @@ class SeatApplied:
     activated: bool = False
     duplicate: bool = False  # a second seat paid for a profile that had one: left free
     activation_refused: str | None = None
+    # What apply_seat enqueued in its own transaction (step 9): the legal invoice of a
+    # paid charge, and the emails of a block opened or of the account unblocked.
+    invoice_queued: bool = False
+    blocked_mail: bool = False
+    unblocked_mail: bool = False
 
 
 class BillingProcessStore(Protocol):
@@ -292,3 +317,217 @@ class BillingProcessStore(Protocol):
     async def stripe_event(self, event_id: str) -> StripeEventRow | None: ...
 
     async def finish_event(self, event_id: str, outcome: str) -> None: ...
+
+    async def record_funnel(self, kind: str, source: str | None = None) -> None:
+        """A step of the funnel (`checkout_started`, `paid`), without personal data."""
+        ...
+
+
+# --- step 9 and the daily jobs of the billing process --------------------------------
+
+
+@dataclass(frozen=True)
+class DocumentRow:
+    """A row of billing_document, without its PDF."""
+
+    id: str
+    kind: str  # factura or rectificativa
+    state: str  # pendiente, emitida or revision
+    account_id: str
+    created_at: datetime
+    stripe_invoice_id: str | None = None
+    stripe_refund_id: str | None = None
+    number: str | None = None
+    amount_total: int | None = None
+    odoo_move_id: int | None = None
+    review_reason: str | None = None
+
+
+@dataclass(frozen=True)
+class ChargeContext:
+    """A charge of Stripe as billing_charge keeps it, with what its legal invoice needs:
+    the seat's plan and profile name, and the fiscal data of the account."""
+
+    stripe_invoice_id: str
+    account_id: str
+    status: str | None
+    total: int
+    amount_paid: int
+    amount_refunded: int
+    price_key: PriceKey | None
+    period_start: datetime | None
+    period_end: datetime | None
+    paid_at: datetime | None
+    seat_id: str | None = None
+    plan: Plan | None = None
+    subscription_id: str | None = None
+    location_title: str | None = field(default=None, repr=False)
+    payment_reference: str | None = None  # ch_… or pi_…
+    customer: Customer | None = None
+
+
+@dataclass(frozen=True)
+class RefundRequestRow:
+    id: str
+    account_id: str
+    stripe_invoice_id: str
+    reason: str
+    state: str
+    amount: int | None = None  # None: the whole invoice
+    stripe_refund_id: str | None = None
+
+
+@dataclass(frozen=True)
+class CreditNoteContext:
+    document: DocumentRow  # the credit note, pending or done
+    refund: RefundRequestRow | None
+    original: DocumentRow | None  # the invoice it corrects
+    invoice_email: str | None = field(default=None, repr=False)
+
+
+@dataclass(frozen=True)
+class LocationState:
+    active: bool
+    title: str | None = field(default=None, repr=False)
+
+
+@dataclass(frozen=True)
+class BetaSetting:
+    launch_at: datetime | None
+    beta_ends_at: datetime | None
+    beta_notice_for: datetime | None
+
+
+@dataclass(frozen=True)
+class ActiveProfile:
+    """An active profile at the end of the beta, for billing.enforce_after_beta."""
+
+    location_id: str
+    plan: Plan
+    active_since: datetime
+    gbp_location: str
+    has_seat: bool
+
+
+class BillingJobsStore(BillingProcessStore, Protocol):
+    """What the legal invoices (step 9) and the daily jobs of the billing process (the
+    renewal notice, the reconciliation, the end of the beta, the refunds and the purge)
+    keep. Every method that changes something and enqueues a job does both in one
+    transaction."""
+
+    # documents
+    async def charge_context(self, stripe_invoice_id: str) -> ChargeContext | None: ...
+
+    async def open_document(
+        self, kind: str, account_id: str, stripe_invoice_id: str, stripe_refund_id: str | None
+    ) -> DocumentRow:
+        """The document of that charge or refund, created `pendiente` if missing."""
+        ...
+
+    async def issue_document(
+        self,
+        document_id: str,
+        number: str | None,
+        move_id: int,
+        amounts: tuple[int, int, int],
+        verifactu_state: str | None,
+        pdf: bytes,
+        mail: dict,
+    ) -> bool:
+        """A pending document becomes `emitida` with its PDF, and its email is enqueued
+        (with `document_id` added). False if it was not pending."""
+        ...
+
+    async def review_document(
+        self,
+        document_id: str,
+        reason: str,
+        number: str | None = None,
+        move_id: int | None = None,
+        amount_total: int | None = None,
+    ) -> None:
+        """A pending document goes to review, without email to the customer."""
+        ...
+
+    async def flag_document(self, document_id: str, reason: str) -> None:
+        """Note what the reconciliation found, without changing the state ("" clears it)."""
+        ...
+
+    async def documents_since(self, since: datetime) -> list[DocumentRow]: ...
+
+    async def document_of(self, kind: str, stripe_id: str) -> DocumentRow | None: ...
+
+    async def charge_paid_known(self, stripe_invoice_id: str) -> bool: ...
+
+    async def live_subscriptions(self) -> list[str]: ...
+
+    async def enqueue(
+        self, kind: str, payload: dict, key: str, max_attempts: int = DEFAULT_MAX_ATTEMPTS
+    ) -> bool: ...
+
+    # refunds
+    async def refund_request(self, request_id: str) -> RefundRequestRow | None: ...
+
+    async def refund_request_of(self, stripe_refund_id: str) -> RefundRequestRow | None: ...
+
+    async def pending_refund_requests(self) -> list[str]: ...
+
+    async def finish_refund(
+        self,
+        request_id: str,
+        stripe_refund_id: str,
+        stripe_invoice_id: str,
+        amount_refunded: int,
+        whole: bool,
+    ) -> None:
+        """Done: the refund noted, the right of that charge ended if `whole`, the credit
+        note pending and its job enqueued."""
+        ...
+
+    async def fail_refund(self, request_id: str) -> None: ...
+
+    async def credit_note_context(self, stripe_refund_id: str) -> CreditNoteContext | None: ...
+
+    # renewal notice
+    async def seats_renewing_by(self, until: datetime) -> list[SeatRow]:
+        """Seats charged by subscription, not cancelled, whose year ends by `until`."""
+        ...
+
+    async def renewal_noticed(self, seat_id: str) -> datetime | None:
+        """The end of the year whose renewal notice went out."""
+        ...
+
+    async def location_state(self, account_id: str, location_id: str) -> LocationState: ...
+
+    async def mark_renewal_notice(
+        self, seat_id: str, period_end: datetime, price_key: PriceKey, mail: dict, key: str
+    ) -> bool:
+        """Note the notice of that period and the frozen price, and enqueue its email,
+        once per period. False if it had been noticed already."""
+        ...
+
+    # end of the beta
+    async def beta_setting(self) -> BetaSetting: ...
+
+    async def set_beta_notice(self, beta_ends_at: datetime) -> None: ...
+
+    async def beta_recipients(self) -> list[tuple[str, str]]:
+        """(account id, email) of the accounts with an active profile in a paid plan."""
+        ...
+
+    async def accounts_with_paid_profiles(self) -> list[str]: ...
+
+    async def active_profiles(
+        self, account_id: str, now: datetime
+    ) -> tuple[list[ActiveProfile], dict[Plan, int]]:
+        """The active profiles of the account and, per plan, the profiles that
+        entitlements other than a seat or the beta cover (manual, cortesia...)."""
+        ...
+
+    async def gratis_elsewhere(self, account_id: str, gbp_locations: list[str]) -> set[str]: ...
+
+    async def move_to_gratis(self, account_id: str, location_id: str) -> bool: ...
+
+    async def deactivate(self, account_id: str, location_id: str) -> bool: ...
+
+    async def purge(self) -> dict[str, int]: ...

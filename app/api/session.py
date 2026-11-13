@@ -87,7 +87,7 @@ MSG_LEAVE_PENDING = "Tienes una baja programada. Restáurala para seguir usando 
 # leaving, logout, unlinking chats and deactivating profiles still answer.
 CODE_ACCOUNT_BLOCKED = "account_blocked"
 MSG_ACCOUNT_BLOCKED = (
-    "Tu cuenta está en pausa por un pago pendiente. Paga la factura pendiente o cambia la "
+    "Tu cuenta está en pausa porque no hemos podido cobrar. Paga la factura pendiente o cambia la "
     "tarjeta en Ajustes > Facturación para seguir usando Fichaitor."
 )
 

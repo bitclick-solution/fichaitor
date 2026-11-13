@@ -220,6 +220,7 @@ class BillingRequests:
             cancel,
             idempotency_key=f"billing_request:{request.id}:checkout",
         )
+        await self._store.record_funnel("checkout_started", request.plan.value)
         return session.url, now + timedelta(seconds=CHECKOUT_TTL_SECONDS)
 
     async def _ensure_customer(self, customer: Customer) -> str:

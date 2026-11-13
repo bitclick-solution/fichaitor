@@ -80,7 +80,9 @@ CREATE INDEX IF NOT EXISTS funnel_event_kind_at ON funnel_event (kind, at);
 ALTER TABLE funnel_event DROP CONSTRAINT IF EXISTS funnel_event_kind_check;
 ALTER TABLE funnel_event ADD CONSTRAINT funnel_event_kind_check
     CHECK (kind IN ('visit', 'diagnosis', 'not_found', 'signup', 'connected',
-                    'screenshot_diagnosis', 'screenshot_rejected'));
+                    'screenshot_diagnosis', 'screenshot_rejected',
+                    -- El cobro (db/schema_billing.sql): Checkout abierto y primera plaza pagada.
+                    'checkout_started', 'paid'));
 
 -- Conexiones con Google. Solo se añaden filas: una reconexión es una fila nueva
 -- y vale la más reciente de cada google_sub.

@@ -8,6 +8,8 @@ any other port (the message is not sent if the server does not offer it). The se
 comes from the configuration; none is written here.
 
 Errors carry a fixed message: never the address, the subject or the body.
+
+A message may carry files (the PDF of an invoice, docs/admin-facturacion.md, 4.3).
 """
 
 import asyncio
@@ -37,6 +39,13 @@ def build_message(
         message["Reply-To"] = reply_to
     message.set_content(email.text)
     message.add_alternative(email.html, subtype="html")
+    # With a file, the message becomes multipart/mixed: the text and the HTML stay
+    # alternatives of each other, and the PDF goes beside them.
+    for attachment in email.attachments:
+        maintype, _, subtype = attachment.content_type.partition("/")
+        message.add_attachment(
+            attachment.content, maintype=maintype, subtype=subtype, filename=attachment.filename
+        )
     return message
 
 

@@ -263,12 +263,26 @@ class InvoiceOut(BaseModel):
     id: str
     kind: str  # factura or rectificativa
     number: str | None
-    amount_total: int | None  # cents, VAT included
+    amount_total: int | None  # cents, VAT included; negative for a rectificativa
     issued_at: datetime | None
 
 
 class InvoicesOut(BaseModel):
     invoices: list[InvoiceOut]
+
+
+def signed_total(kind: str, amount_total: int | None) -> int | None:
+    """Cents with VAT; negative for a credit note (rectificativa)."""
+    if amount_total is None:
+        return None
+    return -abs(amount_total) if kind == "rectificativa" else amount_total
+
+
+def pdf_name(number: str | None) -> str:
+    """The file name of a PDF: the number of Odoo with "/" as "_", and only
+    [A-Za-z0-9_-] (FTR/2027/00001 -> FTR_2027_00001.pdf)."""
+    clean = re.sub(r"[^A-Za-z0-9_-]", "", (number or "").replace("/", "_"))[:60]
+    return f"{clean or 'factura'}.pdf"
 
 
 def _clean(value: str | None) -> str | None:
@@ -455,14 +469,15 @@ def build_router(
 
     @router.get(f"{PREFIX}/invoices", response_model=InvoicesOut)
     async def invoices(account: Account = Depends(current_account)) -> InvoicesOut:  # noqa: B008
-        # The legal invoices of Odoo (step 9). Until then, an empty list.
+        # The legal invoices and credit notes of Odoo, once issued (step 9). A credit
+        # note's total is negative: it gives back.
         return InvoicesOut(
             invoices=[
                 InvoiceOut(
                     id=d.id,
                     kind=d.kind,
                     number=d.number,
-                    amount_total=d.amount_total,
+                    amount_total=signed_total(d.kind, d.amount_total),
                     issued_at=d.issued_at,
                 )
                 for d in await billing.invoices(account.id)
@@ -477,11 +492,17 @@ def build_router(
         pdf = await billing.invoice_pdf(account.id, document_id[:64])
         if pdf is None:
             raise HTTPException(404, "Esa factura no está en tu cuenta.")
+        number = next(
+            (d.number for d in await billing.invoices(account.id) if d.id == document_id), None
+        )
+        name = pdf_name(number)
         return Response(
             pdf,
             media_type="application/pdf",
             headers={
-                "Content-Disposition": "attachment; filename=factura.pdf",
+                "Content-Disposition": (
+                    f"attachment; filename=\"{name}\"; filename*=UTF-8''{name}"
+                ),
                 "Cache-Control": "private, no-store",
             },
         )

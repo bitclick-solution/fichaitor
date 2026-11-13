@@ -17,7 +17,10 @@
 --   crea los derechos 'pago', bloquea y desbloquea, y activa la ficha de una plaza nueva.
 --   No lee conexiones de Google, reseñas, canales ni la lista de espera.
 -- - fichaitor_worker y fichaitor_conversation: leen si una cuenta está bloqueada (paso 7);
---   el worker borra lo que vence (billing_request a 30 días, stripe_event a 90).
+--   el worker borra lo que vence (billing_request a 30 días, stripe_event a 90) y adjunta
+--   el PDF de una factura a su correo (paso 9).
+-- - Paso 9: la factura legal la emite el proceso de cobro en Odoo (billing_document) y la
+--   envía el worker. Lo de más de 6 años lo borra billing_purge(), al final.
 
 CREATE EXTENSION IF NOT EXISTS pgcrypto;
 
@@ -75,6 +78,10 @@ CREATE TABLE IF NOT EXISTS billing_setting (
     CHECK (beta_ends_at IS NULL OR launch_at IS NULL OR beta_ends_at >= launch_at)
 );
 INSERT INTO billing_setting (id) VALUES (true) ON CONFLICT DO NOTHING;
+-- beta_notice_for: el fin de la beta del que ya se avisó por correo (beta_ending, 30 días
+-- antes de launch_at). Lo escribe el proceso de cobro; si el propietario cambia la fecha,
+-- se vuelve a avisar.
+ALTER TABLE billing_setting ADD COLUMN IF NOT EXISTS beta_notice_for timestamptz;
 
 -- ---------------------------------------------------------------------------
 -- Datos fiscales de una cuenta (sección 4.8). Se conservan 6 años desde la última factura,
@@ -189,6 +196,10 @@ CREATE TABLE IF NOT EXISTS billing_seat (
     updated_at             timestamptz NOT NULL DEFAULT now()
 );
 
+-- renewal_notice_for: el fin de periodo cuyo aviso de renovación (T-30) ya se envió, con el
+-- precio congelado en Stripe (paso 8). Una vez por periodo.
+ALTER TABLE billing_seat ADD COLUMN IF NOT EXISTS renewal_notice_for timestamptz;
+
 CREATE INDEX IF NOT EXISTS billing_seat_account ON billing_seat (account_id);
 CREATE INDEX IF NOT EXISTS billing_seat_location ON billing_seat (location_id)
     WHERE location_id IS NOT NULL;
@@ -255,6 +266,12 @@ CREATE TABLE IF NOT EXISTS billing_document (
     CHECK ((kind = 'factura') = (stripe_invoice_id IS NOT NULL AND stripe_refund_id IS NULL)
            OR kind = 'rectificativa')
 );
+
+-- Paso 9: por qué una factura está en revisión (total distinto, Odoo la rechazó,
+-- VERI*FACTU con errores) o qué encontró la conciliación diaria con Odoo. Sin datos
+-- personales: un código.
+ALTER TABLE billing_document
+    ADD COLUMN IF NOT EXISTS review_reason text CHECK (review_reason ~ '^[a-z0-9_]{1,40}$');
 
 CREATE UNIQUE INDEX IF NOT EXISTS billing_document_invoice ON billing_document (stripe_invoice_id)
     WHERE kind = 'factura';
@@ -531,6 +548,15 @@ GRANT SELECT (created_at) ON billing_request TO fichaitor_worker;
 GRANT DELETE ON billing_request TO fichaitor_worker;
 GRANT SELECT (received_at, processed_at) ON stripe_event TO fichaitor_worker;
 GRANT DELETE ON stripe_event TO fichaitor_worker;
+-- Paso 9: el worker adjunta el PDF de una factura emitida a su correo (send_mail). Solo
+-- esas columnas: ni importes, ni números, ni la cuenta.
+GRANT SELECT (id, state, pdf) ON billing_document TO fichaitor_worker;
+
+-- Paso 8: el aviso del fin de la beta, una vez por fecha, y el embudo (checkout_started al
+-- abrir un Checkout y paid con la primera plaza pagada). Del embudo, solo insertar.
+GRANT UPDATE (beta_notice_for) ON billing_setting TO fichaitor_billing;
+REVOKE ALL ON funnel_event FROM fichaitor_billing;
+GRANT INSERT (kind, source) ON funnel_event TO fichaitor_billing;
 
 -- ---------------------------------------------------------------------------
 -- Cola de jobs (sección 5.1): el proceso de cobro toma y cierra solo sus tipos y encola
@@ -545,10 +571,11 @@ DROP POLICY IF EXISTS job_billing ON job;
 CREATE POLICY job_billing ON job FOR ALL TO fichaitor_billing
     USING (kind IN ('stripe_event', 'billing_request', 'billing_reconcile', 'billing_renewal_notice',
                     'billing_enforce', 'billing_refund', 'issue_invoice', 'issue_credit_note',
-                    'billing_beta_notice'))
+                    'billing_beta_notice', 'billing_purge'))
     WITH CHECK (kind IN ('stripe_event', 'billing_request', 'billing_reconcile',
                          'billing_renewal_notice', 'billing_enforce', 'billing_refund',
-                         'issue_invoice', 'issue_credit_note', 'billing_beta_notice')
+                         'issue_invoice', 'issue_credit_note', 'billing_beta_notice',
+                         'billing_purge')
                 AND job_key_fits(kind, idempotency_key));
 DROP POLICY IF EXISTS job_billing_mail ON job;
 CREATE POLICY job_billing_mail ON job FOR INSERT TO fichaitor_billing
@@ -565,6 +592,67 @@ BEGIN
     END IF;
 END
 $$;
+
+-- ---------------------------------------------------------------------------
+-- Retención de las tablas de cobro (docs/retencion.md): 6 años (art. 30 del Código de
+-- Comercio), también después de la baja. La llama a diario el proceso de cobro (job
+-- billing_purge), que no tiene DELETE en ninguna tabla: la función borra solo lo que pasa
+-- del plazo, y el plazo está aquí, no en un parámetro. Nunca un bloqueo abierto. Los datos
+-- fiscales de una cuenta, solo cuando la cuenta está dada de baja y ya no le queda ninguna
+-- factura, cobro ni plaza («6 años desde la última factura»).
+CREATE OR REPLACE FUNCTION billing_purge() RETURNS jsonb
+LANGUAGE plpgsql SECURITY DEFINER SET search_path = pg_catalog, public, pg_temp AS $$
+DECLARE
+    cutoff timestamptz := now() - interval '6 years';
+    counts jsonb := '{}'::jsonb;
+    n bigint;
+BEGIN
+    DELETE FROM public.billing_document
+    WHERE coalesce(issued_at, created_at) < cutoff;
+    GET DIAGNOSTICS n = ROW_COUNT;
+    counts := counts || jsonb_build_object('billing_document', n);
+
+    DELETE FROM public.billing_refund_request
+    WHERE coalesce(finished_at, created_at) < cutoff;
+    GET DIAGNOSTICS n = ROW_COUNT;
+    counts := counts || jsonb_build_object('billing_refund_request', n);
+
+    DELETE FROM public.billing_charge
+    WHERE coalesce(paid_at, period_end, created_at) < cutoff;
+    GET DIAGNOSTICS n = ROW_COUNT;
+    counts := counts || jsonb_build_object('billing_charge', n);
+
+    DELETE FROM public.account_billing_block
+    WHERE unblocked_at IS NOT NULL AND unblocked_at < cutoff;
+    GET DIAGNOSTICS n = ROW_COUNT;
+    counts := counts || jsonb_build_object('account_billing_block', n);
+
+    DELETE FROM public.billing_seat s
+    WHERE coalesce(s.current_period_end, s.created_at) < cutoff
+      AND NOT EXISTS (SELECT 1 FROM public.billing_charge c WHERE c.seat_id = s.id);
+    GET DIAGNOSTICS n = ROW_COUNT;
+    counts := counts || jsonb_build_object('billing_seat', n);
+
+    DELETE FROM public.billing_customer bc
+    USING public.account a
+    WHERE a.id = bc.account_id AND a.deleted_at IS NOT NULL
+      AND NOT EXISTS (SELECT 1 FROM public.billing_document d WHERE d.account_id = bc.account_id)
+      AND NOT EXISTS (SELECT 1 FROM public.billing_charge c WHERE c.account_id = bc.account_id)
+      AND NOT EXISTS (SELECT 1 FROM public.billing_seat s WHERE s.account_id = bc.account_id);
+    GET DIAGNOSTICS n = ROW_COUNT;
+    counts := counts || jsonb_build_object('billing_customer', n);
+
+    DELETE FROM public.billing_customer_history h
+    WHERE h.at < cutoff
+       OR NOT EXISTS (SELECT 1 FROM public.billing_customer bc WHERE bc.account_id = h.account_id);
+    GET DIAGNOSTICS n = ROW_COUNT;
+    counts := counts || jsonb_build_object('billing_customer_history', n);
+    RETURN counts;
+END
+$$;
+
+REVOKE ALL ON FUNCTION billing_purge() FROM PUBLIC;
+GRANT EXECUTE ON FUNCTION billing_purge() TO fichaitor_billing;
 
 -- ---------------------------------------------------------------------------
 -- Solo desarrollo local y pruebas: está copiado en db/dev-init.sql. En producción el

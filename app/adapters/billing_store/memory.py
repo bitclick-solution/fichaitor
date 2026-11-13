@@ -66,6 +66,7 @@ class MemoryBillingStore:
     # What the API enqueued, as (kind, payload): there is no queue here.
     jobs: list[tuple[str, dict]] = field(default_factory=list)
     outcomes: dict[str, str] = field(default_factory=dict)  # stripe_event.outcome
+    funnel: list[tuple[str, str | None]] = field(default_factory=list)  # funnel_event
 
     def _now(self) -> datetime:
         return self.clock()  # type: ignore[operator]
@@ -354,3 +355,6 @@ class MemoryBillingStore:
         if found is not None:
             self.events[event_id] = replace(found, processed_at=self._now())
             self.outcomes[event_id] = outcome
+
+    async def record_funnel(self, kind: str, source: str | None = None) -> None:
+        self.funnel.append((kind, source))

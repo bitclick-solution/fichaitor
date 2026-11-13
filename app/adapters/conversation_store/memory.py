@@ -16,6 +16,7 @@ from app.domain.conversation import (
     Conversation,
     Focus,
     LinkOutcome,
+    may_send_billing_notice,
     normalize_address,
     plan_link,
     sees,
@@ -63,6 +64,10 @@ class MemoryConversationStore:
         self._ids = itertools.count(1)
         # Accounts with a leave scheduled (in PostgreSQL, a row of `offboarding`).
         self.leaves: set[str] = set()
+        # Accounts blocked for non-payment (in PostgreSQL, an open account_billing_block),
+        # and when each was last told so (conversation.billing_notice_at).
+        self.blocked: set[str] = set()
+        self.billing_notices: dict[str, datetime] = {}
         # Multinegocio: the profiles by id ("loc_..."), the lanes and the focus of each
         # address. A proposal for a profile listed here must be of an active profile of
         # its account, as in PostgreSQL; one for a profile not listed is let in (tests
@@ -73,6 +78,15 @@ class MemoryConversationStore:
 
     async def on_leave(self, account_id: str) -> bool:
         return account_id in self.leaves
+
+    async def billing_blocked(self, account_id: str) -> bool:
+        return account_id in self.blocked
+
+    async def claim_paused_notice(self, account_id: str, now: datetime) -> bool:
+        if not may_send_billing_notice(self.billing_notices.get(account_id), now):
+            return False
+        self.billing_notices[account_id] = now
+        return True
 
     # --- linked addresses -------------------------------------------------------
     async def get_identity(self, channel: str, address: str) -> ChannelIdentity | None:
@@ -277,6 +291,7 @@ class MemoryConversationStore:
                 if not p.is_terminal
                 and p.location_id is not None
                 and p.account_id not in self.leaves
+                and p.account_id not in self.blocked
             }
         )
 

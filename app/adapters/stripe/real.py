@@ -52,6 +52,7 @@ STRIPE_API_VERSION = "2026-10-28.endive"
 TIMEOUT = 30.0
 NETWORK_RETRIES = 2
 PRICES_TTL = 600.0  # seconds a price list is kept before it is read again
+MAX_PAGES = 50  # pages of 100 in a list: the daily reconciliation reads no more
 # An open Checkout blocks a second purchase of its profile (seat_pending) until it
 # expires: 31 minutes, because Stripe refuses less than 30 when the request arrives.
 CHECKOUT_TTL_SECONDS = 1860
@@ -582,6 +583,25 @@ class StripePayments:
         )
         return [await self._invoice_info(inv.to_dict()) for inv in found.data]
 
+    async def paid_invoices_since(self, since: datetime) -> list[InvoiceInfo]:
+        params: dict[str, Any] = {
+            "status": "paid",
+            "created": {"gte": int(since.timestamp())},
+            "limit": 100,
+            "expand": ["data.payments"],
+        }
+        found: list[InvoiceInfo] = []
+        for _ in range(MAX_PAGES):
+            page = await self._do(
+                "invoices.list",
+                lambda params=dict(params): self._client.v1.invoices.list_async(params=params),
+            )
+            found.extend([await self._invoice_info(inv.to_dict()) for inv in page.data])
+            if not page.has_more or not page.data:
+                break
+            params["starting_after"] = page.data[-1].id
+        return found
+
     async def portal_url(self, customer_id: str, return_url: str) -> str:
         session = await self._do(
             "billing_portal.sessions.create",
@@ -618,6 +638,20 @@ class StripePayments:
             "refunds.retrieve", lambda: self._client.v1.refunds.retrieve_async(refund_id)
         )
         return self._refund_info(refund.to_dict())
+
+    async def refunds_since(self, since: datetime) -> list[RefundInfo]:
+        params: dict[str, Any] = {"created": {"gte": int(since.timestamp())}, "limit": 100}
+        found: list[RefundInfo] = []
+        for _ in range(MAX_PAGES):
+            page = await self._do(
+                "refunds.list",
+                lambda params=dict(params): self._client.v1.refunds.list_async(params=params),
+            )
+            found.extend(self._refund_info(r.to_dict()) for r in page.data)
+            if not page.has_more or not page.data:
+                break
+            params["starting_after"] = page.data[-1].id
+        return found
 
     @staticmethod
     def _refund_info(data: Mapping[str, Any]) -> RefundInfo:

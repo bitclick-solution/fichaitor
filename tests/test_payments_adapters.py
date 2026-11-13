@@ -677,3 +677,36 @@ def test_the_fake_hands_out_https_urls_of_stripe_only() -> None:
     assert is_stripe_url(run(fake.portal_url(customer, "https://fichaitor.es/app")))
     info = run(fake.checkout_session(session.id))
     assert (info.status, info.subscription_id, info.seat_id) == ("complete", sub.id, "seat_1")
+
+
+def test_the_daily_lists_read_every_page_of_paid_invoices_and_refunds() -> None:
+    second = {**INVOICE, "id": "in_2"}
+    pages = iter(
+        [
+            {**_list([INVOICE], "/v1/invoices"), "has_more": True},
+            _list([second], "/v1/invoices"),
+        ]
+    )
+    refund = {
+        "id": "re_1",
+        "object": "refund",
+        "amount": 4235,
+        "status": "succeeded",
+        "payment_intent": "pi_1",
+        "metadata": {"invoice_id": "in_1"},
+    }
+    server = FakeStripeServer(
+        {
+            ("GET", "/v1/invoices"): lambda: httpx.Response(200, json=next(pages)),
+            ("GET", "/v1/refunds"): lambda: httpx.Response(200, json=_list([refund], "/v1/r")),
+        }
+    )
+    since = datetime(2027, 3, 1, tzinfo=UTC)
+    stripe_ = adapter(server)
+    invoices = run(stripe_.paid_invoices_since(since))
+    assert [i.id for i in invoices] == ["in_1", "in_2"]
+    lists = [r for r in server.requests if r.url.path == "/v1/invoices"]
+    assert "starting_after=in_1" in str(lists[1].url)
+    assert "status=paid" in str(lists[0].url) and "created[gte]=1803859200" in str(lists[0].url)
+    refunds = run(stripe_.refunds_since(since))
+    assert [(r.id, r.invoice_id, r.amount) for r in refunds] == [("re_1", "in_1", 4235)]

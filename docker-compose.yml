@@ -94,6 +94,35 @@ services:
     stop_grace_period: 40s
     restart: on-failure:3
 
+  # El cobro (docs/admin-facturacion.md): Stripe en MODO DE PRUEBA y Odoo falso por defecto.
+  # Sin env_file a propósito: de .env solo recibe lo suyo (Compose sustituye las ${...} con
+  # .env), nunca la clave privada de los tokens ni los secretos de Google o Telegram.
+  # Probar un pago en local: docs/despliegue.md, «Probar un pago en local». Perfil "cobro":
+  # solo arranca con `docker compose --profile cobro up`.
+  billing:
+    build: .
+    profiles: ["cobro"]
+    command: ["python", "-m", "app.billing"]
+    environment:
+      FICHAITOR_BILLING_DATABASE_URL: ${FICHAITOR_BILLING_DATABASE_URL:-postgresql://fichaitor_billing_dev:dev@db:5432/fichaitor}
+      # Una clave de prueba (rk_test_ o sk_test_). Sin ella, el Stripe falso.
+      FICHAITOR_STRIPE_SECRET_KEY: ${FICHAITOR_STRIPE_SECRET_KEY:-}
+      FICHAITOR_FAKE_STRIPE: ${FICHAITOR_FAKE_STRIPE:-false}
+      # Nunca live en local.
+      FICHAITOR_STRIPE_LIVEMODE: "false"
+      FICHAITOR_FAKE_ODOO: ${FICHAITOR_FAKE_ODOO:-true}
+      FICHAITOR_PUBLIC_BASE_URL: ${FICHAITOR_PUBLIC_BASE_URL:-http://localhost:8080}
+    depends_on:
+      db:
+        condition: service_healthy
+    healthcheck:
+      disable: true
+    read_only: true
+    tmpfs:
+      - /tmp
+    stop_grace_period: 250s
+    restart: on-failure:3
+
   # Sitio público y aplicación /app. Redirige /api/ a la API: mismo origen, sin CORS.
   web:
     build:

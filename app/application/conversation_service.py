@@ -14,6 +14,12 @@ What holds whatever arrives:
   owner's own text as they sent it.
 - The text of a review is only ever shown. It is never read to decide anything.
 - Texts of the owner and of reviews are not logged.
+
+An account blocked for non-payment (step 7 of docs/admin-facturacion.md) is paused: no
+proposal is created, reminded or delivered, its open proposals wait as they are (nothing
+is cancelled) and resume once it pays; a message of its owner gets «Tu cuenta está en
+pausa…» at most once a day, a button of its proposals gets the same text and does
+nothing, and /ayuda and /privacidad still answer.
 """
 
 import logging
@@ -69,6 +75,7 @@ OUTCOME_TARGET_GONE = "target_gone"
 OUTCOME_RECONNECT = "reconnect"
 OUTCOME_TOO_LATE = "too_late"
 OUTCOME_NO_REGULAR_HOURS = "no_regular_hours"
+OUTCOME_BILLING_BLOCKED = "billing_blocked"
 
 # The option of the buttons of "¿De qué negocio me hablas?" (text.which): it only sets
 # the focus of that address on that proposal, and never answers anything.
@@ -242,6 +249,9 @@ class ConversationService:
             return
         async with self._store.lock(identity.account_id):
             await self._store.touch_inbound(identity.id, now)
+            if await self._store.billing_blocked(identity.account_id):
+                await self._billing_paused(event, identity, now)
+                return
             if event.kind is InboundKind.BUTTON:
                 await self._button(event, identity, now)
             elif event.kind is InboundKind.TEXT:
@@ -250,6 +260,34 @@ class ConversationService:
                 await self._record_in(event, identity, "[inicio]", now)
                 await self._reply(identity, "generic.neutral")
             await self._pump(identity.account_id, now)
+
+    async def _billing_paused(
+        self, event: InboundEvent, identity: ChannelIdentity, now: datetime
+    ) -> None:
+        """The account is blocked for non-payment: nothing the owner writes or presses
+        acts. The pause is told at most once a day as a message (with the link to the
+        panel); a button that comes after it gets the same text as the channel's notice.
+        Called with the lock of the account held."""
+        if event.kind is InboundKind.BUTTON:
+            body = "[botón]"
+        elif event.kind is InboundKind.TEXT:
+            body = event.text
+        else:
+            body = "[inicio]"
+        await self._record_in(event, identity, body, now)
+        told = await self._store.claim_paused_notice(identity.account_id, now)
+        if event.kind is InboundKind.BUTTON:
+            await self._ack(event, "" if told else cm.render("billing.paused", **self._links()))
+        if told:
+            await self._reply(identity, "billing.paused", **self._links())
+
+    async def _paused(self, account_id: str) -> bool:
+        """Nothing is proposed, reminded nor delivered to the account: it has a leave
+        scheduled (B12) or it is blocked for non-payment (step 7 of
+        docs/admin-facturacion.md)."""
+        return await self._store.on_leave(account_id) or await self._store.billing_blocked(
+            account_id
+        )
 
     async def _is_link_attempt(self, event: InboundEvent, identity: ChannelIdentity | None) -> bool:
         if event.kind is InboundKind.START:
@@ -971,8 +1009,9 @@ class ConversationService:
 
     async def _submit(self, proposal: Proposal, now: datetime) -> str | None:
         async with self._store.lock(proposal.account_id):
-            # With a leave scheduled nothing new is proposed (B12).
-            if await self._store.on_leave(proposal.account_id):
+            # With a leave scheduled (B12), or blocked for non-payment, nothing new is
+            # proposed.
+            if await self._paused(proposal.account_id):
                 return None
             try:
                 added = await self._store.add_proposal(proposal)
@@ -1051,6 +1090,8 @@ class ConversationService:
                 return "review.gone", {}
             if outcome.error == OUTCOME_RECONNECT:
                 return "reconnect.needed", {"enlace_reconectar": self._config.reconnect_url}
+            if outcome.error == OUTCOME_BILLING_BLOCKED:
+                return "billing.paused", self._links()
             return "google.failed", self._links()
         if proposal.type is ProposalType.REVIEW_REPLY:
             return "review.sent", {"enlace_reseña": outcome.link}
@@ -1075,7 +1116,7 @@ class ConversationService:
         now = self._clock()
         for account_id, location_id in await self._store.lanes_with_open_work():
             async with self._store.lock(account_id):
-                if not await self._store.on_leave(account_id):
+                if not await self._paused(account_id):
                     await self._pump_lane(account_id, location_id, now)
 
     # ======================================================== queue and delivery
@@ -1087,8 +1128,9 @@ class ConversationService:
     async def _pump(self, account_id: str, now: datetime) -> None:
         """Bring every lane of an account up to date. Called with its lock held.
         With a leave scheduled it does nothing: no proposal, reminder or expiry is sent
-        until the leave is restored (B12)."""
-        if await self._store.on_leave(account_id):
+        until the leave is restored (B12). Nor while the account is blocked for
+        non-payment: its proposals wait as they are until it pays."""
+        if await self._paused(account_id):
             return
         unfinished = await self._store.list_unfinished_proposals(account_id)
         for location_id in sorted({_lane_of(p) for p in unfinished}):
@@ -1152,7 +1194,7 @@ class ConversationService:
     async def _deliver_next(
         self, account_id: str, location_id: str, now: datetime, answering: bool = False
     ) -> None:
-        if await self._store.on_leave(account_id):
+        if await self._paused(account_id):
             return
         if await self._lane_active(account_id, location_id) is not None:
             return

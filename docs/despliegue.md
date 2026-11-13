@@ -13,9 +13,11 @@ Esta guía explica cómo publicar Fichaitor en el VPS de Bitclick y cómo actual
 | `fichaitor-worker` | Worker, con la misma imagen que la API | `fichaitor-interna` | `worker.env` |
 | `fichaitor-conversation` | Conversación por Telegram (`docs/canales.md`), con la misma imagen | `fichaitor-interna` | `conversation.env` |
 | `fichaitor-web` | Sitio público, `/app` y reenvío de `/api/` | `fichaitor-interna` y `bitclick-network` | Ninguno |
+| `fichaitor-billing` | El cobro: Stripe, facturas en Odoo, avisos de renovación, fin de la beta y conciliación ([Cobro: Stripe, Odoo y el túnel](#cobro-stripe-odoo-y-el-túnel)), con la misma imagen | `fichaitor-interna` | `billing.env` |
+| `fichaitor-admin` | El backoffice, solo por túnel SSH: publicado en `127.0.0.1:8090` del VPS y en ninguna otra parte. No arranca hasta el paso 12 de `docs/admin-facturacion.md` (perfil `backoffice`) | `fichaitor-interna` | `admin.env` |
 | `fichaitor-baja` | Solo con `docker compose run --rm`: la baja por correo ([Tareas habituales](#tareas-habituales)), con la imagen de la API. No arranca con el despliegue (perfil `herramientas`) | `fichaitor-interna` | `db.env` |
 
-- Ningún contenedor publica puertos en el servidor. Nginx Proxy Manager (`bitclick-proxy`) llega a `fichaitor-web:8080` por la red `bitclick-network`. La base de datos y la API solo son visibles dentro de `fichaitor-interna`.
+- Ningún contenedor publica puertos hacia fuera del servidor; el backoffice, solo en el *loopback* (`127.0.0.1:8090`), para el túnel SSH. Nginx Proxy Manager (`bitclick-proxy`) llega a `fichaitor-web:8080` por la red `bitclick-network`. La base de datos y la API solo son visibles dentro de `fichaitor-interna`.
 - Las imágenes `fichaitor-api` y `fichaitor-web` se etiquetan con el commit. Actualizar es cambiar la etiqueta, aplicar el esquema y recrear los contenedores.
 - La clave privada de los tokens de Google solo está en `worker.env`. La API recibe la clave pública. La conversación no recibe ninguna: crea la acción cuando el dueño confirma, pero solo el worker la ejecuta.
 
@@ -28,14 +30,14 @@ Archivos del repositorio:
 | `deploy/deploy.sh` | Despliegue en el servidor: copia, esquema, recreación, salud y vuelta atrás |
 | `deploy/init-roles.sh` | Crea los usuarios de la base de datos con contraseñas generadas en el servidor |
 | `deploy/backup.sh` y `deploy/restore.md` | Copia de seguridad y restauración |
-| `deploy/env.api.example`, `deploy/env.worker.example` y `deploy/env.conversation.example` | Plantillas de `api.env`, `worker.env` y `conversation.env` |
+| `deploy/env.api.example`, `deploy/env.worker.example`, `deploy/env.conversation.example`, `deploy/env.billing.example` y `deploy/env.admin.example` | Plantillas de `api.env`, `worker.env`, `conversation.env`, `billing.env` y `admin.env` |
 
 Carpeta del servidor, `/opt/bitclick/fichaitor`:
 
 | Archivo | Quién lo escribe | Contiene secretos |
 |---|---|---|
 | `docker-compose.yml`, `deploy.sh`, `backup.sh`, `init-roles.sh`, `db/*.sql` | El flujo de GitHub, en cada despliegue | No |
-| `db.env`, `api.env`, `worker.env`, `conversation.env` | Tú, una vez. `init-roles.sh` añade las URL de la base de datos | Sí (modo 600) |
+| `db.env`, `api.env`, `worker.env`, `conversation.env`, `billing.env`, `admin.env` | Tú, una vez. `init-roles.sh` añade las URL de la base de datos | Sí (modo 600) |
 | `.env` | `deploy.sh`. Solo las dos imágenes en uso | No |
 | `.versions` | `deploy.sh`. Las últimas cinco etiquetas desplegadas | No |
 | `vertex/cuenta-servicio.json` | Tú, si Gemini va por Vertex AI (ver «Gemini en Vertex AI»). Carpeta 500 y archivo 400, del UID 10001 | Sí |
@@ -496,6 +498,149 @@ El webhook se registra **a mano, una vez**, y otra vez solo si cambian la URL o 
 **Cambiar el secreto:** genera otro, cámbialo en los dos archivos, recrea `fichaitor-api` y `fichaitor-conversation`, y repite el paso 4. Mientras tanto Telegram reintenta las entregas rechazadas durante 24 horas.
 
 **Si se filtra el token del bot:** en `@BotFather`, `/token` genera otro. Cámbialo en `conversation.env`, recrea `fichaitor-conversation` y repite el paso 4.
+
+## Cobro: Stripe, Odoo y el túnel
+
+El cobro tiene dos procesos propios (`docs/admin-facturacion.md`, 4.1): `fichaitor-billing`, el único que habla con Stripe y con Odoo, y `fichaitor-admin`, el backoffice, que solo se abre por un túnel SSH. Cada uno tiene su archivo de entorno y su usuario de base de datos, que crea `init-roles.sh`.
+
+> **Importante:** mientras `billing_setting.launch_at` esté vacío no se cobra nada. Hasta el lanzamiento, usa solo claves de **prueba** (`rk_test_…`). Nunca pegues una clave en un chat ni la subas a GitHub.
+
+### Alta de `billing.env` y `admin.env`
+
+`deploy.sh` exige los dos archivos, con modo 600, desde este paso.
+
+1. Desde tu equipo, copia las plantillas:
+
+   ```bash
+   scp deploy/env.billing.example <usuario>@<host>:/opt/bitclick/fichaitor/billing.env
+   scp deploy/env.admin.example <usuario>@<host>:/opt/bitclick/fichaitor/admin.env
+   ```
+
+2. En el servidor, protégelos:
+
+   ```bash
+   chmod 600 /opt/bitclick/fichaitor/billing.env /opt/bitclick/fichaitor/admin.env
+   ```
+
+3. En `billing.env`, rellena:
+
+   | Variable | Valor |
+   |---|---|
+   | `FICHAITOR_STRIPE_SECRET_KEY` | La clave restringida de Stripe, con los permisos de la sección 4.1 de `docs/admin-facturacion.md`. `rk_test_…` hasta el lanzamiento |
+   | `FICHAITOR_STRIPE_LIVEMODE` | `false` con una clave de prueba; `true` solo con una `rk_live_…`. `deploy.sh` rechaza las combinaciones cruzadas |
+   | `FICHAITOR_ODOO_URL`, `FICHAITOR_ODOO_DB` y `FICHAITOR_ODOO_API_KEY` | El Odoo de Bitclick, su base y la clave de API del usuario «Fichaitor facturación» |
+   | `FICHAITOR_ODOO_JOURNAL_ID` y `FICHAITOR_ODOO_PAYMENT_JOURNAL_ID` | Los id del diario de ventas «Fichaitor» (FTR, con secuencia propia RFTR) y del diario de banco «Stripe» |
+   | `FICHAITOR_ODOO_TAX_IVA_21`, `…_NO_SUJETO` y `…_ISP_UE` | Los id de los impuestos de venta del 21 %, no sujeto e inversión del sujeto pasivo |
+   | `FICHAITOR_ODOO_PRODUCT_PRO` y `…_PRO_WHATSAPP` | Los id de los productos de cada plan |
+
+   `FICHAITOR_BILLING_DATABASE_URL` la escribe `init-roles.sh`: déjala vacía. Sin `FICHAITOR_ODOO_URL`, el cobro funciona, pero ninguna factura sale: quedan pendientes y el registro avisa con `invoice_overdue`.
+
+4. En `admin.env`, deja vacía `FICHAITOR_ADMIN_DATABASE_URL` (la escribe `init-roles.sh`). La clave del TOTP y la pimienta se rellenan en el paso 12, con `openssl rand -hex 32`.
+
+   > **Precaución:** `admin.env` no puede contener ninguna variable de Stripe ni de Odoo (`STRIPE_` u `ODOO_`), ni vacía: `deploy.sh` se detiene. Tampoco SMTP ni Google.
+
+5. En `api.env`, pon el secreto de firma del webhook, `FICHAITOR_STRIPE_WEBHOOK_SECRET=whsec_…`. Es lo único de Stripe que tiene la API.
+
+6. Lanza un despliegue. `deploy.sh` comprueba los secretos, crea `fichaitor_billing_prod` y `fichaitor_admin_prod` y arranca `fichaitor-billing`. Al arrancar, el proceso revisa la configuración de Odoo y escribe en el registro `odoo_setup_problem` por cada cosa que falte:
+
+   ```bash
+   docker logs --tail 40 fichaitor-billing
+   ```
+
+### Lo que tienes que preparar en Stripe y en Odoo
+
+- **Stripe:** la sección 8 de `docs/admin-facturacion.md`. Además, en **Developers > Webhooks**, crea el *endpoint* `https://fichaitor.es/api/v1/webhooks/stripe` con los eventos de la sección 4.2 y copia su secreto en `api.env`. Ejecuta `scripts/stripe_bootstrap.py` una vez, con la clave de prueba, para crear los productos, los precios y los impuestos.
+- **Odoo (sin módulo, decisión 9.0.1):** el diario «Fichaitor» con prefijo `FTR` y secuencia propia de rectificativas, el diario de banco «Stripe», los tres impuestos de venta, un producto por plan, el redondeo de impuestos **por línea** y el usuario técnico «Fichaitor facturación» con permisos solo de facturación y su clave de API. VERI\*FACTU, como dice la sección 2.4.
+
+### Facturas pendientes
+
+`issue_invoice` reintenta durante unos tres días si Odoo no responde. Si una factura sigue pendiente pasado el día 10 del mes siguiente al cobro, emítela a mano en Odoo con la referencia `stripe:<in_…>` (el id de la factura de Stripe) en el diario «Fichaitor». El siguiente reintento, o la conciliación diaria, la encuentra por esa referencia y no la duplica.
+
+### Túnel del backoffice
+
+El backoffice escucha solo en `127.0.0.1:8090` del VPS: no hay host en Nginx Proxy Manager ni registro DNS, y desde fuera el puerto no responde.
+
+1. En el VPS, crea un usuario sin intérprete de órdenes:
+
+   ```bash
+   sudo useradd --create-home --shell /usr/sbin/nologin fichaitor-tunel
+   ```
+
+2. Añade una línea por persona en `/home/fichaitor-tunel/.ssh/authorized_keys`, con estas opciones delante de su clave pública:
+
+   ```text
+   restrict,port-forwarding,permitopen="127.0.0.1:8090",command="/usr/sbin/nologin" ssh-ed25519 AAAA… ana
+   ```
+
+   Quitar el acceso a alguien es borrar su línea.
+
+3. Desde tu equipo, abre el túnel y deja la terminal abierta:
+
+   ```bash
+   ssh -N -L 8090:127.0.0.1:8090 fichaitor-tunel@<vps>
+   ```
+
+4. Abre `http://localhost:8090`.
+
+5. Comprueba desde fuera del VPS que el puerto no responde:
+
+   ```bash
+   nc -vz -w 5 <vps> 8090
+   ```
+
+   Debe fallar. Si conecta, no sigas: revisa `ports:` de `fichaitor-admin` en el Compose.
+
+> **Nota:** el servicio `fichaitor-admin` está en el perfil `backoffice` hasta que exista `app.admin` (paso 12): el despliegue todavía no lo arranca.
+
+## Probar un pago en local
+
+Con Stripe en modo de prueba y el Odoo falso. Nada sale de tu equipo salvo las llamadas a Stripe.
+
+1. En `.env`, en la raíz del repositorio, pon una clave de **prueba** (nunca `live`):
+
+   ```bash
+   FICHAITOR_STRIPE_SECRET_KEY=rk_test_...
+   ```
+
+2. Instala el [Stripe CLI](https://docs.stripe.com/stripe-cli), entra en la cuenta de prueba y reenvía los eventos a la web local:
+
+   ```bash
+   stripe login
+   stripe listen --forward-to localhost:8080/api/v1/webhooks/stripe
+   ```
+
+   La orden imprime un secreto `whsec_…`. Ponlo en `.env` como `FICHAITOR_STRIPE_WEBHOOK_SECRET` y recrea la API.
+
+3. Crea los precios y los impuestos de prueba una vez, con la misma clave:
+
+   ```bash
+   FICHAITOR_STRIPE_SECRET_KEY=rk_test_... uv run python scripts/stripe_bootstrap.py
+   ```
+
+4. Fija una fecha de lanzamiento en el pasado en la base de desarrollo (solo en local):
+
+   ```bash
+   docker compose exec -T db psql -U fichaitor -d fichaitor \
+     -c "UPDATE billing_setting SET launch_at = now() - interval '1 day'"
+   ```
+
+5. Arranca todo, con el cobro:
+
+   ```bash
+   docker compose --profile cobro up -d --build
+   ```
+
+   El servicio `billing` solo recibe de `.env` lo suyo: la clave de Stripe, su URL de base de datos y la URL pública. El Odoo es el falso (`FICHAITOR_FAKE_ODOO=true`): las facturas salen numeradas `FTR/<año>/00001`, en memoria.
+
+6. En `http://localhost:8080/app`, completa los datos de facturación, elige «Pásate a Pro» y paga en Checkout con la tarjeta `4242 4242 4242 4242`, cualquier fecha futura y cualquier CVC.
+
+7. Comprueba que la ficha se activa, que hay una factura en Facturación y que el worker envía el correo (con `FICHAITOR_FAKE_MAIL=true`, en su registro):
+
+   ```bash
+   docker compose logs --tail 40 billing worker
+   ```
+
+Para probar un impago, usa la tarjeta `4000 0000 0000 0341` o `stripe trigger invoice.payment_failed`. Para volver a la beta: `UPDATE billing_setting SET launch_at = NULL`.
 
 ## Gemini en Vertex AI
 

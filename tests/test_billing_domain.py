@@ -391,7 +391,8 @@ def test_invoice_lines_of_an_additional_whatsapp_seat_in_the_canaries():
     (line,) = draft.lines
     assert line.product == "pro_whatsapp"
     assert line.description == (
-        'Fichaitor Pro WhatsApp, ficha "Café «El Puerto»", del 01/01/2027 al 31/12/2027 '
+        "Fichaitor Pro+ (con avisos por WhatsApp), "
+        'ficha "Café «El Puerto»", del 01/01/2027 al 31/12/2027 '
         "(segunda ficha y siguientes, 5 % de descuento)"
     )
     assert (draft.amount_untaxed, draft.amount_tax, draft.amount_total) == (5605, 0, 5605)

@@ -288,39 +288,26 @@ def test_deploy_requires_the_same_long_allowance_pepper(tmp_path, api, conversat
     assert PEPPER not in result.stderr
 
 
-@needs_bash
-@pytest.mark.parametrize(
-    ("api", "billing", "ok"),
-    [
-        ("", None, True),
-        ("FICHAITOR_STRIPE_WEBHOOK_SECRET=whsec_" + "a" * 32 + "\n", None, True),
-        ("FICHAITOR_STRIPE_WEBHOOK_SECRET=secreto\n", None, False),
-        ("FICHAITOR_STRIPE_SECRET_KEY=rk_test_x\n", None, False),
-        ("", "FICHAITOR_STRIPE_SECRET_KEY=rk_test_abc\n", True),
-        ("", "FICHAITOR_STRIPE_SECRET_KEY=rk_live_abc\n", False),
-        ("", "FICHAITOR_STRIPE_SECRET_KEY=rk_live_abc\nFICHAITOR_STRIPE_LIVEMODE=true\n", True),
-        ("", "FICHAITOR_STRIPE_SECRET_KEY=rk_test_abc\nFICHAITOR_STRIPE_LIVEMODE=true\n", False),
-    ],
-)
-def test_deploy_keeps_the_stripe_key_out_of_the_api_and_live_keys_explicit(
-    tmp_path, api, billing, ok
-):
-    files = {"api.env": api, "conversation.env": "", "worker.env": ""}
-    if billing is not None:
-        files["billing.env"] = billing
+TEST_KEY = "rk_test_" + "a" * 24
+LIVE_KEY = "rk_live_" + "b" * 24
+BILLING_OK = f"FICHAITOR_STRIPE_SECRET_KEY={TEST_KEY}\n"
+
+
+def _cobro(tmp_path, files: dict[str, str]) -> subprocess.CompletedProcess:
+    files = {"api.env": "", "conversation.env": "", "worker.env": "", "admin.env": "", **files}
     for name, text in files.items():
         (tmp_path / name).write_text(text, encoding="utf-8")
     script = "\n".join(
         [
             "set -euo pipefail",
-            _functions("log", "err", "die", "valor_env", "comprobar_cobro"),
+            _functions("log", "err", "die", "valor_env", "exigir_variables", "comprobar_cobro"),
             "API_ENV=api.env WORKER_ENV=worker.env CONVERSATION_ENV=conversation.env",
-            "BILLING_ENV=billing.env",
+            "BILLING_ENV=billing.env ADMIN_ENV=admin.env",
             "comprobar_cobro",
         ]
     )
     (tmp_path / "check.sh").write_text(script, encoding="utf-8", newline="\n")
-    result = subprocess.run(  # noqa: S603 - a fixed script of this repository
+    return subprocess.run(  # noqa: S603 - a fixed script of this repository
         [USABLE_BASH, "check.sh"],
         cwd=tmp_path,
         capture_output=True,
@@ -328,8 +315,119 @@ def test_deploy_keeps_the_stripe_key_out_of_the_api_and_live_keys_explicit(
         timeout=30,
         check=False,
     )
+
+
+@needs_bash
+@pytest.mark.parametrize(
+    ("api", "billing", "ok"),
+    [
+        ("", BILLING_OK, True),
+        ("FICHAITOR_STRIPE_WEBHOOK_SECRET=whsec_" + "a" * 32 + "\n", BILLING_OK, True),
+        ("FICHAITOR_STRIPE_WEBHOOK_SECRET=secreto\n", BILLING_OK, False),
+        (f"FICHAITOR_STRIPE_SECRET_KEY={TEST_KEY}\n", BILLING_OK, False),
+        ("FICHAITOR_ODOO_API_KEY=x\n", BILLING_OK, False),
+        ("", "", False),  # the billing process needs its key
+        ("", "FICHAITOR_STRIPE_SECRET_KEY=no-es-una-clave\n", False),
+        ("", f"FICHAITOR_STRIPE_SECRET_KEY={LIVE_KEY}\n", False),
+        ("", f"FICHAITOR_STRIPE_SECRET_KEY={LIVE_KEY}\nFICHAITOR_STRIPE_LIVEMODE=true\n", True),
+        ("", f"FICHAITOR_STRIPE_SECRET_KEY={TEST_KEY}\nFICHAITOR_STRIPE_LIVEMODE=true\n", False),
+        ("", BILLING_OK + "FICHAITOR_ODOO_URL=https://erp.example\n", False),  # incomplete
+    ],
+)
+def test_deploy_keeps_the_stripe_key_out_of_the_api_and_live_keys_explicit(
+    tmp_path, api, billing, ok
+):
+    result = _cobro(tmp_path, {"api.env": api, "billing.env": billing})
     assert (result.returncode == 0) is ok, result.stderr
-    assert "rk_live_abc" not in result.stderr and "rk_test_abc" not in result.stderr
+    assert LIVE_KEY not in result.stderr and TEST_KEY not in result.stderr
+
+
+@needs_bash
+@pytest.mark.parametrize(
+    "admin",
+    [
+        "FICHAITOR_STRIPE_SECRET_KEY=\n",
+        "FICHAITOR_ODOO_URL=https://erp.example\n",
+        "STRIPE_API_KEY=x\n",
+        "export FICHAITOR_ODOO_API_KEY=x\n",
+    ],
+)
+def test_the_backoffice_env_carries_nothing_of_stripe_nor_odoo(tmp_path, admin):
+    result = _cobro(tmp_path, {"billing.env": BILLING_OK, "admin.env": admin})
+    assert result.returncode != 0 and "admin.env" in result.stderr
+
+
+@needs_bash
+def test_a_complete_odoo_in_billing_env_passes(tmp_path):
+    odoo = "".join(
+        f"{name}=1\n"
+        for name in (
+            "FICHAITOR_ODOO_URL",
+            "FICHAITOR_ODOO_DB",
+            "FICHAITOR_ODOO_API_KEY",
+            "FICHAITOR_ODOO_JOURNAL_ID",
+            "FICHAITOR_ODOO_PAYMENT_JOURNAL_ID",
+            "FICHAITOR_ODOO_TAX_IVA_21",
+            "FICHAITOR_ODOO_TAX_NO_SUJETO",
+            "FICHAITOR_ODOO_TAX_ISP_UE",
+            "FICHAITOR_ODOO_PRODUCT_PRO",
+            "FICHAITOR_ODOO_PRODUCT_PRO_WHATSAPP",
+        )
+    )
+    admin = "FICHAITOR_ADMIN_DATABASE_URL=x\nFICHAITOR_ADMIN_TOTP_KEY=y\n"
+    result = _cobro(tmp_path, {"billing.env": BILLING_OK + odoo, "admin.env": admin})
+    assert result.returncode == 0, result.stderr
+
+
+def _code(block: str) -> str:
+    """A block of the Compose file without its comments."""
+    return "\n".join(line for line in block.splitlines() if not line.lstrip().startswith("#"))
+
+
+def test_billing_runs_in_the_internal_network_only_and_without_fake_modes():
+    block = _code(_service("fichaitor-billing"))
+    assert 'command: ["python", "-m", "app.billing"]' in block
+    assert "billing.env" in block and "bitclick-network" not in block
+    assert "ports:" not in block
+    assert 'FICHAITOR_FAKE_STRIPE: "false"' in block and 'FICHAITOR_FAKE_ODOO: "false"' in block
+    for other in ("fichaitor-api", "fichaitor-worker", "fichaitor-conversation", "fichaitor-web"):
+        assert "billing.env" not in _code(_service(other))
+
+
+def test_the_backoffice_listens_only_on_the_loopback_of_the_server():
+    block = _code(_service("fichaitor-admin"))
+    assert re.findall(r'^\s+- "([^"]+)"$', block.split("ports:")[1], re.M)[0] == (
+        "127.0.0.1:8090:8090"
+    )
+    assert "bitclick-network" not in block and "admin.env" in block
+    assert (
+        re.search(r"\b(?:0\.0\.0\.0:)?8090:8090", COMPOSE.replace("127.0.0.1:8090:8090", ""))
+        is None
+    )
+    assert "STRIPE" not in block and "ODOO" not in block
+    # Every other published port of production: none.
+    published = re.findall(r'^\s+- "?([0-9.:]+:[0-9]+)"?$', COMPOSE, re.M)
+    assert published == ["127.0.0.1:8090:8090"]
+
+
+def test_deploy_requires_and_checks_the_billing_and_backoffice_env_files():
+    assert 'exigir_privado "${BILLING_ENV}"' in DEPLOY_SH
+    assert 'exigir_privado "${ADMIN_ENV}"' in DEPLOY_SH
+    assert 'prohibir_modos_falsos "${BILLING_ENV}"' in DEPLOY_SH
+    assert 'prohibir_modos_falsos "${ADMIN_ENV}"' in DEPLOY_SH
+    assert 'comprobar_worker "${BILLING_CONTAINER}"' in DEPLOY_SH
+    for name in ("env.billing.example", "env.admin.example"):
+        assert (ROOT / "deploy" / name).exists()
+    admin = (ROOT / "deploy" / "env.admin.example").read_text(encoding="utf-8")
+    assert not re.search(r"^[A-Z0-9_]*(STRIPE_|ODOO_)", admin, re.M)
+    billing = (ROOT / "deploy" / "env.billing.example").read_text(encoding="utf-8")
+    assert "FICHAITOR_STRIPE_SECRET_KEY=\n" in billing and "FICHAITOR_ODOO_API_KEY=\n" in billing
+
+
+def test_the_deploy_workflow_copies_every_schema_the_deploy_applies():
+    workflow = (ROOT / ".github" / "workflows" / "deploy.yml").read_text(encoding="utf-8")
+    for name in ("schema_billing.sql", "schema_admin.sql"):
+        assert workflow.count(f"db/{name}") >= 2, name
 
 
 def test_init_roles_creates_the_billing_and_backoffice_users_only_with_their_env_files():

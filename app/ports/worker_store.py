@@ -61,6 +61,10 @@ class ClaimedAction:
     # panel does not count (step 9 of docs/multinegocio.md). Checked when the job takes
     # the action: one deactivated after it was confirmed fails as `location_inactive`.
     active: bool = True
+    # Its account is blocked for non-payment (step 7 of docs/admin-facturacion.md), read
+    # in the same statement that takes it. The executor fails such an action as
+    # `billing_blocked`, without calling Google.
+    blocked: bool = False
 
 
 @dataclass(frozen=True)
@@ -157,6 +161,10 @@ class WorkerStore(Protocol):
         `active` is False when that profile is no longer an active profile of the
         account (the preference of the panel does not count). The executor fails such an
         action as `location_inactive`, without calling Google.
+
+        `blocked` is True when the action's account is blocked for non-payment
+        (`fichaitor_account_blocked`). The executor fails such an action as
+        `billing_blocked`, without calling Google.
         """
         ...
 
@@ -192,6 +200,12 @@ class WorkerStore(Protocol):
     async def is_suspended(self, google_sub: str) -> bool:
         """Whether that Google user has a scheduled leave: nothing of theirs is read,
         analysed or sent until it is restored."""
+        ...
+
+    async def billing_blocked(self, google_sub: str) -> bool:
+        """Whether the account of that Google user is blocked for non-payment (step 7 of
+        docs/admin-facturacion.md): its profiles are not read from Google nor analysed
+        until it pays. Nothing is deleted meanwhile, and no term starts."""
         ...
 
     async def purge_superseded(self, google_sub: str, now: datetime) -> dict[str, int]:

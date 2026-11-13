@@ -83,6 +83,12 @@ class SyncProfile:
         if await self._store.is_suspended(google_sub):
             log.event("account_suspended", job_id=job.id, kind=job.kind)
             return
+        # Blocked for non-payment (step 7 of docs/admin-facturacion.md): Google is not
+        # called and nothing is written; what is stored stays. Once it pays, the next
+        # sync of the planner (or of the panel) picks it up again.
+        if await self._store.billing_blocked(google_sub):
+            log.event("account_billing_blocked", job_id=job.id, kind=job.kind)
+            return
         # Connected again after a leave: what was left of before goes first, so that
         # the new connection starts from nothing.
         purged = await self._store.purge_superseded(google_sub, self._clock())

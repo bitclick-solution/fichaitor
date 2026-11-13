@@ -24,6 +24,17 @@ from app.domain.proposals import (
     jumps_queue,
 )
 
+# --- an account blocked for non-payment ---------------------------------------------
+# Step 7 of docs/admin-facturacion.md. The owner who writes is told «Tu cuenta está en
+# pausa…» at most once in this time; nothing else is proposed until the account pays.
+BILLING_NOTICE_EVERY = timedelta(hours=24)
+
+
+def may_send_billing_notice(last: datetime | None, now: datetime) -> bool:
+    """Whether the account may be told now that it is paused for non-payment."""
+    return last is None or now - last >= BILLING_NOTICE_EVERY
+
+
 # --- who is talking ----------------------------------------------------------------
 
 

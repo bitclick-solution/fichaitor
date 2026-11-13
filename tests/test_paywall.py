@@ -734,3 +734,33 @@ def test_seats_in_the_me_block_hide_unpaid_checkouts():
     world.process()
     assert len(world.billing.seat_rows) == 1  # pending, for the Checkout
     assert client.get(ME).json()["billing"]["seats"] == []
+
+
+def test_invoices_list_credit_notes_negative_and_name_the_pdf_by_its_number():
+    from app.ports.billing_store import InvoiceDocument
+
+    world = World()
+    client = world.owner()
+    other = world.owner("luis")
+    account_id = world.store.accounts["ana"].id
+    at = datetime(2027, 3, 14, tzinfo=UTC)
+    world.billing.documents += [
+        (account_id, InvoiceDocument("d1", "factura", "FTR/2027/00001", 4235, at), b"%PDF-1"),
+        (
+            account_id,
+            InvoiceDocument("d2", "rectificativa", "RFTR/2027/00001", 4235, at),
+            b"%PDF-2",
+        ),
+    ]
+    body = client.get(f"{BILLING}/invoices").json()["invoices"]
+    assert [(d["kind"], d["number"], d["amount_total"]) for d in body] == [
+        ("factura", "FTR/2027/00001", 4235),
+        ("rectificativa", "RFTR/2027/00001", -4235),
+    ]
+    r = client.get(f"{BILLING}/invoices/d2/pdf")
+    assert r.status_code == 200 and r.content == b"%PDF-2"
+    assert r.headers["content-disposition"] == (
+        "attachment; filename=\"RFTR_2027_00001.pdf\"; filename*=UTF-8''RFTR_2027_00001.pdf"
+    )
+    assert other.get(f"{BILLING}/invoices/d2/pdf").status_code == 404
+    assert other.get(f"{BILLING}/invoices").json() == {"invoices": []}

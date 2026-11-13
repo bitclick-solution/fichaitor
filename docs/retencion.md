@@ -49,7 +49,7 @@ Hay tres formas de llegar al borrado: la baja desde el panel (este apartado), la
 | Respuestas con IA gastadas del plan Gratis, por ficha de Google: solo una huella (HMAC-SHA256 del id de la ficha con `FICHAITOR_ALLOWANCE_PEPPER`), cuántas y la primera y la última fecha. Ni el id en claro, ni la cuenta, ni un correo | `free_allowance` | **3 años desde el último uso**. No la borran la baja, la retención de 30 días ni la purga por revocación: si se borrase, darse de baja y volver a conectar devolvería las 25 gratuitas. Base legal: interés legítimo (art. 6.1.f RGPD) en prevenir el abuso del plan gratuito | Worker, job `retention` | Pasada diaria. La base impide borrar antes de los 3 años (`free_allowance_guard`) |
 | Peticiones de la web al proceso de cobro (comprar una plaza, pagar, portal…), con su URL de Stripe | `billing_request` | 30 días | Worker, job `retention` | Pasada diaria |
 | Identificadores de los eventos de Stripe ya procesados (nunca su carga) | `stripe_event` | 90 días desde que llegan | Worker, job `retention` | Pasada diaria. Los sin procesar se quedan |
-| Datos fiscales, plazas, cobros, facturas y bloqueos por impago | `billing_customer`, `billing_customer_history`, `billing_seat`, `billing_charge`, `billing_document`, `account_billing_block` | 6 años desde la última factura (art. 30 del Código de Comercio), también tras la baja | Aún nadie (pendiente del paso 13 de `docs/admin-facturacion.md`) | — |
+| Datos fiscales, plazas, cobros, facturas y bloqueos por impago | `billing_customer`, `billing_customer_history`, `billing_seat`, `billing_charge`, `billing_document`, `account_billing_block` | 6 años desde la última factura (art. 30 del Código de Comercio), también tras la baja | Proceso de cobro, job `billing_purge`, con la función `billing_purge()` (el plazo está en la función; el proceso no tiene `DELETE`) | Pasada diaria. Nunca un bloqueo abierto; los datos fiscales, solo con la cuenta dada de baja y sin facturas, cobros ni plazas |
 | Registro de respuestas publicadas | `audit_log` y `action` (con su texto) | 12 meses desde la baja efectiva | Worker, job `retention` | Pasada diaria. En `audit_log` la base impone los 12 meses con una política |
 | Registro de cambios de horario de un día (fechas clave: el día y el horario confirmado) | `audit_log` y `action` (`type = 'set_special_hours'`) | 12 meses desde la baja efectiva, como las respuestas | Worker, job `retention` | Pasada diaria, en las mismas sentencias que las respuestas. Es la prueba de qué cambió Fichaitor en la ficha y quién lo confirmó |
 | Registro de activaciones de fichas (cuándo se activó, desactivó o cambió de plan cada ficha, y quién lo escribió) | `location_activation_log` | 12 meses desde la baja efectiva, como el registro de respuestas. El cobro lo revisará (obligaciones fiscales) | Worker, job `retention` | Pasada diaria. Sin datos personales: identificadores, fechas y planes |
@@ -87,6 +87,16 @@ El acceso a los datos se cierra en la misma petición que confirma la baja, aunq
 - Las rutas responden 409 mientras la baja está programada.
 - Las consultas de la API llevan la condición en el propio SQL: no devuelven nada de un usuario de Google con una baja programada, ni con una baja efectiva cuyos datos todavía no se han borrado.
 - La condición va por usuario de Google, no por cuenta. Una cuenta nueva creada después con la misma identidad de Google no ve nada de la anterior.
+
+## Cuenta en pausa por impago
+
+Un impago bloquea toda la cuenta, sin límite de tiempo, hasta que se paga (decisiones 1.1 y 9.0 de `docs/admin-facturacion.md`). **La pausa no es una baja y no borra nada:**
+
+- Se conservan las fichas, los resúmenes, las reseñas, el análisis, las propuestas abiertas, los chats vinculados y la conexión con Google. No empieza ningún plazo de borrado por el bloqueo.
+- Lo que sí deja de pasar: la API responde 402 `account_blocked` en las rutas de datos, el worker no lee Google ni llama al modelo y la conversación no propone ni entrega nada (`docs/worker.md` y `docs/canales.md`, "Cuenta en pausa por impago").
+- Los plazos de siempre siguen corriendo para lo que ya tenía su plazo: por ejemplo, los 90 días de los mensajes de los canales o los 30 días de una ficha que el dueño había desactivado antes. La pasada diaria de retención no mira el bloqueo.
+- Darse de baja y desconectar Google siguen disponibles durante el bloqueo. Si el dueño se da de baja, se aplican los plazos de este documento.
+- La fila de `account_billing_block` se guarda con los datos de cobro (tabla de conservación).
 
 ## Volver a conectar
 

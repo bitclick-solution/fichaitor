@@ -8,6 +8,7 @@ import sys
 import asyncpg
 from pydantic import ValidationError
 
+from app.adapters.billing_store.documents import PostgresBillingDocuments
 from app.adapters.google_profile.fake import FakeGoogleProfile
 from app.adapters.google_profile.real import RealGoogleProfile
 from app.adapters.job_queue.postgres import PostgresJobQueue
@@ -52,9 +53,11 @@ def build_registry(
     mailer: Mailer | None = None,
     public_base_url: str = "",
     retention_policy: RetentionPolicy | None = None,
+    documents: send_mail.BillingDocuments | None = None,
 ) -> HandlerRegistry:
     """jobs: where a finished sync enqueues the sentiment analysis. Without it, no
-    analysis is chained (the job kind is still registered)."""
+    analysis is chained (the job kind is still registered). documents: where the emails
+    of the charging read the PDF of an invoice."""
     policy = sentiment_policy or SentimentPolicy()
     trigger = analyze_sentiment.SentimentTrigger(store, jobs, policy) if jobs is not None else None
     registry = HandlerRegistry()
@@ -84,7 +87,7 @@ def build_registry(
     # Leaving: the emails, making a leave effective at its date, and the daily pass
     # that deletes what is past its term (docs/retencion.md).
     apply = apply_offboarding.ApplyOffboarding(store, google, settings.token_private_key)
-    registry.register(send_mail.KIND, send_mail.SendMail(store, mailer, public_base_url))
+    registry.register(send_mail.KIND, send_mail.SendMail(store, mailer, public_base_url, documents))
     registry.register(apply_offboarding.KIND, apply)
     registry.register(
         retention.KIND, retention.Retention(store, apply, retention_policy or RetentionPolicy())
@@ -169,6 +172,7 @@ async def run(settings: WorkerSettings) -> None:
                 mailer=mailer,
                 public_base_url=mail_settings.public_base_url,
                 retention_policy=retention_settings.policy(),
+                documents=PostgresBillingDocuments(pool),
             ),
             worker_id=settings.worker_id,
             poll_interval=settings.worker_poll_interval_seconds,
