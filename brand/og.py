@@ -79,7 +79,7 @@ def main() -> None:
 
     # Pie: lo que hace, y el dominio
     texto = fuente(30, 600, 100)
-    d.text((margen, 548 * s), "Reseñas, festivos y novedades. Nunca cambia nada sin tu confirmación.", font=texto, fill=TINTA, anchor="ls")
+    d.text((margen, 548 * s), "Reseñas y festivos, a tiempo. Nunca cambia nada sin tu confirmación.", font=texto, fill=TINTA, anchor="ls")
     d.text((margen, 590 * s), "fichaitor.es", font=fuente(30, 800, 112), fill=TINTA, anchor="ls")
 
     # Sello de estrellas, como en la portada: bloque negro inclinado con sombra roja

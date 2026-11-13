@@ -26,7 +26,7 @@ export function marcarPagoEnCurso(ficha: string | null): void {
 export const NOMBRE_PAGO: Record<PlanPago, string> = { pro: "Pro", pro_whatsapp: "Pro+" };
 
 const INCLUYE: Record<PlanPago, string[]> = {
-  pro: ["Respuestas con IA ilimitadas", "Festivos y fechas clave", "Modo automático, si lo activas"],
+  pro: ["Respuestas con IA ilimitadas", "Festivos y fechas clave"],
   pro_whatsapp: ["Todo lo del plan Pro", "Por WhatsApp", "80 mensajes de Fichaitor al mes"],
 };
 

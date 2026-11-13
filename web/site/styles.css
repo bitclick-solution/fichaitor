@@ -162,7 +162,7 @@ h1, h2, h3, p { margin: 0; }
 @keyframes cinta { to { transform: translateX(-50%); } }
 
 /* ───── Escena de la ficha (anclada) ───── */
-.escena { display: block; height: 520vh; min-height: 0; }
+.escena { display: block; height: 420vh; min-height: 0; }
 .pin { position: sticky; top: 0; height: 100svh; display: flex; align-items: center; overflow: hidden; transform-origin: 50% 100%; }
 .escena .reja { display: grid; grid-template-columns: minmax(0, 1.05fr) minmax(0, 0.95fr); gap: clamp(24px, 5vw, 80px); align-items: center; padding-top: 70px; }
 .pasos { position: relative; min-height: clamp(300px, 52vh, 520px); }

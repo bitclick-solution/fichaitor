@@ -1,6 +1,6 @@
 # Fichaitor
 
-> Asistente para dueños de bares, restaurantes y otros negocios locales en España que les ayuda a llevar su ficha de Google Business Profile. Avisa de cada reseña nueva con una respuesta ya redactada, pregunta por los horarios antes de cada festivo y ayuda a publicar novedades y fotos. Nunca cambia nada en la ficha sin la confirmación del dueño.
+> Asistente para dueños de bares, restaurantes y otros negocios locales en España que les ayuda a llevar su ficha de Google Business Profile. Avisa de cada reseña nueva con una respuesta ya redactada, y pregunta por los horarios antes de cada festivo y fecha clave. Nunca cambia nada en la ficha sin la confirmación del dueño.
 
 Fichaitor es un producto de Bitclick Solutions S.L.U. (Atarfe, Granada, España). Está en pruebas y todavía no admite altas abiertas.
 
@@ -16,7 +16,7 @@ Fichaitor es un producto de Bitclick Solutions S.L.U. (Atarfe, Granada, España)
 Precios de lanzamiento previstos, por ficha y al año, sin IVA, para empresas y autónomos:
 
 - Gratis: 0 €. Diagnóstico, avisos de reseñas y 25 respuestas redactadas gratis por ficha (una sola vez, no se recargan).
-- Pro: 35 €. Respuestas ilimitadas, festivos y fechas clave, modo automático opcional.
+- Pro: 35 €. Respuestas ilimitadas y festivos y fechas clave.
 - Pro+ (Pro con avisos por WhatsApp): 59 €. Lo mismo que Pro, por WhatsApp.
 
 ## Enlaces

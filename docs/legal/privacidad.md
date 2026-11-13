@@ -19,7 +19,7 @@ Bitclick Solutions no ha designado Delegado de Protección de Datos porque no co
 
 ## 2. Qué datos tratamos y para qué
 
-Fichaitor está en pruebas. Hoy están activos la prueba con una captura, la lista de espera, la conexión con Google (con la respuesta a reseñas y el resumen de lo que dicen), la baja con su correo de aviso, los avisos por Telegram, las preguntas por los festivos, y los registros del servidor. Las demás filas describen funciones previstas (avisos por correo y WhatsApp, planes de pago, analítica) y se aplicarán cuando cada una se active.
+Fichaitor está en pruebas. Hoy están activos la prueba con una captura, la lista de espera, la conexión con Google (con la respuesta a reseñas y el resumen de lo que dicen), la baja con su correo de aviso, los avisos por Telegram y por WhatsApp (plan Pro+), las preguntas por los festivos, y los registros del servidor. Las demás filas describen funciones previstas (avisos por correo, planes de pago, analítica) y se aplicarán cuando cada una se active.
 
 | Finalidad | Datos | Base jurídica | Conservación |
 |---|---|---|---|
@@ -27,7 +27,7 @@ Fichaitor está en pruebas. Hoy están activos la prueba con una captura, la lis
 | Lista de espera: avisarte cuando Fichaitor esté disponible | Tu WhatsApp o tu correo; si probaste el diagnóstico antes de apuntarte, el negocio que buscaste (el texto que escribiste y el identificador de la ficha en Google) y la nota que obtuvo; el canal por el que llegaste, y la fecha y la versión del texto de consentimiento que aceptaste. Antes del primer aviso te pediremos que confirmes que el contacto es tuyo. Guardamos el negocio y la nota para que el aviso se refiera a tu ficha, por ejemplo para decirte qué mejorar primero. Con ellos solo contamos, en totales sin nombres, qué tipos de negocio esperan Fichaitor. No los usamos para nada más ni los cruzamos con otros datos, y se borran junto con el contacto | Consentimiento — art. 6.1.a | 12 meses desde el alta o hasta el lanzamiento, lo que ocurra antes, o hasta que te des de baja |
 | Crear y gestionar tu cuenta | Nombre, correo, teléfono vinculado, canal elegido (web, correo, Telegram o WhatsApp), plan y preferencias | Ejecución del contrato — art. 6.1.b | Mientras dure la cuenta |
 | Prestar el servicio sobre tu ficha de Google | Los datos obtenidos de las API de Google que se detallan en el apartado 3 | Ejecución del contrato — art. 6.1.b | Mientras tu ficha esté conectada. Tras desconectarla: 48 horas para restaurarla y, desde que la baja es efectiva, 30 días como máximo para el borrado; el registro de respuestas, 12 meses. Ver apartado 3 |
-| Conversar contigo y proponerte acciones (hoy, por Telegram) | El chat que vinculas (su identificador; en tu panel solo ves los últimos dígitos), los mensajes que intercambias con Fichaitor, incluidos el texto de las reseñas que te enviamos y los borradores de respuesta, y las propuestas que apruebas o descartas | Ejecución del contrato — art. 6.1.b | Los mensajes y las propuestas terminadas, 90 días; el chat, mientras esté vinculado y 90 días después de desvincularlo. Con la baja efectiva se borran los mensajes y las propuestas y, si la baja es de la cuenta, también los chats vinculados |
+| Conversar contigo y proponerte acciones (por Telegram y, en el plan Pro+, por WhatsApp) | El chat de Telegram o el número de WhatsApp que vinculas (su identificador; en tu panel solo ves los últimos dígitos), los mensajes que intercambias con Fichaitor, incluidos el texto de las reseñas que te enviamos y los borradores de respuesta, las propuestas que apruebas o descartas y, con WhatsApp, cuántos mensajes te enviamos cada mes | Ejecución del contrato — art. 6.1.b | Los mensajes y las propuestas terminadas, 90 días; el chat, mientras esté vinculado y 90 días después de desvincularlo. Con la baja efectiva se borran los mensajes y las propuestas y, si la baja es de la cuenta, también los chats vinculados |
 | Cobro y facturación | Razón social, NIF o número de IVA intracomunitario, dirección, correo para las facturas, los cobros y las facturas, y el nombre de cada ficha facturada, que figura en su factura y en los correos del cobro para identificar el servicio. Los datos completos de la tarjeta los recoge Stripe: Fichaitor solo ve la marca y los últimos 4 dígitos. Las facturas se emiten en el sistema de gestión de Bitclick Solutions (Odoo), alojado en IONOS. Para clientes de otros países de la UE, comprobamos el número de IVA en el sistema VIES de la Comisión Europea | Ejecución del contrato — art. 6.1.b, y obligación legal (fiscal y mercantil) — art. 6.1.c. Las facturas se comunican a la Agencia Tributaria cuando lo exige la ley (sistema VERI\*FACTU) | 6 años desde la última factura (art. 30 del Código de Comercio), también después de borrar la cuenta |
 | Prevención del abuso del plan gratuito: que las 25 respuestas con IA del plan Gratis se den una sola vez por ficha de Google | Una huella cifrada e irreversible del identificador de esa ficha (un HMAC con una clave secreta del servidor), el número de respuestas usadas y la fecha del primer y del último uso. No guardamos el identificador en claro, ni tu cuenta, ni tu correo | Interés legítimo en prevenir el abuso del plan gratuito — art. 6.1.f | 3 años desde su último uso, y después se borra. Se conserva aunque te des de baja o retires el acceso a Google |
 | Seguridad y registros del servidor | Dirección IP, fecha y hora, navegador, y las sesiones iniciadas | Interés legítimo en la seguridad del servicio — art. 6.1.f | Registros técnicos: se sobrescriben automáticamente al alcanzar un tamaño máximo y solo se usan para la seguridad del servicio. Sesiones caducadas o cerradas, 30 días |
@@ -64,7 +64,6 @@ Solo para prestarte las funciones de Fichaitor que ves en el producto:
 
 - Avisarte de reseñas nuevas y proponerte una respuesta.
 - Preguntarte por tus horarios en festivos y fechas clave, y actualizarlos.
-- Ayudarte a publicar novedades y fotos.
 - Mostrarte el estado y el rendimiento de tu ficha, y proponerte mejoras.
 
 ### Qué escribimos
@@ -73,9 +72,9 @@ Cada respuesta a una reseña que confirmas queda en un registro, con su texto y 
 
 ### Festivos
 
-Para avisarte de los festivos, Fichaitor deduce la comunidad autónoma del código postal de tu ficha de Google y guarda tu horario habitual. Cuando confirmas un horario para un día (por Telegram o en el panel), guardamos qué día, qué horario y cuándo lo confirmaste, como registro de los cambios hechos en tu ficha. Las preguntas por cada fecha se borran 90 días después de resolverse o al hacerse efectiva la baja.
+Para avisarte de los festivos, Fichaitor deduce la comunidad autónoma del código postal de tu ficha de Google y guarda tu horario habitual. Cuando confirmas un horario para un día (por Telegram, por WhatsApp o en el panel), guardamos qué día, qué horario y cuándo lo confirmaste, como registro de los cambios hechos en tu ficha. Las preguntas por cada fecha se borran 90 días después de resolverse o al hacerse efectiva la baja.
 
-Fichaitor solo cambia algo en tu ficha (un horario, una respuesta a una reseña, una publicación, una foto, un dato) después de que tú lo confirmes de forma expresa, o dentro de los límites del modo automático si lo has activado tú. Ningún modelo de inteligencia artificial escribe directamente en tu ficha.
+Fichaitor solo cambia algo en tu ficha (una respuesta a una reseña o un horario especial) después de que tú lo confirmes de forma expresa. Ningún modelo de inteligencia artificial escribe directamente en tu ficha.
 
 ### Lo que no hacemos
 
@@ -96,7 +95,7 @@ El uso que Fichaitor hace de la información recibida de las API de Google, y su
 Al confirmar la baja desde Fichaitor:
 
 - Dejamos de leer tu ficha y de enviarte avisos en ese momento, y te enviamos un correo con la fecha en que la baja será efectiva y un enlace para restaurarla.
-- Si borras la cuenta, además cerramos tu sesión en todos los dispositivos y desvinculamos tus chats de Telegram.
+- Si borras la cuenta, además cerramos tu sesión en todos los dispositivos y desvinculamos tus chats de Telegram y de WhatsApp.
 - Durante las 48 horas siguientes puedes restaurarla, desde tu panel o desde el enlace del correo. Si no has sido tú, basta un clic. No se ha borrado nada.
 
 Pasadas las 48 horas, la baja es efectiva:
@@ -126,7 +125,7 @@ Fichaitor usa el servicio de pago de la API de Gemini. Según sus condiciones:
 - Los datos pueden tratarse en cualquier país en el que Google o sus subencargados tengan instalaciones, por lo que puede haber transferencias fuera del Espacio Económico Europeo, con las garantías del apartado 7.
 
 
-Fichaitor no genera imágenes con inteligencia artificial. Las fotos que se publican en tu ficha son siempre las que tú envías y confirmas.
+Fichaitor no genera imágenes con inteligencia artificial ni sube fotos a tu ficha.
 
 Las propuestas son orientativas. Ninguna decisión con efectos jurídicos o similares se toma de forma automatizada: quien decide qué se publica eres tú.
 
@@ -138,18 +137,20 @@ No vendemos ni cedemos datos a terceros, salvo obligación legal. Acceden a ello
 |---|---|---|---|
 | IONOS Cloud S.L.U., Madre de Dios nº 21, 26004 Logroño (La Rioja), España | Alojamiento del servicio y de la base de datos, buzón de soporte y envío de los correos de Fichaitor (por ahora, los códigos y avisos de baja) | Todos los datos del servicio, los registros técnicos, los mensajes que envíes a soporte@fichaitor.es y los correos que te enviamos | España / Unión Europea |
 | Google Ireland Ltd. | API de Google Business Profile y de Google Places | Las consultas y los cambios que Fichaitor hace en tu ficha en tu nombre | Unión Europea y Estados Unidos |
+| Meta Platforms Ireland Ltd. (WhatsApp Business) | Envío y recepción de los mensajes por WhatsApp, en el plan Pro+ | Tu número de teléfono y el contenido de los mensajes | Unión Europea y Estados Unidos |
 | Google (la entidad del grupo Google con la que está contratado el servicio), API de Gemini | Modelo de inteligencia artificial: lectura de la captura de reseñas, redacción de propuestas y comprensión de mensajes | Lo indicado en el apartado 5 | Unión Europea y terceros países, incluido Estados Unidos |
 
 Los siguientes proveedores todavía no tratan ningún dato: lo harán cuando se active la función correspondiente, y esta política se actualizará antes.
 
 | Proveedor | Para qué | Qué datos verá | Dónde trata |
 |---|---|---|---|
-| WhatsApp Ireland Ltd. / Meta Platforms Ireland Ltd. | Envío y recepción de mensajes por WhatsApp (plan Pro+, Pro con avisos por WhatsApp) | Tu número de teléfono y el contenido de los mensajes | Unión Europea y Estados Unidos |
 | Stripe Payments Europe Ltd. | Cobro de los planes de pago, como encargado. Para la prevención del fraude y del blanqueo de capitales, Stripe actúa como responsable independiente, según su propia política de privacidad | Razón social, NIF, dirección y correo para las facturas, y los datos del medio de pago, que recoge Stripe directamente. Nunca datos obtenidos de Google | Unión Europea y Estados Unidos |
 | Google Ireland Ltd. | Google Analytics, solo si aceptas la categoría analítica | Identificador de cookie, páginas vistas y datos de navegación | Unión Europea y Estados Unidos |
 | TikTok Technology Ltd. | Píxel de TikTok, solo si aceptas la categoría de publicidad | Identificador de cookie y eventos de navegación | Unión Europea y terceros países |
 
 Si eliges Telegram como canal, los mensajes entre Fichaitor y tú, incluido el texto de las reseñas y los borradores de respuesta, pasan por Telegram (Telegram FZ-LLC y Telegram Messenger Inc.), que los trata como responsable independiente según su [política de privacidad](https://telegram.org/privacy). Telegram trata esos datos fuera del Espacio Económico Europeo: el envío fuera del EEE se produce porque tú eliges y activas ese canal, que no hace falta para usar Fichaitor. Puedes desconectar el chat cuando quieras desde «Avisos», en tu panel.
+
+Si eliges WhatsApp como canal (plan Pro+, Pro con avisos por WhatsApp), los mensajes entre Fichaitor y tú, incluido el texto de las reseñas y los borradores de respuesta, pasan por la plataforma WhatsApp Business de Meta Platforms Ireland Ltd., que los trata por cuenta de Fichaitor y puede hacerlo fuera del Espacio Económico Europeo, con las garantías del apartado 7. Guardamos tu número vinculado, los mensajes 90 días, como en Telegram, y el recuento mensual de mensajes que te enviamos. WhatsApp solo te avisa de las fichas en Pro+. Puedes desconectarlo cuando quieras desde «Avisos», en tu panel.
 
 ## 7. Transferencias internacionales
 

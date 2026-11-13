@@ -44,8 +44,8 @@
   const paneles = $$("#ficha .panel");
   const est = $("#est"), cuenta = $("#cuenta"), contesta = $("#contesta"), fest = $("#fest");
   const aviso = $("#aviso"), avisoT = $("#aviso-t");
-  const PANEL = [0, 1, 1, 3, 4];
-  const AVISO = { 1: "Reseña nueva", 3: "Festivo a la vista", 4: "Novedad publicada" };
+  const PANEL = [0, 1, 1, 3];
+  const AVISO = { 1: "Reseña nueva", 3: "Festivo a la vista" };
   let pasoActual = -1;
 
   function ponerPaso(i, sub) {
@@ -108,7 +108,7 @@
     // Escena
     if (iEscena >= 0) {
       const p = clamp((y - tops[iEscena]) / Math.max(1, altos[iEscena] - vh));
-      const f = Math.min(4.999, p * 5);
+      const f = Math.min(pasos.length - 0.001, p * pasos.length);
       ponerPaso(Math.floor(f), f % 1);
       if (y + vh * 0.6 > tops[iEscena]) est.style.setProperty("--v", "82%");
     }
@@ -141,7 +141,7 @@
       secciones.forEach((s, i) => {
         const top = tops[i], sobra = altos[i] - vh;
         if (i === iEscena && sobra > 0) {
-          for (let k = 0; k < 5; k++) puntos.push(top + ((k + 0.5) / 5) * sobra);
+          for (let k = 0; k < pasos.length; k++) puntos.push(top + ((k + 0.5) / pasos.length) * sobra);
         } else if (i === iPromesa && sobra > 0) {
           puntos.push(top, top + sobra);
         } else if (sobra > 24) {

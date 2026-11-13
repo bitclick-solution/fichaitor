@@ -873,6 +873,9 @@ function Panel({
           {estado.d.findings.length === 0 ? (
             <p className="lead">No hemos encontrado nada que mejorar. Tu ficha está al día.</p>
           ) : (
+            <>
+            {/* Son consejos: Fichaitor no los aplica; el dueño los hace en Google. */}
+            <p className="sec">Estos cambios los haces tú en tu ficha de Google.</p>
             <ol className="hallazgos">
               {estado.d.findings.map((f) => (
                 <li key={f.code}>
@@ -882,6 +885,7 @@ function Panel({
                 </li>
               ))}
             </ol>
+            </>
           )}
           {estado.d.maps_url.startsWith("https://") && (
             <p className="sec">
@@ -896,8 +900,12 @@ function Panel({
       <Canales
         negocios={negocios}
         onSinSesion={onSinSesion}
-        // Sin WhatsApp en el plan de esta ficha (Gratis o Pro), «Conectar WhatsApp» lleva al paywall de Pro+.
-        onWhatsappSinPlan={ficha.features?.whatsapp === false ? mejorar("whatsapp") : undefined}
+        // Sin ninguna ficha Pro+ en la cuenta, «Conectar WhatsApp» lleva al paywall de Pro+ (para la ficha que se ve).
+        // Si el backend aún no manda `features`, se sigue como antes.
+        onWhatsappSinPlan={
+          me.locations.some((l) => l.features) && !me.locations.some((l) => l.active && l.features?.whatsapp) ? mejorar("whatsapp") : undefined
+        }
+        bolsaWhatsapp={me.whatsapp ?? null}
       />
 
       <Instalar />

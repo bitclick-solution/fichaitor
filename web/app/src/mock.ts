@@ -160,6 +160,15 @@ let llamadasResumen = 0;
 let consultasCodigoBaja = 0;
 let llamadasDiagnostico = 0;
 
+/** Bolsa de WhatsApp: 80 mensajes al mes por ficha Pro+; null sin ninguna. «whatsapp-agotado»: ya gastada. */
+function bolsaDe(e: Estado) {
+  const fichasPlus = Object.values(e.planes ?? {}).filter((p) => p === "pro_whatsapp").length;
+  if (fichasPlus === 0) return null;
+  const limit = 80 * fichasPlus;
+  const used = escenario() === "whatsapp-agotado" ? limit : 12;
+  return { month: new Date().toISOString().slice(0, 7), used, limit, remaining: limit - used };
+}
+
 /** Bloque `billing` de GET /me (docs/admin-facturacion.md, 4.7). */
 function cobroDe(e: Estado) {
   const pagadas = (e.plazas ?? []).length;
@@ -178,8 +187,8 @@ const yo = (e: Estado) => {
   const desconectada = escenario() === "desconectada";
   // «sin-acceso»: Google niega la ficha elegida; sigue elegida, pero desaparece de la lista.
   if (escenario() === "sin-acceso")
-    return { email: "dueno@example.com", locations: conPlanes(e, FICHAS.slice(1)), selected_location_id: FICHAS[0]!.id, pending_deletion: null, connected: true, plans: planesCuenta(e), pricing: precios(e), billing: cobroDe(e) };
-  return { email: "dueno@example.com", plans: planesCuenta(e), pricing: precios(e), billing: cobroDe(e), locations: desconectada ? [] : conPlanes(e, fichas()), selected_location_id: desconectada ? null : e.elegida, pending_deletion: e.baja ?? null, connected: !desconectada };
+    return { email: "dueno@example.com", locations: conPlanes(e, FICHAS.slice(1)), selected_location_id: FICHAS[0]!.id, pending_deletion: null, connected: true, plans: planesCuenta(e), pricing: precios(e), billing: cobroDe(e), whatsapp: bolsaDe(e) };
+  return { email: "dueno@example.com", plans: planesCuenta(e), pricing: precios(e), billing: cobroDe(e), whatsapp: bolsaDe(e), locations: desconectada ? [] : conPlanes(e, fichas()), selected_location_id: desconectada ? null : e.elegida, pending_deletion: e.baja ?? null, connected: !desconectada };
 };
 
 // Fechas clave (docs/contrato-web-api.md, «Fechas clave»). Se calculan desde hoy para que siempre estén
@@ -411,7 +420,10 @@ export async function mockFetch(method: string, path: string, body: unknown): Pr
       expires_at: new Date(Date.now() + 10 * 60 * 1000).toISOString(),
       // Como el backend: el enlace lleva un testigo de 43 caracteres, nunca las 6 cifras.
       telegram_url: "https://t.me/FichaitorBot?start=Qm3v0X5k1y2Zt8pW-aR4sLd9_fHj6cNe7uBoVgIiT0Q",
-      whatsapp_url: null,
+      // Como el backend: el enlace de WhatsApp solo existe si está configurado; en el simulador, con alguna ficha Pro+.
+      whatsapp_url: Object.values(e.planes ?? {}).includes("pro_whatsapp")
+        ? "https://wa.me/34600000000?text=Vincular%20Fichaitor%20Qm3v0X5k1y2Zt8pW-aR4sLd9_fHj6cNe7uBoVgIiT0Q"
+        : null,
     });
   }
   const activacion = /^\/api\/v1\/me\/locations\/([^/]+)\/activation$/.exec(path);
@@ -484,7 +496,8 @@ export async function mockFetch(method: string, path: string, body: unknown): Pr
     if (codigoPendiente && ++codigoPendiente.consultas >= 2) {
       CANALES.push({
         id: `ch_${CANALES.length + 1}`,
-        channel: "telegram",
+        // «whatsapp»: lo que se vincula es un WhatsApp; en los demás, un Telegram.
+        channel: escenario() === "whatsapp" ? "whatsapp" : "telegram",
         address: `Telegram de ••••${7342 + CANALES.length}`,
         linked_at: new Date().toISOString(),
         locations: codigoPendiente.locations,

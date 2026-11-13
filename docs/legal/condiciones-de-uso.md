@@ -10,7 +10,7 @@ Fichaitor es un servicio de BITCLICK SOLUTIONS S.L.U. («Fichaitor», «nosotros
 
 ## 2. Objeto
 
-Estas condiciones regulan el uso de Fichaitor, un asistente que ayuda a los titulares de negocios a gestionar su ficha de Google Business Profile: avisa de reseñas nuevas y propone respuestas, pregunta por los horarios en festivos y fechas clave, ayuda a publicar novedades y fotos, y muestra el estado y el rendimiento de la ficha.
+Estas condiciones regulan el uso de Fichaitor, un asistente que ayuda a los titulares de negocios a gestionar su ficha de Google Business Profile: avisa de reseñas nuevas y propone respuestas, pregunta por los horarios en festivos y fechas clave, y muestra el estado de la ficha, lo que opinan de ella y consejos para mejorarla.
 
 Al crear una cuenta o usar el servicio, aceptas estas condiciones.
 
@@ -32,10 +32,9 @@ Eres responsable de custodiar el acceso a tu cuenta y a los canales que vincules
 
 ## 5. Cómo actúa Fichaitor sobre tu ficha
 
-- **Modo proponer (por defecto).** Fichaitor te propone cada acción y solo la aplica en tu ficha cuando tú la confirmas.
-- **Modo automático (opcional, planes de pago).** Si lo activas, Fichaitor aplica sin preguntarte las acciones del tipo que hayas autorizado, dentro de los límites que configures. Puedes desactivarlo cuando quieras.
+Fichaitor te propone cada acción (por ejemplo, la respuesta a una reseña o el horario de un festivo) y solo la aplica en tu ficha cuando tú la confirmas. Lo que se publica en tu ficha se publica en tu nombre y bajo tu responsabilidad. Las propuestas se redactan con ayuda de inteligencia artificial y pueden contener errores: revísalas antes de confirmarlas.
 
-En ambos casos, el contenido que se publica en tu ficha se publica en tu nombre y bajo tu responsabilidad. Las propuestas se redactan con ayuda de inteligencia artificial y pueden contener errores: revísalas antes de confirmarlas.
+Los consejos para mejorar tu ficha («Qué mejorar») son orientativos: Fichaitor no los aplica; si quieres seguirlos, los cambios los haces tú en Google.
 
 ## 6. Planes y precios
 
@@ -43,8 +42,8 @@ Los precios son anuales, por ficha, y no incluyen IVA ni, en su caso, otros impu
 
 | Plan | Precio al año | Canal | Incluye |
 |---|---|---|---|
-| Gratis | 0 € | Web instalable, correo o Telegram | Diagnóstico, avisos de reseñas, 25 respuestas con IA por ficha (una sola vez, no se recargan), QR básico |
-| Pro | 35 € | Web instalable, correo o Telegram | Respuestas ilimitadas, modo automático, festivos y fechas clave, QR imprimibles por empleado |
+| Gratis | 0 € | Web instalable, correo o Telegram | Diagnóstico, avisos de reseñas, 25 respuestas con IA por ficha (una sola vez, no se recargan) |
+| Pro | 35 € | Web instalable, correo o Telegram | Respuestas ilimitadas, festivos y fechas clave |
 | Pro+ (Pro con avisos por WhatsApp) | 59 € | WhatsApp | Lo mismo que Pro, por WhatsApp, con 80 mensajes de Fichaitor al mes |
 
 Las 25 respuestas con IA del plan Gratis son una sola vez por ficha de Google: no se recargan, no se acumulan y no se recuperan al borrar la cuenta ni al conectar la ficha desde otra cuenta de Google.
@@ -100,7 +99,7 @@ Fichaitor no está afiliado a Google ni patrocinado por Google. Google y Google 
 
 ## 13. Responsabilidad
 
-Tú respondes del contenido que confirmas o que se publica con el modo automático activado, y de tener los permisos necesarios sobre la ficha.
+Tú respondes del contenido que confirmas y de tener los permisos necesarios sobre la ficha.
 
 En la medida en que la ley lo permita, nuestra responsabilidad total por cualquier concepto se limita al importe que hayas pagado por el servicio en los 12 meses anteriores al hecho que la origine, y no respondemos del lucro cesante ni de daños indirectos. Estos límites no se aplican en caso de dolo o negligencia grave.
 

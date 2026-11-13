@@ -47,7 +47,10 @@ export function Canales({
   negocios: negociosPanel,
   onSinSesion,
   onWhatsappSinPlan,
+  bolsaWhatsapp = null,
 }: {
+  /** Mensajes de WhatsApp del mes (GET /me → `whatsapp`). null sin ninguna ficha Pro+. */
+  bolsaWhatsapp?: { used: number; limit: number; remaining: number } | null;
   /** El plan de la ficha no incluye WhatsApp: «Conectar WhatsApp» abre el paywall de Pro+ en lugar del código. */
   onWhatsappSinPlan?: (() => void) | undefined;
   /** Multinegocio: las fichas activas de la cuenta, entre las que se elige qué ve cada chat. Vacía sin multinegocio. */
@@ -172,7 +175,17 @@ export function Canales({
         </div>
         <div>
           <h3 className="rotulo">WhatsApp</h3>
-          <p className="sec">Con el plan Pro+. Te escribe al WhatsApp de tu negocio.</p>
+          <p className="sec">Con el plan Pro+. Te escribe al WhatsApp de tu negocio, solo de las fichas en Pro+.</p>
+          {bolsaWhatsapp &&
+            (bolsaWhatsapp.remaining <= 0 ? (
+              <p className="aviso">
+                Has usado los {bolsaWhatsapp.limit} mensajes de WhatsApp de este mes. Hasta el mes que viene, los avisos te llegan por Telegram o en el panel.
+              </p>
+            ) : (
+              <p className="canal-recibe">
+                {bolsaWhatsapp.used} de {bolsaWhatsapp.limit} mensajes este mes
+              </p>
+            ))}
           <button className="btn sec" type="button" onClick={() => (onWhatsappSinPlan ? onWhatsappSinPlan() : setVinculando("whatsapp"))}>
             {hay("whatsapp") ? "Conectar otro WhatsApp" : "Conectar WhatsApp"}
           </button>
@@ -610,7 +623,11 @@ function Esperando({ canal, codigo, quedan, onCancelar }: { canal: "telegram" | 
           <span>Abre el chat de Fichaitor desde el móvil donde quieres recibir los avisos.</span>
         </li>
         <li>
-          <span>{canal === "telegram" ? "Pulsa «Iniciar». El código viaja solo." : "Envía el mensaje con el código que aparece escrito."}</span>
+          <span>
+            {canal === "telegram"
+              ? "Pulsa «Iniciar». El código viaja solo."
+              : "Se abre con el mensaje «Vincular Fichaitor…» ya escrito: solo tienes que enviarlo. WhatsApp te avisa solo de las fichas en Pro+."}
+          </span>
         </li>
       </ol>
       <div className="vincular-medios">

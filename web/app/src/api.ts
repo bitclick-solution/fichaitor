@@ -95,6 +95,11 @@ export interface Me {
   /** Multinegocio: uso de los planes. */
   plans?: PlanesCuenta;
   pricing?: Precios;
+  /**
+   * Bolsa mensual de mensajes de WhatsApp de la cuenta: 80 por cada ficha Pro+. null sin ninguna ficha Pro+
+   * o con una baja programada.
+   */
+  whatsapp?: { month: string; used: number; limit: number; remaining: number } | null;
   /** Cobro (docs/admin-facturacion.md, 4.7). Ausente mientras el backend no lo tenga. */
   billing?: Cobro | null;
 }
