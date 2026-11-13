@@ -55,6 +55,8 @@ Lo que solo puedes hacer tú: cuentas, consolas, servidor, decisiones y pruebas 
 ## Decisiones pendientes
 
 - [ ] Gemini: seguir en AI Studio o pasar a Vertex AI en la UE (`eu`). En Vertex, `gemini-3.6-flash` se retira el 2026-11-19 y hay que usar `gemini-3.8-flash`. Pasos en `docs/despliegue.md`, «Gemini en Vertex AI».
+- [ ] Si Vertex con clave de API de Agent Platform: la clave tiene que estar **vinculada a una cuenta de servicio** (no la del modo exprés). Comprobar con una llamada real que funciona en la ubicación `eu`; si `eu` da 401/403, usar la cuenta de servicio, nunca `global`. Variables en `api.env`, `worker.env` y `conversation.env`: `FICHAITOR_GEMINI_PROVIDER=vertex`, `FICHAITOR_GEMINI_MODEL=gemini-3.8-flash`, `FICHAITOR_VERTEX_PROJECT`, `FICHAITOR_VERTEX_LOCATION=eu` y `FICHAITOR_VERTEX_API_KEY` (`docs/despliegue.md`, «Gemini en Vertex AI»).
+- [ ] Al pasar a Vertex: avisar a la sesión de interfaz para cambiar en la política la fila de Gemini (Vertex AI en la UE).
 - [ ] Pasarela de pago para cuando acabe la beta: proveedor y fecha.
 
 ## Cobro con Stripe y factura en Odoo (`docs/admin-facturacion.md`, sección 8)
