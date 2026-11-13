@@ -71,9 +71,19 @@ Tu enlace de mensajes es `https://tiktok.me/fichaitor`. Sirve para ponerlo en la
 
 #### Instrucciones de chat
 
-Lo que ve quien abre el chat antes de escribir:
+Son **botones de mensaje rápido**: quien abre el chat los pulsa y el texto se envía tal cual, como si lo hubiera escrito. Cada botón lleva una palabra clave, así que la respuesta automática contesta sola al momento.
 
-> Escribe FICHA y el nombre de tu negocio, y te mandamos la nota de su ficha de Google.
+Borra el botón «Ficha» que hay ahora y crea estos tres, en este orden:
+
+| Botón | Palabra clave que activa | Lo que contesta |
+|---|---|---|
+| `Quiero la nota de mi ficha` | `ficha` | Pide el nombre del negocio y la localidad |
+| `¿Cuánto cuesta?` | `cuánto` | El precio de la beta y de después |
+| `¿Cómo entro en la beta?` | `beta` | Qué es la beta y cómo entrar |
+
+> **Importante:** Ningún botón puede llevar dos palabras clave de reglas distintas. Por ejemplo, «¿Cuánto cuesta la ficha?» activaría dos respuestas. Si cambias un botón, comprueba la tabla de palabras clave.
+
+Después de guardarlos, ábrelos en **Previsualizar**, pulsa cada botón y comprueba que llega la respuesta correcta.
 
 #### Mensaje de bienvenida
 
@@ -81,7 +91,7 @@ Lo que ve quien abre el chat antes de escribir:
 
 #### Respuesta de palabras clave
 
-Es la pieza más útil: contesta sola cuando alguien escribe «FICHA». Solo funciona en los mensajes, no en los comentarios. Crea tres reglas:
+Es la pieza más útil: contesta sola cuando alguien escribe «FICHA» o pulsa un botón de las instrucciones de chat. Solo funciona en los mensajes, no en los comentarios. Crea tres reglas:
 
 | Palabras clave | Respuesta automática |
 |---|---|
