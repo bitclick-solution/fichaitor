@@ -48,9 +48,11 @@ export function siHaceFaltaCodigo(f: (fallo: boolean) => Promise<string | null>)
   pedirCodigo = f;
 }
 
+type Metodo = "GET" | "POST" | "PUT";
+
 const GENERICO = "Algo ha fallado. Prueba de nuevo.";
 
-async function una<T>(method: "GET" | "POST", ruta: string, cuerpo?: unknown): Promise<T> {
+async function una<T>(method: Metodo, ruta: string, cuerpo?: unknown): Promise<T> {
   const headers: Record<string, string> = {};
   if (method !== "GET") {
     headers["X-Requested-With"] = "fichaitor-admin";
@@ -116,7 +118,7 @@ async function confirmarConCodigo(): Promise<void> {
 }
 
 /** Una petición; si es sensible y el TOTP ha caducado, pide el código y la repite una vez. */
-async function pedir<T>(method: "GET" | "POST", ruta: string, cuerpo?: unknown): Promise<T> {
+async function pedir<T>(method: Metodo, ruta: string, cuerpo?: unknown): Promise<T> {
   try {
     return await una<T>(method, ruta, cuerpo);
   } catch (e) {
@@ -406,6 +408,58 @@ export interface FilaAuditoria {
   detail: Record<string, unknown>;
 }
 
+// ── Comunicaciones por correo (contrato, apartado 10) ──
+
+export type TipoComunicacion = "servicio" | "comercial";
+export type Publico = "todas" | "beta" | "plan" | "cuenta";
+
+/** Lo que se redacta: el cuerpo de POST y PUT /communications. */
+export interface BorradorComunicacion {
+  kind: TipoComunicacion;
+  subject: string;
+  preheader: string;
+  headline: string;
+  paragraphs: string[];
+  button_label: string | null;
+  button_url: string | null;
+  audience: Publico;
+  audience_plan: string | null;
+  audience_account: string | null;
+}
+
+export interface Comunicacion extends BorradorComunicacion {
+  communication_id: string;
+  state: "borrador" | "enviando" | "enviada";
+  created_at: string;
+  updated_at: string;
+  created_by: string | null;
+  test_sent_at: string | null;
+  test_is_current: boolean;
+  confirmed_at: string | null;
+  confirmed_by: string | null;
+  per_minute: number | null;
+  recipients: number | null;
+  excluded: number | null;
+  sent: number;
+  failed: number;
+  skipped: number;
+  finished_at: string | null;
+}
+
+/** Una fila del historial: sin los párrafos. */
+export type FilaComunicacion = Omit<
+  Comunicacion,
+  "paragraphs" | "preheader" | "headline" | "button_label" | "button_url" | "updated_at" | "test_is_current" | "per_minute"
+>;
+
+export interface VistaPrevia {
+  subject: string;
+  preheader: string;
+  html: string;
+  text: string;
+  headers: { name: string; value: string }[];
+}
+
 export interface AltaTotp {
   otpauth_uri: string;
   secret: string;
@@ -475,5 +529,19 @@ export const api = {
   metricas: (desde: string, hasta: string) => una<Metricas>("GET", `/metrics?from=${enc(desde)}&to=${enc(hasta)}`),
   espera: (cursor?: Cursor) => una<{ min_cell: number; cells: CeldaEspera[]; next_cursor: Cursor }>("GET", `/waitlist${paginas(cursor)}`),
   personas: (cursor?: Cursor) => una<{ users: Persona[]; next_cursor: Cursor }>("GET", `/users${paginas(cursor)}`),
+  // ── Comunicaciones (solo propietario)
+  comunicaciones: (cursor?: Cursor) => una<{ communications: FilaComunicacion[]; next_cursor: Cursor; per_minute: number }>("GET", `/communications${paginas(cursor)}`),
+  comunicacion: (id: string) => una<Comunicacion>("GET", `/communications/${enc(id)}`),
+  crearComunicacion: (b: BorradorComunicacion) => una<{ communication_id: string }>("POST", "/communications", b),
+  guardarComunicacion: (id: string, b: BorradorComunicacion) => una<{ communication_id: string }>("PUT", `/communications/${enc(id)}`, b),
+  vistaPrevia: (id: string) => una<VistaPrevia>("GET", `/communications/${enc(id)}/preview`),
+  /** La URL de la vista previa en HTML, para un <iframe sandbox> (no se pasa por fetch). */
+  urlVistaPrevia: (id: string, version: string) => `/admin/api/communications/${enc(id)}/preview.html?v=${enc(version)}`,
+  destinatarios: (id: string) => una<{ recipients: number; excluded: number; per_minute: number }>("GET", `/communications/${enc(id)}/audience`),
+  probar: (id: string) => una<{ sent_to: string }>("POST", `/communications/${enc(id)}/test`),
+  confirmar: (id: string, expected_recipients: number) =>
+    pedir<{ communication_id: string; recipients: number; excluded: number; per_minute: number; last_run_at: string }>("POST", `/communications/${enc(id)}/confirm`, {
+      expected_recipients,
+    }),
   auditoria: (cursor?: Cursor) => una<{ rows: FilaAuditoria[]; next_cursor: Cursor }>("GET", `/audit${paginas(cursor, 100)}`),
 };

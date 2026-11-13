@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { api, ErrorAdmin, olvidarCsrf, siHaceFaltaCodigo, siSePierdeLaSesion, type Rol, type Sesion } from "./api";
 import { Cargando, DialogoCodigo } from "./comun";
+import { Comunicaciones } from "./Comunicaciones";
 import { Cuentas } from "./Cuentas";
 import { Alta, Entrar, Marca, nombreRol, Reenroll } from "./Entrar";
 import { Espera, Metricas, Salud } from "./Paneles";
@@ -19,7 +20,7 @@ type Vista =
   | { n: "dentro"; sesion: Sesion }
   | { n: "fuera-de-origen" };
 
-type Pantalla = "cuentas" | "revision" | "salud" | "metricas" | "espera" | "personas" | "mi-cuenta";
+type Pantalla = "cuentas" | "revision" | "salud" | "metricas" | "espera" | "comunicaciones" | "personas" | "mi-cuenta";
 
 const PANTALLAS: { id: Pantalla; nombre: string; roles: Rol[] }[] = [
   { id: "cuentas", nombre: "Cuentas", roles: ["soporte", "finanzas", "propietario"] },
@@ -27,6 +28,7 @@ const PANTALLAS: { id: Pantalla; nombre: string; roles: Rol[] }[] = [
   { id: "salud", nombre: "Salud", roles: ["soporte", "propietario"] },
   { id: "metricas", nombre: "Métricas", roles: ["finanzas", "propietario"] },
   { id: "espera", nombre: "Lista de espera", roles: ["propietario"] },
+  { id: "comunicaciones", nombre: "Comunicaciones", roles: ["propietario"] },
   { id: "personas", nombre: "Personas y auditoría", roles: ["propietario"] },
   { id: "mi-cuenta", nombre: "Mi cuenta", roles: ["soporte", "finanzas", "propietario"] },
 ];
@@ -168,6 +170,7 @@ export function App() {
           {actual === "salud" && <Salud />}
           {actual === "metricas" && <Metricas />}
           {actual === "espera" && <Espera />}
+          {actual === "comunicaciones" && <Comunicaciones />}
           {actual === "personas" && <Personas />}
           {actual === "mi-cuenta" && <MiCuenta sesion={sesion} />}
         </main>

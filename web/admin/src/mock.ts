@@ -48,8 +48,10 @@ const PUEDEN: [RegExp, Rol[]][] = [
   [/^GET \/waitlist$/, ["propietario"]],
   [/^GET \/users$/, ["propietario"]],
   [/^GET \/audit/, ["propietario"]],
+  [/^\w+ \/communications/, ["propietario"]],
 ];
 const SENSIBLE = [
+  /^POST \/communications\/[^/]+\/confirm$/,
   /^POST \/refunds$/,
   /^POST \/accounts\/[^/]+\/entitlements$/,
   /^POST \/entitlements\//,
@@ -472,6 +474,85 @@ export async function simular(method: string, path: string, cuerpo: unknown): Pr
     const clave2 = m[1]!.replace("-", "_");
     return pagina(url, { [clave2]: (saludDatos() as unknown as Record<string, unknown[]>)[clave2]! }, clave2);
   }
+  // ── Comunicaciones ──
+  if (clave === "GET /communications") {
+    const filas = comunicaciones.map(
+      ({ paragraphs: _p, preheader: _pre, headline: _h, button_label: _bl, button_url: _bu, updated_at: _u, test_is_current: _t, per_minute: _pm, ...fila }) => fila,
+    );
+    return pagina(url, { communications: filas, per_minute: 60 }, "communications");
+  }
+  if (clave === "POST /communications") {
+    const mal = borradorMal(b);
+    if (mal) return mal;
+    const nueva: ComunicacionMock = {
+      ...(b as unknown as ComunicacionMock),
+      communication_id: `com-${comunicaciones.length + 1}`,
+      state: "borrador",
+      created_at: ahora().toISOString(),
+      updated_at: ahora().toISOString(),
+      created_by: estado.usuario,
+      test_sent_at: null,
+      test_is_current: false,
+      confirmed_at: null,
+      confirmed_by: null,
+      per_minute: null,
+      recipients: null,
+      excluded: null,
+      sent: 0,
+      failed: 0,
+      skipped: 0,
+      finished_at: null,
+    };
+    comunicaciones.unshift(nueva);
+    return responder(201, { communication_id: nueva.communication_id });
+  }
+  if ((m = clave.match(/^(GET|PUT) \/communications\/([^/]+)$/))) {
+    const c = comunicaciones.find((x) => x.communication_id === decodeURIComponent(m![2]!));
+    if (!c) return error(404, "not_found", "No existe.");
+    if (m[1] === "GET") {
+      // El envío avanza en el simulador cada vez que se mira.
+      if (c.state === "enviando") {
+        c.sent = Math.min(c.recipients ?? 0, c.sent + 60);
+        if (c.sent >= (c.recipients ?? 0)) {
+          c.state = "enviada";
+          c.finished_at = ahora().toISOString();
+        }
+      }
+      return responder(200, c);
+    }
+    if (c.state !== "borrador") return error(422, "invalid", "Ya se envió: no se puede cambiar.");
+    const mal = borradorMal(b);
+    if (mal) return mal;
+    Object.assign(c, b, { updated_at: ahora().toISOString(), test_is_current: false });
+    return responder(200, { communication_id: c.communication_id });
+  }
+  if ((m = clave.match(/^GET \/communications\/([^/]+)\/(preview|audience)$/))) {
+    const c = comunicaciones.find((x) => x.communication_id === decodeURIComponent(m![1]!));
+    if (!c) return error(404, "not_found", "No existe.");
+    if (m[2] === "audience") return responder(200, { ...publicoMock(c), per_minute: 60 });
+    return responder(200, vistaMock(c));
+  }
+  if ((m = clave.match(/^POST \/communications\/([^/]+)\/(test|confirm)$/))) {
+    const c = comunicaciones.find((x) => x.communication_id === decodeURIComponent(m![1]!));
+    if (!c) return error(404, "not_found", "No existe.");
+    if (c.state !== "borrador") return error(422, "invalid", "Ya no es un borrador.");
+    if (m[2] === "test") {
+      c.test_sent_at = ahora().toISOString();
+      c.test_is_current = true;
+      return responder(202, { sent_to: "d***o@example.com" });
+    }
+    if (!c.test_is_current) return error(422, "invalid", "Falta la prueba de esta versión.");
+    const p = publicoMock(c);
+    // Para ver el caso en el simulador: la primera confirmación de una comercial encuentra el público cambiado.
+    if (c.kind === "comercial" && !cambioVisto.has(c.communication_id)) {
+      cambioVisto.add(c.communication_id);
+      return error(422, "invalid", `El público ha cambiado: ahora son ${p.recipients - 1} destinatarios. Vuelve a contarlos y confirma otra vez.`);
+    }
+    if (b.expected_recipients !== p.recipients) return error(422, "invalid", `El público ha cambiado: ahora son ${p.recipients} destinatarios.`);
+    Object.assign(c, { state: "enviando", confirmed_at: ahora().toISOString(), confirmed_by: estado.usuario, per_minute: 60, ...p });
+    return responder(202, { communication_id: c.communication_id, ...p, per_minute: 60, last_run_at: dentroDe(p.recipients / 60 / 1440) });
+  }
+
   if (clave === "GET /metrics") {
     const desde = url.searchParams.get("from") ?? "";
     const hasta = url.searchParams.get("to") ?? "";
@@ -842,4 +923,119 @@ function saludDatos() {
     ],
     sync_errors: [{ account_id: ID1, location_id: "loc-3", status: "needs_reconnect", status_at: hace(60 * 30), synced_at: hace(60 * 24 * 3) }],
   };
+}
+
+// ── Comunicaciones en el simulador ──
+
+type ComunicacionMock = {
+  communication_id: string;
+  kind: "servicio" | "comercial";
+  subject: string;
+  preheader: string;
+  headline: string;
+  paragraphs: string[];
+  button_label: string | null;
+  button_url: string | null;
+  audience: "todas" | "beta" | "plan" | "cuenta";
+  audience_plan: string | null;
+  audience_account: string | null;
+  state: "borrador" | "enviando" | "enviada";
+  created_at: string;
+  updated_at: string;
+  created_by: string | null;
+  test_sent_at: string | null;
+  test_is_current: boolean;
+  confirmed_at: string | null;
+  confirmed_by: string | null;
+  per_minute: number | null;
+  recipients: number | null;
+  excluded: number | null;
+  sent: number;
+  failed: number;
+  skipped: number;
+  finished_at: string | null;
+};
+
+const comunicaciones: ComunicacionMock[] = [
+  {
+    communication_id: "com-1",
+    kind: "servicio",
+    subject: "Cambian las condiciones de uso de Fichaitor el 1 de febrero de 2027",
+    preheader: "Qué cambia y qué puedes hacer si no estás de acuerdo.",
+    headline: "Cambian las condiciones",
+    paragraphs: ["El 1 de febrero de 2027 cambian las condiciones de uso de Fichaitor.", "Los precios y lo que incluye cada plan no cambian."],
+    button_label: "Leer las condiciones",
+    button_url: "https://fichaitor.es/condiciones-de-uso/",
+    audience: "todas",
+    audience_plan: null,
+    audience_account: null,
+    state: "enviada",
+    created_at: hace(60 * 24 * 3),
+    updated_at: hace(60 * 24 * 3),
+    created_by: "dueno",
+    test_sent_at: hace(60 * 24 * 3 - 10),
+    test_is_current: true,
+    confirmed_at: hace(60 * 24 * 3 - 20),
+    confirmed_by: "dueno",
+    per_minute: 60,
+    recipients: 182,
+    excluded: 0,
+    sent: 180,
+    failed: 1,
+    skipped: 1,
+    finished_at: hace(60 * 24 * 3 - 24),
+  },
+];
+const cambioVisto = new Set<string>();
+
+function publicoMock(c: ComunicacionMock): { recipients: number; excluded: number } {
+  const base = c.audience === "cuenta" ? 1 : c.audience === "beta" ? 30 : c.audience === "plan" ? 21 : 182;
+  const fuera = c.kind === "comercial" && c.audience !== "cuenta" ? 4 : 0;
+  return { recipients: base - fuera - (cambioVisto.has(c.communication_id) ? 1 : 0), excluded: fuera };
+}
+
+function borradorMal(b: Record<string, unknown>): Response | null {
+  const texto = (v: unknown, max: number) => typeof v === "string" && v.trim().length > 0 && v.length <= max && !/[\r\n]/.test(v);
+  if (b.kind !== "servicio" && b.kind !== "comercial") return error(422, "validation", "Falta el tipo.", ["kind"]);
+  if (!texto(b.subject, 90)) return error(422, "invalid", "El asunto no vale: de 1 a 90 caracteres, en una línea.");
+  if (!texto(b.preheader, 120)) return error(422, "invalid", "El preencabezado no vale.");
+  if (!texto(b.headline, 40) || /\.\s*$/.test(String(b.headline))) return error(422, "invalid", "El titular no vale (de 1 a 40, sin punto final).");
+  if (!Array.isArray(b.paragraphs) || b.paragraphs.length < 1 || b.paragraphs.length > 8) return error(422, "invalid", "De 1 a 8 párrafos.");
+  if ((b.button_label === null) !== (b.button_url === null)) return error(422, "invalid", "El botón lleva texto y enlace, o ninguno.");
+  if (b.button_url !== null && !/^https:\/\/fichaitor\.es\//.test(String(b.button_url)))
+    return error(422, "invalid", "El enlace del botón solo puede ser de https://fichaitor.es/.");
+  if (b.audience === "cuenta" && b.audience_account !== ID1 && b.audience_account !== ID2) return error(404, "not_found", "Esa cuenta no existe.");
+  return null;
+}
+
+function vistaMock(c: ComunicacionMock) {
+  const e = (s: string) => s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
+  const [primero, ...resto] = c.paragraphs;
+  const p = (t: string) => `<p style="font:16px/1.5 Arial,sans-serif;margin:0 0 16px">${e(t)}</p>`;
+  const boton =
+    c.button_label && c.button_url
+      ? `<p><a href="${e(c.button_url)}" style="display:inline-block;background:#0b0b0b;color:#f4efe6;padding:14px 22px;font:bold 16px Arial,sans-serif;text-decoration:none">${e(c.button_label)} &rarr;</a></p>`
+      : "";
+  const motivo =
+    c.kind === "comercial" ? "Te escribimos porque eres cliente de Fichaitor." : "Te escribimos porque tienes una cuenta en Fichaitor y esto afecta a tu servicio.";
+  const baja =
+    c.kind === "comercial"
+      ? `<p><a href="https://fichaitor.es/baja-comunicaciones#prueba" style="color:#c4200f;font-weight:bold">Darme de baja de estas comunicaciones</a>. Seguirás recibiendo los correos sobre tu cuenta y tu servicio.</p>`
+      : "";
+  const html = `<!doctype html><html lang="es"><body style="margin:0;background:#f4efe6;padding:24px"><div style="max-width:560px;margin:0 auto"><p style="font:900 19px Arial Black,Arial;margin:0 0 20px">Fichaitor<span style="color:#ff3b30">.</span> <small style="font:12px Arial;color:#55504a">(simulador)</small></p><div style="border:2px solid #0b0b0b;padding:28px"><h1 style="font:900 26px/1.1 Arial Black,Arial;text-transform:uppercase;margin:0 0 20px">${e(c.headline)}<span style="color:#ff3b30">.</span></h1>${primero ? p(primero) : ""}${boton}${resto.map(p).join("")}</div><div style="font:13px/1.5 Arial;color:#55504a;padding-top:20px"><p>${motivo}</p>${baja}<p>¿Dudas? Escríbenos a soporte@fichaitor.es.</p></div></div></body></html>`;
+  const text = [
+    c.headline.toUpperCase(),
+    primero ?? "",
+    ...(c.button_label ? [`${c.button_label}: ${c.button_url}`] : []),
+    ...resto,
+    `${motivo}${c.kind === "comercial" ? "\nDarme de baja de estas comunicaciones: https://fichaitor.es/baja-comunicaciones#prueba" : ""}`,
+  ].join("\n\n");
+  const headers =
+    c.kind === "comercial"
+      ? [
+          { name: "List-Unsubscribe", value: "<https://fichaitor.es/api/v1/public/unsubscribe/one-click?token=prueba>" },
+          { name: "List-Unsubscribe-Post", value: "List-Unsubscribe=One-Click" },
+        ]
+      : [];
+  return { subject: c.subject, preheader: c.preheader, html, text, headers };
 }
