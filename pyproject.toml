@@ -12,6 +12,8 @@ dependencies = [
     "asyncpg>=0.29",
     "pynacl>=1.5",
     "python-multipart>=0.0.33",
+    "cryptography>=50.0.2",
+    "stripe>=17.0.0,<18",
 ]
 
 [dependency-groups]
