@@ -38,6 +38,7 @@ Carpeta del servidor, `/opt/bitclick/fichaitor`:
 | `db.env`, `api.env`, `worker.env`, `conversation.env` | Tú, una vez. `init-roles.sh` añade las URL de la base de datos | Sí (modo 600) |
 | `.env` | `deploy.sh`. Solo las dos imágenes en uso | No |
 | `.versions` | `deploy.sh`. Las últimas cinco etiquetas desplegadas | No |
+| `vertex/cuenta-servicio.json` | Tú, si Gemini va por Vertex AI (ver «Gemini en Vertex AI»). Carpeta 500 y archivo 400, del UID 10001 | Sí |
 | `backups/` | `backup.sh` | Sí (modo 700) |
 
 ### Dónde viven los secretos
@@ -496,6 +497,113 @@ El webhook se registra **a mano, una vez**, y otra vez solo si cambian la URL o 
 
 **Si se filtra el token del bot:** en `@BotFather`, `/token` genera otro. Cámbialo en `conversation.env`, recrea `fichaitor-conversation` y repite el paso 4.
 
+## Gemini en Vertex AI
+
+La beta llama a Gemini por AI Studio (la API de Gemini, con `FICHAITOR_GEMINI_API_KEY`). Para producción, la decisión es Vertex AI, en Google Cloud, en una ubicación europea. El cambio es solo de configuración: el código ya habla con los dos proveedores (`app/adapters/gemini_client.py`, `gemini_auth.py` y `gemini_provider.py`) con el mismo cuerpo, la misma salida estructurada (`responseJsonSchema`), los mismos límites, los mismos errores, sin reintentos y con el mismo registro de tokens.
+
+> **Importante:** A 2026-11-12 no se ha hecho nada de lo que sigue en Google Cloud. Producción sigue en AI Studio.
+
+### Qué ubicación y por qué
+
+Consultado en la documentación oficial el 2026-11-12. Precios en USD por millón de tokens, nivel Standard (pago por uso):
+
+| Ubicación | `gemini-3.6-flash` | `gemini-3.8-flash` | Dónde se procesa | Hasta el 31-12-2026 (entrada / salida) | Desde el 01-01-2027 |
+|---|---|---|---|---|---|
+| `eu`, multirregión UE (`aiplatform.eu.rep.googleapis.com`) | Sí | Sí | Solo en Estados miembros de la UE (no Reino Unido ni Suiza) | 0,825 / 4,125 | 1,65 / 8,25 |
+| `global` (`aiplatform.googleapis.com`) | Sí | Sí | En cualquier región de Google del mundo | 0,75 / 3,75 | 1,50 / 7,50 |
+| Una región, como `europe-west1` (Bélgica) o `europe-southwest1` (Madrid) | No figura | No figura | — | — | — |
+
+- Fuentes: [Deployments and endpoints](https://docs.cloud.google.com/vertex-ai/generative-ai/docs/learn/locations), [Data residency](https://docs.cloud.google.com/gemini-enterprise-agent-platform/resources/data-residency), [ficha de Gemini 3.6 Flash](https://docs.cloud.google.com/gemini-enterprise-agent-platform/models/gemini/3-6-flash), [ficha de Gemini 3.8 Flash](https://docs.cloud.google.com/gemini-enterprise-agent-platform/models/gemini/3-8-flash), [Standard PayGo](https://docs.cloud.google.com/gemini-enterprise-agent-platform/models/standard-paygo) y [precios](https://cloud.google.com/vertex-ai/generative-ai/pricing).
+- Todo lo que no es `global` paga la tarifa «Non-global», un 10 % más. Ninguna ubicación europea es más barata que otra.
+- Para los Gemini Flash actuales, Google no ofrece regiones europeas sueltas en pago por uso: solo `global`, `us` y `eu`.
+- `global` es lo más barato y da menos errores 429, pero Google la desaconseja cuando hay requisitos de residencia: no se controla dónde se procesa. Las multirregiones tienen su propia capacidad y pueden dar algún 429 en horas punta.
+
+**Elegido: `eu`** (`FICHAITOR_VERTEX_LOCATION=eu`, el valor por defecto). Es la única opción que garantiza que el procesamiento no sale de la UE, y cuesta lo mismo que cualquier otra que no sea `global`. El sobrecoste frente a `global` es del 10 %.
+
+> **Precaución:** En Vertex AI, `gemini-3.6-flash` tiene fecha de retirada el **19-11-2026**, y Google pide pasar a `gemini-3.8-flash`. En AI Studio no hay fecha anunciada. Al pasar a Vertex, pon `FICHAITOR_GEMINI_MODEL=gemini-3.8-flash` y prueba antes la captura, las propuestas de respuesta y el análisis de opinión con ese modelo.
+
+### Pasos en Google Cloud
+
+Necesitas permisos de propietario del proyecto y `gcloud`. En los ejemplos, `PROYECTO` es el ID del proyecto: puede ser el de Bitclick u otro con facturación activa.
+
+1. Activa la API de Vertex AI:
+
+    ```bash
+    gcloud services enable aiplatform.googleapis.com --project=PROYECTO
+    ```
+
+1. Crea una cuenta de servicio solo para esto:
+
+    ```bash
+    gcloud iam service-accounts create fichaitor-gemini \
+        --project=PROYECTO --display-name="Fichaitor: llamadas a Gemini"
+    ```
+
+1. Dale el permiso mínimo. Las peticiones al modelo exigen `aiplatform.endpoints.predict`. El rol predefinido `roles/aiplatform.user` lo incluye, pero también cientos de permisos más (crear y borrar conjuntos de datos, endpoints, agentes...). Usa un rol personalizado con ese único permiso:
+
+    ```bash
+    gcloud iam roles create fichaitorGemini --project=PROYECTO \
+        --title="Fichaitor: llamar a Gemini" \
+        --permissions=aiplatform.endpoints.predict --stage=GA
+    gcloud projects add-iam-policy-binding PROYECTO \
+        --member="serviceAccount:fichaitor-gemini@PROYECTO.iam.gserviceaccount.com" \
+        --role="projects/PROYECTO/roles/fichaitorGemini"
+    ```
+
+    Si la primera llamada responde `status 403`, ese permiso no basta: asigna `roles/aiplatform.user` en su lugar y anótalo aquí.
+
+1. Crea la clave JSON de la cuenta, mejor desde Cloud Shell. No la subas a GitHub ni la mandes por correo o chat:
+
+    ```bash
+    gcloud iam service-accounts keys create cuenta-servicio.json \
+        --iam-account=fichaitor-gemini@PROYECTO.iam.gserviceaccount.com
+    ```
+
+    Si la política de la organización `iam.disableServiceAccountKeyCreation` lo impide, pide una excepción para este proyecto: el VPS no está en Google Cloud y no tiene una identidad de máquina que usar.
+
+1. Revisa el contrato de tratamiento de datos (ver [Datos y contrato](#datos-y-contrato-dpa)).
+
+### Pasos en el servidor
+
+1. Copia la clave al servidor con `scp` a una ruta temporal y colócala en su carpeta, legible solo por el usuario de los contenedores (UID 10001):
+
+    ```bash
+    cd /opt/bitclick/fichaitor
+    sudo install -d -m 500 -o 10001 -g 10001 vertex
+    sudo install -m 400 -o 10001 -g 10001 /tmp/cuenta-servicio.json vertex/cuenta-servicio.json
+    shred -u /tmp/cuenta-servicio.json
+    ```
+
+    Borra también la copia del equipo desde el que la subiste. Compose monta `vertex/` en `/run/secrets/vertex`, de solo lectura, en la API, el worker y la conversación: la clave no entra en la imagen ni en el entorno.
+
+1. En `api.env`, `worker.env` y `conversation.env`:
+
+    ```bash
+    FICHAITOR_GEMINI_PROVIDER=vertex
+    FICHAITOR_GEMINI_MODEL=gemini-3.8-flash
+    FICHAITOR_VERTEX_PROJECT=PROYECTO
+    FICHAITOR_VERTEX_LOCATION=eu
+    FICHAITOR_VERTEX_CREDENTIALS_FILE=/run/secrets/vertex/cuenta-servicio.json
+    ```
+
+    Deja `FICHAITOR_GEMINI_API_KEY` vacía: con `vertex` no se usa. Cuando todo funcione, borra la clave en AI Studio.
+
+1. Despliega como siempre. Si el archivo falta o no se puede leer, el proceso se para al arrancar con `credentials file cannot be read`: el mensaje nunca incluye el contenido.
+1. Comprueba la captura de reseñas en la web, una propuesta de respuesta por Telegram y el análisis de opinión. En `docker compose logs` no debe aparecer `status 403` ni `credentials:`.
+
+**Volver a AI Studio:** pon `FICHAITOR_GEMINI_PROVIDER=aistudio` y la clave en los tres archivos, y vuelve a desplegar.
+
+**Rotar la clave:** crea otra (paso 4 de Google Cloud), sustituye el archivo, recrea los tres servicios y borra la antigua con `gcloud iam service-accounts keys delete`. Hazlo al menos una vez al año, y en el momento si se filtra.
+
+### Datos y contrato (DPA)
+
+- Vertex AI se rige por las condiciones de Google Cloud y su [Cloud Data Processing Addendum](https://cloud.google.com/terms/data-processing-addendum) (CDPA): Google trata los datos como **encargado del tratamiento**. Acéptalo en la consola de la cuenta de facturación y rellena los datos de contacto de privacidad de Fichaitor.
+- Según las [condiciones específicas del servicio](https://cloud.google.com/terms/service-terms), Google no usa los datos para entrenar ni ajustar modelos sin permiso.
+- Para responder más deprisa, Google guarda en memoria lo que se le envía, como máximo 24 horas y en la ubicación que atiende la petición. Se puede desactivar con `disableCache` (requiere `roles/aiplatform.admin`). Ver [Data governance](https://docs.cloud.google.com/vertex-ai/generative-ai/docs/data-governance).
+- Google puede registrar lo que se le envía para detectar abusos (apartado 4.3 de las condiciones de Google Cloud). No se puede desactivar sin pedírselo a Google.
+- Fichaitor no usa la búsqueda de Google como fuente (grounding), así que no le afecta el registro de 3 días de esa función.
+- Antes del cambio, actualiza el proveedor y la ubicación en la política de privacidad (`docs/legal/privacidad.md`, apartados 5 y 6) y en el registro de actividades de tratamiento.
+
 ## Tareas habituales
 
 **Ver el estado y los registros:**
@@ -589,11 +697,12 @@ Lo que sigue abierto hoy, 2026-11-12. No abras el sitio al público con los punt
 | Punto | Estado | Bloquea |
 |---|---|---|
 | Proyecto de Google Cloud | **Decidido 2026-11-12: el de Bitclick (`544696777336`).** Google rechazó el proyecto nuevo por duplicado: solo aprueba un proyecto por empresa. El de Bitclick ya tiene acceso a la API | No |
-| Pantalla de consentimiento del proyecto de Bitclick | En "Testing": **los tokens caducan a los 7 días**. Hay que pasarla a "In production" con la marca de Fichaitor (ver `docs/fase0/google-acceso.md`, «Proyecto definitivo») | Sí |
+| Pantalla de consentimiento del proyecto de Bitclick | **Hecho 2026-11-13:** verificación de marca aprobada y app publicada «In production», con la marca de Fichaitor | No |
 | Pantalla de consentimiento "In production" | Pendiente. Requiere la página principal, la política de privacidad y las condiciones publicadas, y el dominio verificado en Search Console | Sí |
 | Verificación de la app | Pendiente. Sin verificar: aviso de "app no verificada" y tope de 100 usuarios | No, para una beta |
 | URI de redirección de producción en el cliente OAuth | Pendiente (paso 9) | Sí |
 | Clave de Places con límite de gasto y clave de Gemini de un proyecto de pago | Por comprobar | Sí la primera |
+| Gemini en Vertex AI, ubicación `eu` y modelo `gemini-3.8-flash` (ver «Gemini en Vertex AI») | Pendiente. El código está listo; no hay nada creado en Google Cloud | No, para la beta |
 
 Cambiar de proyecto de Google es cambiar `FICHAITOR_GOOGLE_CLIENT_ID` y `FICHAITOR_GOOGLE_CLIENT_SECRET` en `api.env` y en `worker.env`. Los clientes ya conectados tienen que volver a conectar.
 

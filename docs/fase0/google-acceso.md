@@ -22,6 +22,8 @@ Lo que implica, y lo que hay que hacer en el proyecto `544696777336`:
 4. **Verificación de marca** con el nombre y el logo de Fichaitor, y el dominio `fichaitor.es` verificado en Search Console por una cuenta que sea Propietario o Editor del proyecto `544696777336`.
 5. Places y Gemini pueden seguir en el proyecto que tengan hoy: son claves aparte y no dependen de este trámite.
 
+**2026-11-13:** verificación de marca aprobada y app publicada «In production» en el proyecto `544696777336`. Los tokens nuevos ya no caducan a los 7 días.
+
 ## Estado a 2026-11-11
 
 - Dominio registrado: `fichaitor.es`. Correo de soporte: `soporte@fichaitor.es`.
