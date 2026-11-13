@@ -12,7 +12,15 @@ the subscription of the seat and the invoice to our tables and decides, with the
 - a renewal failed or a 3DS left undone: the whole account blocked at once (P3);
 - a dispute: blocked; won, unblocked;
 - a subscription cancelled: its rights end with its paid year, or at once if it was
-  cancelled for not paying.
+  cancelled for not paying;
+- a seat bought in the beta window (a Stripe trial until the window ends): its invoice
+  of 0 at the start grants the right until the first charge (+2 days) and activates the
+  profile, without a legal invoice (nothing was charged). The first charge, when the
+  trial ends, is a `subscription_cycle` invoice: paid, the year and its legal invoice;
+  failed or waiting for 3DS, the account blocked as on any renewal.
+  `customer.subscription.trial_will_end` (3 days before, by default) only copies the
+  seat again: the notice to the customer (`trial_ending`, 7 days before) is sent by the
+  daily `billing_renewal_notice`.
 
 Every step is idempotent: processing an event twice, or the events in any order, ends in
 the same state. An event of a subscription whose metadata does not match the customer
@@ -55,6 +63,7 @@ _SUBSCRIPTION_EVENTS = {
     "customer.subscription.created",
     "customer.subscription.updated",
     "customer.subscription.deleted",
+    "customer.subscription.trial_will_end",
 }
 _INVOICE_EVENTS = {
     "invoice.paid",
@@ -185,6 +194,7 @@ class StripeEvents:
             cancel_at_period_end=sub.cancel_at_period_end,
             price_key=sub.price_key,
             invoice=invoice,
+            trial_ends_at=sub.trial_end,
             entitled_until=(
                 state.entitled_until if paid and state.status is SeatStatus.ACTIVE else None
             ),

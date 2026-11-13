@@ -47,7 +47,7 @@ from app.billing.reconcile import Reconcile
 from app.billing.refunds import Refunds
 from app.billing.renewal_notice import RenewalNotice
 from app.billing.requests import BillingRequests
-from app.domain.billing import PriceKey, TaxTreatment, Territory
+from app.domain.billing import PriceKey, SeatStatus, TaxTreatment, Territory
 from app.domain.jobs import Job, JobError
 from app.domain.plans import Plan
 from app.ports.billing_store import FiscalProfile
@@ -134,7 +134,7 @@ async def cleanup() -> None:
     await owner("DELETE FROM job WHERE kind = ANY($1::text[])", list(BILLING_KINDS))
     await owner(
         "DELETE FROM job WHERE kind = 'send_mail' AND idempotency_key ~ "
-        "'^send_mail:(factura|rectificativa|billing_blocked|billing_unblocked|renewal|beta_ending):'"
+        "'^send_mail:(factura|rectificativa|billing_blocked|billing_unblocked|renewal|beta_ending|trial_ending):'"
     )
     for sql in (
         f"DELETE FROM billing_document WHERE account_id IN {mine}",
@@ -633,10 +633,13 @@ def test_the_end_of_the_beta_mails_once_then_keeps_the_oldest_in_gratis():
                 "UPDATE location SET active_since = now(), plan = 'pro' WHERE id = $1", location
             )
             await asyncio.sleep(0.01 * (i + 1))
+        # The owner writes launch_at only: beta_ends_at is always 30 days later, whatever
+        # is written in it (the beta window, owner 2026-11-13).
         await owner(
             "UPDATE billing_setting SET launch_at = now() + interval '10 days',"
             " beta_ends_at = now() + interval '20 days'"
         )
+        gap = await owner("SELECT beta_ends_at - launch_at AS gap FROM billing_setting")
         async with Stage() as s:
             enforce = Enforce(s.process, offer="")
             await enforce(Job("e", "billing_enforce", {}))
@@ -645,7 +648,13 @@ def test_the_end_of_the_beta_mails_once_then_keeps_the_oldest_in_gratis():
             plans_before = await owner(
                 "SELECT id, plan FROM location WHERE account_id = $1::uuid ORDER BY id", account
             )
-            later = Enforce(s.process, clock=lambda: datetime.now(UTC) + timedelta(days=21))
+            # Still in the window (launch + 30 days): nothing changes yet.
+            inside = Enforce(s.process, clock=lambda: datetime.now(UTC) + timedelta(days=39))
+            await inside(Job("e", "billing_enforce", {}))
+            plans_inside = await owner(
+                "SELECT plan FROM location WHERE account_id = $1::uuid", account
+            )
+            later = Enforce(s.process, clock=lambda: datetime.now(UTC) + timedelta(days=41))
             await later(Job("e", "billing_enforce", {}))
             plans_after = await owner(
                 "SELECT id, plan, active_since IS NOT NULL AS active FROM location"
@@ -657,12 +666,15 @@ def test_the_end_of_the_beta_mails_once_then_keeps_the_oldest_in_gratis():
                 " WHERE account_id = $1::uuid AND reason = 'billing'",
                 account,
             )
-        return bar, shop, mails, plans_before, plans_after, log
+        return bar, shop, mails, plans_before, plans_after, log, gap, plans_inside
 
-    bar, shop, mails, before, after, log = run(go())
+    bar, shop, mails, before, after, log, gap, inside = run(go())
+    assert gap[0]["gap"] == timedelta(days=30)
+    assert {r["plan"] for r in inside} == {"pro"}
     assert len(mails) == 1
     payload = mails[0]["payload"]
     assert payload["template"] == "beta_ending" and payload["oferta"] == ""
+    assert payload["fecha_lanzamiento"] != payload["fecha_fin"]
     assert payload["to"] == "dueno@example.com"
     assert {r["plan"] for r in before} == {"pro"}
     state = {r["id"]: (r["plan"], r["active"]) for r in after}
@@ -769,3 +781,59 @@ def test_the_purge_function_fixes_its_search_path_and_only_billing_runs_it():
     assert row["prosecdef"] is True
     assert "search_path=pg_catalog, public, pg_temp" in row["proconfig"]
     assert (row["billing"], row["worker"], row["admin"]) == (True, False, False)
+
+
+# --- the beta window (owner, 2026-11-13) ---------------------------------------------
+
+
+def test_a_beta_account_buys_in_its_window_and_gets_the_notice_7_days_before_the_charge():
+    async def go():
+        account, (bar,) = await account_with(1)  # before the launch: a beta account
+        await owner("UPDATE billing_setting SET launch_at = now() - interval '5 days'")
+        window_end = (await owner("SELECT beta_ends_at FROM billing_setting"))[0]["beta_ends_at"]
+        new_account, _ = await account_with(1)  # from the launch: no beta, no window
+        async with Stage() as s:
+            seen = (
+                await s.billing.beta_until(account),
+                await s.process.beta_until(account),
+                await s.process.beta_until(new_account),
+            )
+            await s.billing.save_profile(account, PROFILE)
+            sub_id = await s.buy(account, bar)
+            seat = (await s.billing.seats(account))[0]
+            charges = await owner(
+                "SELECT stripe_invoice_id, amount_paid FROM billing_charge"
+                " WHERE account_id = $1::uuid",
+                account,
+            )
+            invoices = [
+                j
+                for j in await jobs("issue_invoice")
+                if j["payload"]["stripe_invoice_id"] in {c["stripe_invoice_id"] for c in charges}
+            ]
+            ends = seat.trial_ends_at
+            assert ends is not None
+            # 20 days before: the renewal notice of T-30 is not for a seat in its window.
+            early = RenewalNotice(s.process, s.payments, clock=lambda: ends - timedelta(days=20))
+            await early(Job("n", "billing_renewal_notice", {}))
+            mails_early = await jobs("send_mail", seat.id)
+            notice = RenewalNotice(s.process, s.payments, clock=lambda: ends - timedelta(days=6))
+            await notice(Job("n", "billing_renewal_notice", {}))
+            await notice(Job("n", "billing_renewal_notice", {}))  # once
+            mails = await jobs("send_mail", seat.id)
+            renewal_key = s.payments.seats[sub_id].renewal_key
+        return window_end, seen, seat, charges, invoices, mails_early, mails, renewal_key
+
+    window_end, seen, seat, charges, invoices, early, mails, renewal_key = run(go())
+    assert seen[0] == seen[1] == window_end and seen[2] is None
+    assert seat.trial_ends_at == window_end and seat.in_trial
+    assert seat.status is SeatStatus.ACTIVE and seat.location_id is not None
+    assert [c["amount_paid"] for c in charges] == [0] and invoices == []  # nothing charged
+    assert early == []
+    assert len(mails) == 1
+    payload = mails[0]["payload"]
+    assert payload["template"] == "trial_ending"
+    assert payload["importe"] == "42,35 €" and payload["plan"] == "Pro"
+    assert payload["ficha"] == "Bar La Parra 0"
+    assert mails[0]["idempotency_key"].startswith("send_mail:trial_ending:")
+    assert renewal_key is PriceKey.PRO_FIRST  # the Checkout price, not changed by a notice

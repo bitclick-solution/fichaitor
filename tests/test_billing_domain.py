@@ -771,3 +771,110 @@ def test_dmarc_needs_one_from_address():
 
 def test_dmarc_of_an_empty_message():
     assert billing.parse_dmarc("", AUTHSERV).reason == "no_authentication_results"
+
+
+# --- the beta window (owner, 2026-11-13) ---------------------------------------------
+# Only the accounts of the beta (created before launch_at) keep their beta seats for
+# BETA_WINDOW_DAYS after the launch. A seat they buy in that window is first charged
+# when it ends, never later and with no extra days. Nobody else has a trial.
+
+LAUNCH = datetime(2027, 3, 1, 8, 0, tzinfo=UTC)
+WINDOW_END = LAUNCH + 30 * DAY
+
+
+def test_the_beta_ends_30_days_after_the_launch():
+    assert billing.BETA_WINDOW_DAYS == 30
+    assert billing.beta_ends_at(LAUNCH) == WINDOW_END
+    assert billing.beta_ends_at(None) is None
+
+
+def test_a_new_account_pays_its_seat_from_the_first_day():
+    for now in (LAUNCH, LAUNCH + 3 * DAY, WINDOW_END + 400 * DAY):
+        assert billing.first_charge_at(now, LAUNCH, beta_until=None) is None
+
+
+def test_a_beta_account_is_first_charged_when_its_window_ends():
+    assert billing.first_charge_at(LAUNCH + 5 * DAY, LAUNCH, beta_until=WINDOW_END) == (WINDOW_END)
+    # A beta entitlement without an end (the backfill not run) ends with the window.
+    assert billing.first_charge_at(LAUNCH + 5 * DAY, LAUNCH, beta_until=None, beta=True) == (
+        WINDOW_END
+    )
+    # Never later than the window, whatever the entitlement says.
+    later = WINDOW_END + 90 * DAY
+    assert billing.first_charge_at(LAUNCH, LAUNCH, beta_until=later) == WINDOW_END
+
+
+def test_after_the_window_a_beta_account_pays_from_the_first_day():
+    assert billing.first_charge_at(WINDOW_END, LAUNCH, beta_until=WINDOW_END) is None
+    assert billing.first_charge_at(WINDOW_END + DAY, LAUNCH, beta=True, beta_until=None) is None
+
+
+def test_a_beta_window_that_ended_before_its_time_gives_no_free_days():
+    # The owner ended the beta right sooner (a beta entitlement that already ended).
+    gone = LAUNCH + 2 * DAY
+    assert billing.first_charge_at(LAUNCH + 3 * DAY, LAUNCH, beta_until=gone) is None
+
+
+def test_the_last_hours_of_the_window_are_stretched_to_what_checkout_accepts():
+    # Checkout refuses a trial_end less than 48 hours ahead: the first charge waits a
+    # little more instead of charging a year that overlaps the beta.
+    now = WINDOW_END - 10 * timedelta(hours=1)
+    assert billing.first_charge_at(now, LAUNCH, beta_until=WINDOW_END) == (
+        now + billing.MIN_TRIAL_AHEAD
+    )
+    assert billing.MIN_TRIAL_AHEAD > timedelta(hours=48)
+
+
+def test_nothing_is_charged_before_the_launch():
+    with pytest.raises(ValueError):
+        billing.first_charge_at(LAUNCH - DAY, LAUNCH, beta_until=None)
+    with pytest.raises(ValueError):
+        billing.first_charge_at(LAUNCH, None, beta_until=None)
+
+
+def test_a_seat_waiting_for_its_first_charge_is_entitled_until_then():
+    trial = snapshot(
+        subscription_status="trialing",
+        current_period_end=WINDOW_END,
+        invoice_billing_reason="subscription_create",
+    )
+    state = billing.seat_state(trial)
+    assert state.status is SeatStatus.ACTIVE
+    assert state.entitled_until == WINDOW_END + 2 * DAY
+    assert state.block is None
+
+
+def test_a_first_charge_after_the_window_that_fails_or_waits_for_3ds_blocks_as_a_renewal():
+    failed = billing.seat_state(
+        snapshot(
+            subscription_status="past_due",
+            invoice_status="open",
+            invoice_billing_reason="subscription_cycle",
+            payment_intent_status="requires_payment_method",
+        )
+    )
+    assert failed.block is BlockReason.PAYMENT_FAILED
+    waiting = billing.seat_state(
+        snapshot(
+            subscription_status="past_due",
+            invoice_status="open",
+            invoice_billing_reason="subscription_cycle",
+            payment_intent_status="requires_action",
+        )
+    )
+    assert waiting.block is BlockReason.ACTION_REQUIRED
+    event = BillingEvent("invoice.payment_action_required", "subscription_cycle")
+    assert billing.block_decision(event).action is BlockAction.OPEN
+
+
+def test_the_beta_window_days_left():
+    assert billing.beta_window_days_left(LAUNCH + 5 * DAY, LAUNCH, beta_until=WINDOW_END) == 25
+    assert (
+        billing.beta_window_days_left(
+            WINDOW_END - timedelta(hours=1), LAUNCH, beta_until=WINDOW_END
+        )
+        == 1
+    )
+    assert billing.beta_window_days_left(WINDOW_END, LAUNCH, beta_until=WINDOW_END) is None
+    assert billing.beta_window_days_left(LAUNCH + DAY, LAUNCH, beta_until=None) is None
+    assert billing.beta_window_days_left(LAUNCH - DAY, LAUNCH, beta_until=WINDOW_END) is None

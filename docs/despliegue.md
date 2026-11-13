@@ -499,6 +499,91 @@ El webhook se registra **a mano, una vez**, y otra vez solo si cambian la URL o 
 
 **Si se filtra el token del bot:** en `@BotFather`, `/token` genera otro. Cámbialo en `conversation.env`, recrea `fichaitor-conversation` y repite el paso 4.
 
+## WhatsApp
+
+Fichaitor tiene **un solo número de WhatsApp**, en la WhatsApp Business Account (WABA) de Bitclick, y usa la Cloud API de Meta. Enviar desde un número propio no exige ser proveedor de tecnología (Tech Provider): eso solo hace falta para conectar números de los clientes, y queda fuera. Cómo funciona el canal: `docs/canales.md`, «WhatsApp». Las plantillas: `docs/whatsapp-plantillas.md`.
+
+Todo lo de esta sección lo hace el propietario en Meta y en el servidor. Fichaitor no llama a Meta para configurar nada: solo envía mensajes y recibe el webhook.
+
+> **Importante:** Los nombres de los menús de Meta cambian a menudo. Si un paso no coincide, busca la acción en la documentación de Meta citada en `docs/canales.md`, «WhatsApp», y anota aquí el cambio.
+
+### 1. El número en la WABA
+
+1. En **Meta Business Suite > Configuración del negocio > Cuentas > Cuentas de WhatsApp**, abre la WABA de Bitclick.
+2. En **WhatsApp Manager > Números de teléfono**, añade el número de Fichaitor. Tiene que poder recibir un SMS o una llamada para verificarlo, y no puede estar en uso en la app de WhatsApp ni en WhatsApp Business.
+3. Pon el **nombre visible** «Fichaitor». Meta lo revisa: hasta que lo aprueba, el número tiene límites más bajos.
+4. Copia el **identificador del número** (Phone number ID: solo cifras). Es `FICHAITOR_WHATSAPP_PHONE_NUMBER_ID`.
+5. Comprueba que la WABA tiene un **método de pago**. Desde el 1 de octubre de 2026 los mensajes de servicio fuera de los 1.000 gratis al mes y las plantillas de utilidad se cobran, y sin método de pago no se entregan.
+
+### 2. La app y el webhook
+
+1. En [developers.facebook.com](https://developers.facebook.com/apps), usa la app de Meta de Bitclick que tenga el producto **WhatsApp** y esté vinculada a la WABA, o crea una de tipo **Negocio** para Fichaitor.
+
+   > **Precaución:** Una app tiene una sola URL de webhook. Si la app de Bitclick ya la usa para otra cosa (n8n, otros clientes), no la cambies: usa una app propia para Fichaitor, o la sustitución por número (`POST /<PHONE_NUMBER_ID>` con `webhook_configuration.override_callback_uri`, documentada en «Override the callback URL»). La API de Fichaitor ignora lo que no sea de su número, pero no lo reenvía a nadie.
+
+2. En **Configuración de la app > Básica**, copia el **secreto de la app** (App Secret). Es `FICHAITOR_WHATSAPP_APP_SECRET`.
+3. Genera el testigo de verificación en el servidor. Es `FICHAITOR_WHATSAPP_VERIFY_TOKEN`:
+
+   ```bash
+   openssl rand -hex 32
+   ```
+
+4. Rellena `api.env` y despliega (paso 4). La API registra `GET` y `POST /api/v1/webhooks/whatsapp` solo con las cuatro variables puestas.
+5. En **WhatsApp > Configuración > Webhook**, pon la URL `https://fichaitor.es/api/v1/webhooks/whatsapp` y el testigo del paso 3, y pulsa **Verificar y guardar**. Meta hace un `GET` con `hub.challenge`; la API lo devuelve si el testigo coincide.
+6. En la misma pantalla, suscríbete al campo **messages**. Ningún otro hace falta.
+
+### 3. El usuario del sistema y el token permanente
+
+1. En **Configuración del negocio > Usuarios > Usuarios del sistema**, crea un usuario del sistema **administrador** (por ejemplo «fichaitor-envios»), o usa el de Bitclick.
+2. **Asignar activos**: la app (con **Administrar app**) y la WABA (con control total).
+3. **Generar token**: elige la app, caducidad **Nunca**, y los permisos `whatsapp_business_messaging` y `whatsapp_business_management` (Meta pide también `business_management` en su guía). Copia el token: no se vuelve a mostrar. Es `FICHAITOR_WHATSAPP_ACCESS_TOKEN`.
+4. Si la app no está ya suscrita a la WABA, suscríbela una vez (`POST /<WABA_ID>/subscribed_apps` con ese token, desde el Explorador de la API Graph). Sin eso no llegan los mensajes al webhook.
+
+> **Precaución:** El token envía mensajes en nombre de Bitclick. Va **solo** en `conversation.env`. Si se filtra, en **Usuarios del sistema** revócalo, genera otro, cámbialo y recrea `fichaitor-conversation`.
+
+### 4. Las variables y el despliegue
+
+| Variable | Archivo | Qué es |
+|---|---|---|
+| `FICHAITOR_WHATSAPP_PHONE_NUMBER_ID` | `api.env` y `conversation.env` (el mismo) | Identificador del número |
+| `FICHAITOR_WHATSAPP_APP_SECRET` | Solo `api.env` | Secreto de la app: firma del webhook. 32 caracteres |
+| `FICHAITOR_WHATSAPP_VERIFY_TOKEN` | Solo `api.env` | Testigo de verificación. 32 caracteres o más |
+| `FICHAITOR_WHATSAPP_DISPLAY_NUMBER` | Solo `api.env` | El número para el enlace `wa.me`: `+34 600 000 000` |
+| `FICHAITOR_WHATSAPP_ACCESS_TOKEN` | Solo `conversation.env` | Token permanente del usuario del sistema. 100 caracteres o más |
+
+`deploy.sh` (`comprobar_whatsapp`) se niega a desplegar si falta alguna, si no tiene su longitud mínima, si el identificador no coincide entre los dos archivos o si un secreto está en el archivo de otro proceso. Sin ninguna, WhatsApp queda apagado y todo lo demás sigue igual. La conversación, además, no arranca si recibe los secretos del webhook.
+
+```bash
+cd /opt/bitclick/fichaitor
+docker compose up -d --force-recreate fichaitor-api fichaitor-conversation
+# Sin firma debe responder 403:
+curl -s -o /dev/null -w '%{http_code}\n' -X POST https://fichaitor.es/api/v1/webhooks/whatsapp
+```
+
+> **Nota:** El nginx de la web acepta como mucho 64 KB en `/api/v1/webhooks/` (`web/nginx.conf`) y la API, lo mismo. Una entrega de Meta con un mensaje de texto ocupa alrededor de 1 KB, pero Meta admite hasta 3 MB. Si en el registro aparecen 413 en esta ruta, hay que subir los dos límites.
+
+### 5. Las plantillas
+
+Fuera de las 24 horas desde el último mensaje del dueño, WhatsApp solo admite plantillas aprobadas. Créalas **tú** en **WhatsApp Manager > Plantillas de mensajes**, exactamente como están en `docs/whatsapp-plantillas.md` (nombre, idioma `es`, categoría **Utilidad**, cuerpo, ejemplos y botones). Sin ellas, lo que haya que enviar fuera de la ventana no sale por WhatsApp (sale por Telegram, si está vinculado, o se queda en el panel). Anota la categoría que asigne Meta a cada una en `docs/fase0/whatsapp.md`.
+
+### 6. La verificación del negocio
+
+Una cartera sin verificar solo puede escribir, fuera de la ventana, a 250 personas distintas en 24 horas, y la cuenta de todos sus números es una sola. Para pasar a 2.000:
+
+1. En **Configuración del negocio > Centro de seguridad**, pulsa **Iniciar verificación** y sube los documentos de Bitclick (escritura o CIF, y un justificante de domicilio o una factura con el nombre y la dirección).
+2. Espera la aprobación (Meta suele tardar de unos días a dos semanas).
+
+Los avisos dentro de la ventana no cuentan para ese límite.
+
+### 7. Comprobar
+
+1. En el panel de una cuenta con alguna ficha Pro+, pide el código de vinculación y abre `whatsapp_url` desde tu móvil. Pulsa **Enviar** sin cambiar el texto.
+2. El número debe contestar «Listo…» en unos segundos. Si no:
+   - `docker logs --tail 80 fichaitor-api | grep -i whatsapp`: un 403 es la firma (secreto de la app equivocado).
+   - `docker logs --tail 80 fichaitor-conversation`: busca `whatsapp_disabled`, `job_failed` o «bolsa del mes agotada».
+   - El job: `docker exec fichaitor-db psql -U fichaitor -d fichaitor -c "SELECT state, count(*) FROM job WHERE kind = 'channel_inbound' AND idempotency_key LIKE 'whatsapp:%' GROUP BY state"`.
+3. `GET /api/v1/me` debe enseñar `whatsapp.used` en 1 (la bienvenida).
+
 ## Cobro: Stripe, Odoo y el túnel
 
 El cobro tiene dos procesos propios (`docs/admin-facturacion.md`, 4.1): `fichaitor-billing`, el único que habla con Stripe y con Odoo, y `fichaitor-admin`, el backoffice, que solo se abre por un túnel SSH. Cada uno tiene su archivo de entorno y su usuario de base de datos, que crea `init-roles.sh`.

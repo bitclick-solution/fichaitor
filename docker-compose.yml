@@ -36,6 +36,8 @@ services:
       # La API va detrás del nginx de `web`, que fija X-Forwarded-For. Sin esto todos los
       # visitantes comparten la IP del contenedor web y, con ella, los límites por IP.
       FICHAITOR_TRUST_PROXY_HEADERS: "true"
+      # WhatsApp: la API recibe, nunca envía. El token se vacía aunque .env lo traiga.
+      FICHAITOR_WHATSAPP_ACCESS_TOKEN: ""
     depends_on:
       db:
         condition: service_healthy
@@ -83,6 +85,9 @@ services:
       FICHAITOR_CONVERSATION_DATABASE_URL: ${FICHAITOR_CONVERSATION_DATABASE_URL:-postgresql://fichaitor_conversation_dev:dev@db:5432/fichaitor}
       # Nunca la clave privada en este proceso: se vacía aunque .env la traiga.
       FICHAITOR_TOKEN_PRIVATE_KEY: ""
+      # WhatsApp: la conversación envía; los secretos del webhook son de la API.
+      FICHAITOR_WHATSAPP_APP_SECRET: ""
+      FICHAITOR_WHATSAPP_VERIFY_TOKEN: ""
     depends_on:
       db:
         condition: service_healthy

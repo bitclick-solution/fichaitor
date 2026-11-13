@@ -1,5 +1,5 @@
-"""A messaging channel: Telegram today, WhatsApp later. The conversation only knows
-this interface."""
+"""A messaging channel: Telegram and WhatsApp. The conversation only knows this
+interface."""
 
 from dataclasses import dataclass
 from typing import Protocol
@@ -30,6 +30,12 @@ class SentMessage:
 
 
 class MessagingChannel(Protocol):
+    """Two optional attributes, read with getattr by the conversation:
+    - `available` (True by default): False for a channel that is not configured; nothing
+      is tried on it, and nothing is counted in the bag of WhatsApp messages.
+    - `shows_notices` (True by default): False if `acknowledge` cannot show its notice to
+      whoever pressed (WhatsApp); the conversation then sends the notice as a message."""
+
     name: str
 
     async def send(self, address: str, message: OutboundMessage) -> SentMessage:

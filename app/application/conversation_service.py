@@ -15,6 +15,13 @@ What holds whatever arrives:
 - The text of a review is only ever shown. It is never read to decide anything.
 - Texts of the owner and of reviews are not logged.
 
+WhatsApp (docs/canales.md, "WhatsApp"): a WhatsApp address only sees the profiles in
+the Pro+ plan (`pro_whatsapp`, decision 3 of docs/multinegocio.md); every message of ours
+to it is counted first in the monthly bag of the account (app/domain/message_allowance.py)
+and, once the bag is used up, is not sent: what it was about reaches the other linked
+addresses (Telegram) or waits in the panel. A message that may go out of the 24 hour
+window carries its template (`template_fallback`).
+
 An account blocked for non-payment (step 7 of docs/admin-facturacion.md) is paused: no
 proposal is created, reminded or delivered, its open proposals wait as they are (nothing
 is cancelled) and resume once it pays; a message of its owner gets «Tu cuenta está en
@@ -32,6 +39,8 @@ from typing import Any, Protocol
 from app.domain import channel_messages as cm
 from app.domain import conversation as rules
 from app.domain import link_codes
+from app.domain import message_allowance as allowance
+from app.domain import whatsapp_templates as templates
 from app.domain.calendar import format_date_es
 from app.domain.channel_messages import InboundEvent, InboundKind, MessageKind, OutboundMessage
 from app.domain.conversation import ChannelIdentity, HoursAnswer, HoursKind, Reply
@@ -249,6 +258,7 @@ class ConversationService:
             return
         async with self._store.lock(identity.account_id):
             await self._store.touch_inbound(identity.id, now)
+            identity = replace(identity, last_inbound_at=now)  # the window opens now
             if await self._store.billing_blocked(identity.account_id):
                 await self._billing_paused(event, identity, now)
                 return
@@ -277,7 +287,9 @@ class ConversationService:
         await self._record_in(event, identity, body, now)
         told = await self._store.claim_paused_notice(identity.account_id, now)
         if event.kind is InboundKind.BUTTON:
-            await self._ack(event, "" if told else cm.render("billing.paused", **self._links()))
+            await self._ack(
+                event, "" if told else cm.render("billing.paused", **self._links()), identity
+            )
         if told:
             await self._reply(identity, "billing.paused", **self._links())
 
@@ -356,6 +368,8 @@ class ConversationService:
             log.warning("vinculación rechazada: dirección no válida en %s", event.channel)
             return
         await self._store.clear_link_attempts(sender_key)
+        await self._store.touch_inbound(result.identity.id, now)
+        result = replace(result, identity=replace(result.identity, last_inbound_at=now))
         await self._record_in(event, result.identity, "[código]", now)
         await self._welcome(result, event)
         if result.previous_account_id is not None:
@@ -371,7 +385,9 @@ class ConversationService:
         name = cm.one_line(event.sender_name, cm.NAME_MAX)
         nombre = f", {name}" if name else ""
         active = list(await self._store.active_locations(identity.account_id))
-        seen = [loc for loc in active if rules.sees(identity, loc)]
+        seen = [loc for loc in active if await self._sees(identity, loc)]
+        if identity.channel in allowance.METERED_CHANNELS:
+            active = seen  # WhatsApp names only what it will tell of: the Pro+ profiles
         filtered = identity.location_filter is not None
         if not filtered and len(active) <= 1:
             # One business (or none active yet): the welcome of always, with its name.
@@ -429,6 +445,7 @@ class ConversationService:
             return
         async with self._store.lock(identity.account_id):
             await self._store.touch_inbound(identity.id, now)
+            identity = replace(identity, last_inbound_at=now)
             await self._record_in(event, identity, f"/{event.text}", now)
             await self._reply(identity, key, **values)
 
@@ -445,8 +462,9 @@ class ConversationService:
             or not rules.may_act(identity, proposal.account_id, proposal.location_id)
             or proposal.outcome_reason == OUTCOME_LOCATION_INACTIVE
             or not await self._store.location_active(proposal.account_id, _lane_of(proposal))
+            or not await self._sees(identity, _lane_of(proposal))
         ):
-            await self._ack(event, cm.render("stale.inactive"))
+            await self._ack(event, cm.render("stale.inactive"), identity)
             return
         await self._record_in(event, identity, press.option, now, proposal.id)
         if proposal.state is S.EXPIRED:
@@ -454,14 +472,14 @@ class ConversationService:
             await self._answer_expired(proposal, identity, now)
             return
         if not proposal.is_open:
-            await self._ack(event, cm.render("stale.resolved"))
+            await self._ack(event, cm.render("stale.resolved"), identity)
             return
         lane = await self._store.get_lane(proposal.account_id, _lane_of(proposal))
         if lane.active_proposal_id != proposal.id:
-            await self._ack(event, cm.render("queue.wait"))
+            await self._ack(event, cm.render("queue.wait"), identity)
             return
         if press.step_token != proposal.step_token:
-            await self._ack(event, cm.render("stale.inactive"))
+            await self._ack(event, cm.render("stale.inactive"), identity)
             return
         if press.option == WHICH_OPTION:
             # "¿De qué negocio?": this one. The text was not kept: it is asked again.
@@ -469,8 +487,15 @@ class ConversationService:
             await self._store.set_focus(identity.id, proposal.id, now)
             await self._ask_again(proposal, identity)
             return
+        if press.option == cm.SHOW_OPTION:
+            # "Ver propuesta" of a template (WhatsApp, out of the window): the step again,
+            # whole and with its buttons, inside the window this press opened.
+            await self._ack(event)
+            await self._store.set_focus(identity.id, proposal.id, now)
+            await self._show_again(proposal, identity)
+            return
         if press.option not in STEPS[proposal.step].options:
-            await self._ack(event, cm.render("stale.inactive"))
+            await self._ack(event, cm.render("stale.inactive"), identity)
             return
         await self._ack(event)
         await self._store.set_focus(identity.id, proposal.id, now)
@@ -484,6 +509,13 @@ class ConversationService:
             await self._show_step(
                 proposal, [identity], MessageKind.REPLY, prefix=again, keep_token=True
             )
+        else:
+            await self._reply(identity, "text.write_again", about=proposal)
+
+    async def _show_again(self, proposal: Proposal, identity: ChannelIdentity) -> None:
+        """The step of that proposal as it is, with the same (still valid) buttons."""
+        if STEPS[proposal.step].options:
+            await self._show_step(proposal, [identity], MessageKind.REPLY, keep_token=True)
         else:
             await self._reply(identity, "text.write_again", about=proposal)
 
@@ -1145,7 +1177,7 @@ class ConversationService:
         lane = await self._store.get_lane(account_id, location_id)
         zone = await self._zone(account_id)
         may_write = rules.may_send_proactively(now, zone, self._config.quiet)
-        identities = list(await self._store.identities_for(account_id, location_id))
+        identities = await self._identities_for(account_id, location_id)
         for proposal in await self._lane_unfinished(account_id, location_id):
             due = rules.due_event(proposal, now)
             if due in (E.CANCEL, E.EXPIRE):
@@ -1198,7 +1230,7 @@ class ConversationService:
             return
         if await self._lane_active(account_id, location_id) is not None:
             return
-        identities = list(await self._store.identities_for(account_id, location_id))
+        identities = await self._identities_for(account_id, location_id)
         if not identities:
             return  # nobody sees this business: nothing is sent, the panel has it
         zone = await self._zone(account_id)
@@ -1244,6 +1276,15 @@ class ConversationService:
             fecha_larga=format_date_es(last_day),
         )
         reminded = replace(proposal, state=advance(proposal.state, E.REMIND), reminder_sent_at=now)
+        fallback = None
+        if _needs_template(identities):
+            label = await self._store.location_label(proposal.account_id, _lane_of(proposal))
+            fallback = templates.reminder(
+                label,
+                self._summary(proposal),
+                format_date_es(last_day),
+                cm.encode_button_id(proposal.id, proposal.step_token, cm.SHOW_OPTION),
+            )
         sent = await self._show_step(
             reminded,
             identities,
@@ -1251,6 +1292,7 @@ class ConversationService:
             prefix=prefix,
             key="reminder.pending",
             keep_token=True,
+            fallback=fallback,
         )
         if not sent:
             await self._store.save_proposal(proposal)  # not reminded: tried again later
@@ -1335,10 +1377,13 @@ class ConversationService:
         key: str = "",
         keep_token: bool = False,
         cleared: bool = False,
+        fallback: cm.TemplateFallback | None = None,
     ) -> bool:
         """Send the message of the proposal's step, with its buttons, and store the
         proposal. False (and nothing stored) if no address received it. With several
-        active businesses, the message opens with the one it is about."""
+        active businesses, the message opens with the one it is about. A proposal sent on
+        the agent's initiative carries its template, for WhatsApp out of the window: the
+        one given, or the one of its opening message."""
         if not keep_token and not cleared:
             await self._clear_buttons(proposal)
         if not keep_token:
@@ -1356,9 +1401,13 @@ class ConversationService:
             )
             for option in STEPS[proposal.step].options
         )
+        if fallback is None and kind is MessageKind.PROPOSAL and _needs_template(identities):
+            fallback = await self._proposal_fallback(proposal, step_key, buttons)
         refs = dict(proposal.message_refs) if keep_token else {}
         for identity in identities:
-            ref = await self._send(identity, key or step_key, text, kind, buttons, proposal.id)
+            ref = await self._send(
+                identity, key or step_key, text, kind, buttons, proposal.id, fallback
+            )
             if ref is not None:
                 refs[identity.id] = ref
         if not refs and kind is MessageKind.PROPOSAL:
@@ -1367,6 +1416,29 @@ class ConversationService:
             replace(proposal, message_refs=refs, slots={**proposal.slots, "shown": text})
         )
         return True
+
+    async def _proposal_fallback(
+        self, proposal: Proposal, step_key: str, buttons: tuple[cm.Button, ...]
+    ) -> cm.TemplateFallback:
+        """The template of the message that opens that proposal (app/domain/
+        whatsapp_templates.py), with the ids of its buttons; the generic notice if it has
+        none or it does not fit."""
+        label = await self._store.location_label(proposal.account_id, _lane_of(proposal))
+        data = proposal.payload
+        values: dict[str, str] = {}
+        if proposal.type is ProposalType.REVIEW_REPLY:
+            values = {
+                "estrellas": cm.stars_text(data["stars"]),
+                "resena": str(data.get("review_text") or ""),
+                "respuesta": str(data.get("reply") or ""),
+            }
+        elif "date" in data:
+            values = {
+                "fecha_larga": format_date_es(date.fromisoformat(data["date"])),
+                "nombre": str(data.get("name") or ""),
+            }
+        show = cm.encode_button_id(proposal.id, proposal.step_token, cm.SHOW_OPTION)
+        return templates.for_proposal(step_key, label, values, tuple(b.id for b in buttons), show)
 
     async def _clear_buttons(self, proposal: Proposal, chosen: str | None = None) -> None:
         """Leave the last message with buttons without them, with what was chosen."""
@@ -1392,11 +1464,15 @@ class ConversationService:
     ) -> None:
         """A message of the catalog. `about`: the proposal it answers within, whose
         business opens it when the account has several active ones."""
-        text = cm.render(key, **values)
+        body = cm.render(key, **values)
         header = await self._header(about) if about is not None else ""
-        if header:
-            text = cm.with_header(header, text)
-        await self._send(identity, key, text, kind)
+        text = cm.with_header(header, body) if header else body
+        fallback = None
+        if kind is MessageKind.RESULT and about is not None and _needs_template([identity]):
+            # The outcome of a change may arrive after the window closed (WhatsApp).
+            label = await self._store.location_label(about.account_id, _lane_of(about))
+            fallback = templates.result(label, body)
+        await self._send(identity, key, text, kind, fallback=fallback)
 
     async def _send(
         self,
@@ -1406,13 +1482,34 @@ class ConversationService:
         kind: MessageKind,
         buttons: tuple[cm.Button, ...] = (),
         proposal_id: str | None = None,
+        fallback: cm.TemplateFallback | None = None,
     ) -> str | None:
-        """Send to a linked address. None if the channel did not take it."""
+        """Send to a linked address. None if the channel did not take it, cannot send, or
+        its bag of messages for the month is used up (WhatsApp): then nothing is sent."""
         message = cm.validate(
-            OutboundMessage(identity.id, kind, text, buttons, key=key, proposal_id=proposal_id)
+            OutboundMessage(
+                identity.id,
+                kind,
+                text,
+                buttons,
+                key=key,
+                proposal_id=proposal_id,
+                template_fallback=fallback,
+                last_inbound_at=identity.last_inbound_at,
+            )
         )
+        channel = self._channels.get(identity.channel)
+        if channel is None or not getattr(channel, "available", True):
+            return None
+        if identity.channel in allowance.METERED_CHANNELS and not (
+            await self._store.take_message_allowance(
+                identity.account_id, allowance.units(message), self._clock()
+            )
+        ):
+            log.info("mensaje %s no enviado por %s: bolsa del mes agotada", key, identity.channel)
+            return None
         try:
-            sent = await self._channels[identity.channel].send(identity.address, message)
+            sent = await channel.send(identity.address, message)
         except MessagingError as exc:
             log.warning("mensaje %s no enviado por %s: %s", key, identity.channel, exc)
             return None
@@ -1437,17 +1534,31 @@ class ConversationService:
         """To an address that is not linked. Nothing about it is stored."""
         message = cm.validate(
             OutboundMessage(
-                f"{channel}:unlinked", MessageKind.SYSTEM, cm.render(key, **values), key=key
+                f"{channel}:unlinked",
+                MessageKind.SYSTEM,
+                cm.render(key, **values),
+                key=key,
+                last_inbound_at=self._clock(),  # it answers what that address just sent
             )
         )
+        target = self._channels[channel]
+        if not getattr(target, "available", True):
+            return
         try:
-            await self._channels[channel].send(address, message)
+            await target.send(address, message)
         except MessagingError as exc:
             log.warning("mensaje %s no enviado por %s: %s", key, channel, exc)
 
-    async def _ack(self, event: InboundEvent, notice: str = "") -> None:
+    async def _ack(
+        self, event: InboundEvent, notice: str = "", identity: ChannelIdentity | None = None
+    ) -> None:
+        """Acknowledge a press, with its notice. A channel that cannot show a notice
+        (WhatsApp) gets it as a message, to a linked address only."""
+        channel = self._channels[event.channel]
         if event.callback_id:
-            await self._channels[event.channel].acknowledge(event.callback_id, notice)
+            await channel.acknowledge(event.callback_id, notice)
+        if notice and identity is not None and not getattr(channel, "shows_notices", True):
+            await self._send(identity, "notice", notice, MessageKind.REPLY)
 
     async def _record_in(
         self,
@@ -1512,7 +1623,7 @@ class ConversationService:
         ordered += sorted(lanes - set(ordered))
         found: list[Proposal] = []
         for location_id in (loc for loc in ordered if loc in lanes):
-            if not rules.sees(identity, location_id or None):
+            if not await self._sees(identity, location_id):
                 continue
             active = await self._lane_active(identity.account_id, location_id)
             if active is not None:
@@ -1521,7 +1632,28 @@ class ConversationService:
 
     async def _identities(self, proposal: Proposal) -> list[ChannelIdentity]:
         """The linked addresses that see the business of that proposal."""
-        return list(await self._store.identities_for(proposal.account_id, _lane_of(proposal)))
+        return await self._identities_for(proposal.account_id, _lane_of(proposal))
+
+    async def _identities_for(self, account_id: str, location_id: str) -> list[ChannelIdentity]:
+        """The linked addresses that see that profile: its filter and, for WhatsApp, the
+        plan of the profile (only Pro+ is told of by WhatsApp)."""
+        found = await self._store.identities_for(account_id, location_id)
+        return [i for i in found if await self._plan_allows(i, account_id, location_id)]
+
+    async def _plan_allows(
+        self, identity: ChannelIdentity, account_id: str, location_id: str
+    ) -> bool:
+        if identity.channel not in allowance.METERED_CHANNELS:
+            return True
+        plan = await self._store.location_plan(account_id, location_id)
+        return plan is not None and FEATURES[plan].whatsapp
+
+    async def _sees(self, identity: ChannelIdentity, location_id: str) -> bool:
+        """Whether that address gets what concerns that profile (its filter and, for
+        WhatsApp, the Pro+ plan)."""
+        return rules.sees(identity, location_id or None) and await self._plan_allows(
+            identity, identity.account_id, location_id
+        )
 
     async def _header(self, proposal: Proposal) -> str:
         """The name of the business a message about that proposal opens with, or empty
@@ -1576,6 +1708,11 @@ class ConversationService:
         """Everything is there: it only needs the owner's yes."""
         moved = cls._collecting(proposal, step, **slots)
         return replace(moved, state=advance(moved.state, E.DATA_COMPLETE))
+
+
+def _needs_template(identities: list[ChannelIdentity]) -> bool:
+    """Whether any of those addresses is of a channel with a 24 hour window (WhatsApp)."""
+    return any(i.channel in allowance.METERED_CHANNELS for i in identities)
 
 
 def _lane_of(proposal: Proposal) -> str:

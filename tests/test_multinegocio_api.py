@@ -150,6 +150,7 @@ def test_me_has_the_shape_of_the_multinegocio_contract():
         "plans",
         "pricing",
         "billing",
+        "whatsapp",
     }
     active, inactive = body["locations"]
     assert set(active) == {
@@ -200,6 +201,7 @@ def test_me_has_the_shape_of_the_multinegocio_contract():
         "total": 0,
         "if_activate": {"pro": 3500, "pro_whatsapp": 5900},
         "if_deactivate": {bar: 0},
+        "trial_days": None,  # only an account of the beta in its window (owner, 2026-11-13)
     }
     assert body["billing"] == {
         "profile_complete": False,

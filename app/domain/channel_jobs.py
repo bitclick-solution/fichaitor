@@ -11,7 +11,7 @@ import hashlib
 import re
 from datetime import datetime, time, timedelta, tzinfo
 
-CHANNEL_INBOUND = "channel_inbound"  # {"channel": "telegram", "update": {...}}
+CHANNEL_INBOUND = "channel_inbound"  # {"channel": "telegram" | "whatsapp", "update": {...}}
 CONVERSATION_TICK = "conversation_tick"  # {}
 PROPOSE_REVIEW = "propose_review"  # {"review_id": "rev_..."}
 CHANNEL_ACTION_RESULT = "channel_action_result"  # {"action_id", "ok", "error"}
@@ -42,6 +42,12 @@ RESULT_BILLING_BLOCKED = "billing_blocked"  # the account is blocked for non-pay
 def inbound_key(channel: str, update_id: int) -> str:
     """Telegram delivers an update again if the webhook failed: one job per update."""
     return f"{channel}:{update_id}"
+
+
+def whatsapp_inbound_key(wamid: str) -> str:
+    """`whatsapp:<wamid>`: Meta delivers a message again if the webhook failed (for up to
+    7 days): one job per message. db/schema_channels.sql (job_key_fits) admits this form."""
+    return f"whatsapp:{wamid}"
 
 
 def propose_key(review_id: str) -> str:

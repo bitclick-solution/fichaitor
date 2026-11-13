@@ -956,9 +956,11 @@ Cada cuenta ve solo el sentimiento de su ficha elegida. Dos cuentas que administ
 - Sin `FICHAITOR_FAKE_SCREENSHOT` y sin `FICHAITOR_GEMINI_API_KEY`, el análisis se hace igual, solo con las estrellas: hay nota, pero `praised` y `complaints` van vacíos y los textos salen de reglas fijas.
 - Con base de datos, el análisis lo hace el worker: hacen falta los dos servicios en marcha, y el worker con esas mismas variables. Sin base de datos, la API lo resuelve en memoria al elegir la ficha.
 
-## Canales de mensajería: Telegram (2026-11-12)
+## Canales de mensajería: Telegram (2026-11-12) y WhatsApp (2026-11-13)
 
-El dueño vincula su Telegram desde el panel y, desde ese momento, recibe por Telegram las reseñas nuevas con una respuesta propuesta y la publica con un botón. Todo el detalle del lado del servidor está en `docs/canales.md`.
+El dueño vincula su Telegram o su WhatsApp desde el panel y, desde ese momento, recibe por ese canal las reseñas nuevas con una respuesta propuesta y la publica con un botón. Todo el detalle del lado del servidor está en `docs/canales.md`.
+
+> **WhatsApp (2026-11-13):** un solo número de Fichaitor para todos los clientes. **Solo avisa de las fichas Pro+** (`plan: "pro_whatsapp"`); de las demás avisan Telegram o el panel. Hay **80 mensajes nuestros al mes por ficha Pro+**, sumados en una bolsa de la cuenta (`whatsapp` de `GET /api/v1/me`). Al agotarse, no sale nada más por WhatsApp hasta el día 1: los avisos llegan por Telegram, si está vinculado, o se quedan en el panel. Ofrece el botón de WhatsApp solo si `whatsapp_url` no es `null` y la cuenta tiene alguna ficha con `features.whatsapp: true`: sin Pro+, un WhatsApp vinculado no recibe nada (ni la bienvenida, porque su bolsa es 0).
 
 | Ruta | Qué hace | Cabecera `X-Requested-With` |
 |---|---|---|
@@ -967,7 +969,7 @@ El dueño vincula su Telegram desde el panel y, desde ese momento, recibe por Te
 | `PUT /api/v1/me/channels/{id}/locations` | Cambia las fichas que ve un canal (multinegocio, 2026-11-12) | Sí |
 | `DELETE /api/v1/me/channels/{id}` | Desvincula un canal | Sí |
 
-La cuarta ruta, `POST /api/v1/webhooks/telegram`, es de Telegram, no de la web: la web no la llama nunca.
+Las rutas `POST /api/v1/webhooks/telegram` y `GET` y `POST /api/v1/webhooks/whatsapp` son de Telegram y de Meta, no de la web: la web no las llama nunca.
 
 ### `POST /api/v1/channels/link-code`
 
@@ -988,7 +990,7 @@ Respuesta 200:
   "code": "042817",
   "expires_at": "2026-11-12T10:14:11Z",
   "telegram_url": "https://t.me/FichaitorBot?start=Qm3v0X5k1y2Zt8pW-aR4sLd9_fHj6cNe7uBoVgIiT0Q",
-  "whatsapp_url": null
+  "whatsapp_url": "https://wa.me/34600000000?text=Vincular%20Fichaitor%20Qm3v0X5k1y2Zt8pW-aR4sLd9_fHj6cNe7uBoVgIiT0Q"
 }
 ```
 
@@ -996,10 +998,11 @@ Respuesta 200:
 - **El enlace no lleva los 6 dígitos.** Lleva un testigo largo y aleatorio (43 caracteres de `A-Z`, `a-z`, `0-9`, `_` y `-`). Los 6 dígitos son solo para teclearlos. No construyas el enlace con `code`: usa `telegram_url` tal cual.
 - **Caduca a los 10 minutos** (`expires_at`). Muestra la cuenta atrás y ofrece pedir otro al llegar a cero.
 - **Pedir otro invalida el anterior,** enlace incluido.
-- `whatsapp_url` es `null` hasta que exista el adaptador de WhatsApp. Cuando exista, el mismo código servirá en los dos.
+- `whatsapp_url` abre un chat con el número de Fichaitor con el texto «Vincular Fichaitor <testigo>» ya escrito: el dueño solo pulsa **Enviar**, y ese teléfono queda vinculado. Lleva el mismo testigo que `telegram_url`, nunca los 6 dígitos. Es `null` mientras WhatsApp no esté configurado en el servidor (como hasta ahora). Úsalo tal cual: no lo construyas con `code`.
+- **El mismo código sirve en los dos canales**, y el primero que lo usa lo gasta. Los 6 dígitos también se pueden escribir en el chat de WhatsApp.
 - Ni la API ni la base de datos guardan el código ni el testigo: solo su huella. Si el dueño cierra la pantalla, hay que pedir otro.
 
-Qué enseñar: un botón "Abrir Telegram" con `telegram_url` (en el móvil abre la app; en el ordenador, Telegram Web o un código QR del mismo enlace) y, debajo, "o envía este código al bot: 042817".
+Qué enseñar: un botón "Abrir Telegram" con `telegram_url` (en el móvil abre la app; en el ordenador, Telegram Web o un código QR del mismo enlace) y, debajo, "o envía este código al bot: 042817". Con `whatsapp_url` (y alguna ficha Pro+), un segundo botón "Abrir WhatsApp" con ese enlace (en el ordenador, un código QR del mismo enlace) y el texto «Pulsa Enviar en WhatsApp sin cambiar el mensaje».
 
 Errores, todos con `detail` en español listo para mostrar:
 
@@ -1015,7 +1018,7 @@ Errores, todos con `detail` en español listo para mostrar:
 
 #### Cómo saber que ya se ha vinculado
 
-La vinculación ocurre en Telegram, no en la web. Mientras la pantalla del código está abierta, consulta `GET /api/v1/me/channels` cada 3 segundos y para cuando aparezca un canal nuevo, cuando caduque el código o a los 10 minutos. El bot da la bienvenida en el chat ("Listo, Marta. Ya llevo la ficha de …").
+La vinculación ocurre en Telegram o en WhatsApp, no en la web. Mientras la pantalla del código está abierta, consulta `GET /api/v1/me/channels` cada 3 segundos y para cuando aparezca un canal nuevo, cuando caduque el código o a los 10 minutos. El bot da la bienvenida en el chat ("Listo, Marta. Ya llevo la ficha de …").
 
 ### `GET /api/v1/me/channels`
 
@@ -1048,7 +1051,8 @@ Respuesta 200:
 - `locations` es `null` si el chat ve todas las fichas activas, también las futuras. Si no, la lista de fichas de su filtro que la cuenta todavía tiene, en el orden de `GET /api/v1/me` (por `title`).
 - `locations_label` va **listo para mostrar** después de «Recibe:»: «Todos tus negocios», un nombre o varios («Bar La Parra y La Parra Getafe»). Una ficha del filtro que está desactivada lleva « (desactivada)». Si Google ya no lista ninguna ficha del filtro, «Ninguno de tus negocios».
 - `address` ya va **enmascarada y lista para mostrar**: la web no recibe nunca el identificador completo del chat.
-- `channel` vale hoy siempre `telegram`; mañana también `whatsapp` o `email`.
+- `channel` vale `telegram` o `whatsapp` (mañana también `email`). Un WhatsApp se enseña como `"WhatsApp de ••••2233"` (los 4 últimos dígitos del teléfono).
+- Un WhatsApp solo recibe lo de las fichas Pro+ de su filtro: si el filtro solo tiene fichas Pro o Gratis, no recibe nada. Enséñalo así en el selector de fichas de ese canal.
 - Responde también durante una baja programada de la ficha, para poder desvincular. Tras confirmar la baja de la **cuenta**, la lista queda vacía: los canales se desvinculan en el mismo momento.
 
 Errores: 401 sin sesión.
@@ -1094,7 +1098,8 @@ Pide confirmación antes ("Dejarás de recibir avisos en este chat").
 
 ### Lo que la web NO debe hacer con los canales
 
-- Construir el enlace de Telegram a mano o meter `code` en él.
+- Construir el enlace de Telegram o el de WhatsApp a mano, o meter `code` en él.
+- Calcular la bolsa de WhatsApp: usa `whatsapp` de `GET /api/v1/me`.
 - Guardar el código o el enlace (en `localStorage`, en la URL o en un registro).
 - Enseñar o pedir el identificador del chat de Telegram.
 - Componer el texto de las fichas de un chat: usa `locations_label`.
@@ -1291,6 +1296,20 @@ Campos nuevos del cuerpo:
 | `pricing.if_activate` | Total resultante de activar una ficha más en cada plan de pago |
 | `pricing.if_deactivate` | Total resultante de desactivar cada ficha activa, por su `id` |
 | `pricing.charging` | `false` mientras no haya cobro (beta) |
+| `whatsapp` | La bolsa de WhatsApp del mes, o `null` sin fichas Pro+ activas (y durante una baja programada). Ver abajo |
+
+El bloque `whatsapp` (2026-11-13):
+
+```json
+"whatsapp": { "month": "2026-11", "used": 37, "limit": 160, "remaining": 123 }
+```
+
+| Campo | Qué es |
+|---|---|
+| `month` | El mes de la bolsa, en hora de Madrid. El día 1 vuelve a cero, sin aviso |
+| `used` | Mensajes nuestros enviados por WhatsApp este mes. Lo que escribe el dueño no cuenta |
+| `limit` | 80 por cada ficha Pro+ activa, sumados. Cambia en cuanto se activa o desactiva una |
+| `remaining` | Los que quedan. Con `0`, los avisos llegan por Telegram o se quedan en el panel: enséñalo en Inicio ("Este mes has usado los mensajes de WhatsApp. Los avisos te llegan por Telegram o aquí.") |
 
 - Las fichas siguen ordenadas por `title`. El selector pone primero las activas.
 - Durante una baja programada, `status` y `pending` van a `null` en todas las fichas: no se lee nada de ninguna. `active` y `plan` siguen diciendo cómo están.
@@ -1423,6 +1442,7 @@ Reglas de fondo, que la web cuenta al usuario:
 - Un impago **bloquea toda la cuenta** hasta que se pague, sin límite de tiempo. No se borra nada.
 - Una plaza que llega a su renovación sin ficha no se cobra: se cancela sola.
 - España (península, Baleares, Canarias, Ceuta y Melilla) y la UE, siempre con NIF o NIF-IVA.
+- **Ventana beta** (decisión del propietario, 2026-11-13): la beta es gratis hasta el lanzamiento (`billing_setting.launch_at`). Las cuentas que ya existían antes del lanzamiento tienen **30 días más** (hasta `launch_at` + 30 días) para elegir plan, con sus fichas Pro de la beta. Si compran una plaza en esos días, Stripe guarda la tarjeta pero **no cobra nada hasta que acaba su ventana**: el primer año empieza ese día, sin días de más. **Nadie más tiene prueba gratis**: una cuenta creada desde el lanzamiento paga la plaza el día que la compra.
 
 ### Cómo funciona
 
@@ -1435,6 +1455,8 @@ La API no habla con Stripe. Cada acción de cobro crea una **petición** y respo
 | `fallida` | `code` y `detail` | Enseña `detail` tal cual |
 
 Durante la **beta** (`pricing.charging: false`) no se cobra: `POST /api/v1/me/billing/seats` responde 409 `beta_no_charge`. La web activa con `POST /api/v1/me/locations/{id}/activation` y `{"plan": "pro"}`, que usa una de las fichas Pro del derecho beta, también para pasar a Pro una ficha que ya está activa en Gratis.
+
+Durante la **ventana beta** de una cuenta de la beta (`pricing.charging: true` y `pricing.trial_days` con un número), la compra es la misma (`POST /api/v1/me/billing/seats`), pero el Checkout de Stripe dice que hoy se paga 0 € y cuándo llega el primer cobro. La ficha se activa en cuanto Stripe confirma el alta, igual que con un pago. Si el primer cobro, al acabar la ventana, falla o se queda esperando la confirmación del banco (3DS), la cuenta se bloquea como en cualquier renovación.
 
 ### Rutas
 
@@ -1548,8 +1570,9 @@ Las URL de vuelta las monta el backend con `FICHAITOR_PUBLIC_BASE_URL`, solo con
   "blocked": { "since": "2027-03-14T09:00:05Z", "reason": "payment_failed" },
   "seats": [
     { "id": "seat_9a1f00c2d3e4f5a6b7c8d9e0", "plan": "pro", "location_id": "loc_3f2a",
-      "status": "active", "renews_at": "2028-03-14", "cancel_at_period_end": false,
-      "next_price": 3500, "payment_method": "card", "collection": "auto" }
+      "status": "active", "renews_at": "2028-03-14", "trial_ends_at": null,
+      "cancel_at_period_end": false, "next_price": 3500, "payment_method": "card",
+      "collection": "auto" }
   ],
   "new_seat_price": { "pro": 3325, "pro_whatsapp": 5900 }
 }
@@ -1557,8 +1580,9 @@ Las URL de vuelta las monta el backend con `FICHAITOR_PUBLIC_BASE_URL`, solo con
 
 - `blocked`: `null` si la cuenta no está bloqueada. `reason`: `payment_failed`, `action_required` (3DS sin completar), `dispute` o `manual_unpaid`.
 - `seats`: las plazas pagadas (no salen los Checkout sin pagar). `status`: `active`, `payment_failed`, `action_required`, `disputed` o `canceled` (una cancelada sale hasta el final de su año). `location_id: null`: una plaza pagada sin ficha. `renews_at`: el día que se cobra el año siguiente (o en que acaba, si está cancelada). `next_price`: céntimos sin IVA del año siguiente; `null` si no se va a renovar.
-- `new_seat_price`: lo que cuesta hoy una plaza nueva de cada plan, en céntimos, sin IVA y por un año entero. Sale de la regla del 5 %.
-- El bloque `pricing` no cambia de forma; `pricing.charging` sale de `billing_setting.launch_at` (vacío: beta).
+- `trial_ends_at` (nuevo, ventana beta): fecha y hora UTC del **primer cobro** de una plaza que una cuenta de la beta compró en su ventana, mientras no se ha cobrado. `renews_at` es ese mismo día y `next_price` es lo que se cobrará (sin IVA). `null` en cualquier otra plaza y en cuanto se cobra. La web dice, por ejemplo: «Gratis hasta el 31/03/2027. Ese día se cobra el primer año: 35,00 € + IVA. Cancélala antes si no quieres seguir». Cancelar en esos días (`POST …/seats/{id}/cancel`) hace que no se cobre nada y la ficha deja su plaza ese día.
+- `new_seat_price`: lo que cuesta una plaza nueva de cada plan, en céntimos, sin IVA y por un año entero. Sale de la regla del 5 %. En la ventana beta se cobra al acabar la ventana, no hoy.
+- `pricing.charging` sale de `billing_setting.launch_at` (vacío: beta). **`pricing.trial_days`** (nuevo): solo para una cuenta de la beta durante su ventana, los días enteros (redondeados hacia arriba) que le quedan antes del primer cobro de una plaza que compre ahora. `null` en la beta, en cualquier cuenta creada desde el lanzamiento y cuando la ventana ha acabado. No es una prueba gratis general: la web solo lo enseña si viene con un número («Te quedan 12 días de beta: elige tu plan; no se cobra nada hasta el 31/03/2027»).
 
 ### El paywall en la activación: 402 `no_seat`
 
@@ -1593,6 +1617,7 @@ La web enseña una pantalla única con el motivo, «Pagar ahora» (`POST …/bil
 ### Lo que la web NO debe hacer con el cobro
 
 - Calcular precios, IVA o el 5 %: salen de `new_seat_price`, `next_price` y `offer`.
+- Anunciar «30 días gratis» a una cuenta nueva: no hay prueba gratis. Solo la ventana beta, con `pricing.trial_days` o `trial_ends_at`.
 - Abrir una `url` que no sea `https://…stripe.com/…`.
 - Crear otra plaza tras un 409 `seat_pending`: sigue el `request_id` que trae.
 - Guardar el NIF o la dirección en el navegador.

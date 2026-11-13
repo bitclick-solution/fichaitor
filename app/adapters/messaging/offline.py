@@ -11,6 +11,9 @@ from app.ports.messaging import MessagingUnavailable, SentMessage
 @dataclass
 class OfflineChannel:
     name: str
+    # The conversation does not even try it: nothing is counted in the bag of a channel
+    # that cannot send (app/domain/message_allowance.py).
+    available = False
 
     async def send(self, address: str, message: OutboundMessage) -> SentMessage:
         raise MessagingUnavailable(f"{self.name}: canal sin configurar")

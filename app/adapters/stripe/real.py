@@ -168,6 +168,7 @@ def parse_subscription(data: Mapping[str, Any]) -> SubscriptionInfo:
         latest_invoice_id=_id(data.get("latest_invoice")),
         latest_invoice_status=latest.get("status"),
         hosted_invoice_url=latest.get("hosted_invoice_url"),
+        trial_end=_ts(data.get("trial_end")),
     )
 
 
@@ -412,8 +413,14 @@ class StripePayments:
         cancel_url: str,
         *,
         idempotency_key: str,
+        trial_end: datetime | None = None,
     ) -> CheckoutSession:
         metadata = {"account_id": account_id, "seat_id": seat_id}
+        subscription_data: dict[str, Any] = {"metadata": metadata}
+        if trial_end is not None:
+            # The beta window: the first year is charged when it ends (at least 48 hours
+            # ahead, which billing.first_charge_at keeps). The card is still taken now.
+            subscription_data["trial_end"] = int(trial_end.timestamp())
         params = {
             "mode": "subscription",
             "customer": customer_id,
@@ -426,7 +433,9 @@ class StripePayments:
                 }
             ],
             "payment_method_types": list(PAYMENT_METHOD_TYPES),
-            "subscription_data": {"metadata": metadata},
+            # Always the card, also when nothing is due today (the beta window).
+            "payment_method_collection": "always",
+            "subscription_data": subscription_data,
             "metadata": metadata,
             "locale": "es",
             # An open Checkout blocks a second purchase of the same profile (seat_pending)

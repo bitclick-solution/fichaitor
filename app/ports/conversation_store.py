@@ -186,6 +186,13 @@ class ConversationStore(Protocol):
         profile that moved to the free plan cannot be confirmed (`plan_required`)."""
         ...
 
+    # --- the bag of WhatsApp messages (app/domain/message_allowance.py) ------------
+    async def take_message_allowance(self, account_id: str, units: int, now: datetime) -> bool:
+        """Count `units` messages of ours in the bag of the account for the month `now`
+        falls in (80 per active Pro+ profile), unless they do not fit. True if counted.
+        Atomic: two senders at once never go over the limit. Never counts back."""
+        ...
+
     # --- conversations ----------------------------------------------------------
     async def get_conversation(self, account_id: str) -> Conversation:
         """The thread of the account; created the first time."""

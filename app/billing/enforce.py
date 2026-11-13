@@ -1,13 +1,16 @@
 """Job billing_enforce, once a day: the end of the beta (docs/admin-facturacion.md, 4.6;
 decision 9.0, 10).
 
-Both dates are the owner's, in `billing_setting`: `launch_at` (seats are sold from then)
-and `beta_ends_at` (the beta rights end). Nothing happens while either is empty.
+The owner writes `billing_setting.launch_at` (seats are sold from then); `beta_ends_at`
+is always `launch_at` + 30 days (the beta window, owner 2026-11-13: the accounts of the
+beta keep their beta seats 30 more days to choose a plan; the database derives it, and
+`billing.beta_ends_at` says the same). Nothing happens while `launch_at` is empty.
 
 - From BETA_NOTICE_DAYS before `launch_at`, once per `beta_ends_at`: the email
-  `beta_ending` to every account with an active profile in a paid plan. The offer for
-  the beta accounts is not decided (decision 9.0, 10): FICHAITOR_BILLING_BETA_OFFER is
-  empty and the email goes without it.
+  `beta_ending` (the launch date, and the 30 days more until `beta_ends_at`) to every
+  account with an active profile in a paid plan. The offer for the beta accounts is not
+  decided (decision 9.0, 10): FICHAITOR_BILLING_BETA_OFFER is empty and the email goes
+  without it.
 - From `beta_ends_at`: each active paid profile that no seat (nor a manual, courtesy or
   referral entitlement) covers is settled by `billing.enforce_after_beta`: the oldest
   one moves to Gratis if the account has its free profile left and that Google profile
@@ -21,7 +24,7 @@ from collections.abc import Callable
 from datetime import UTC, datetime, timedelta
 
 from app.domain import billing_mail
-from app.domain.billing import BetaProfile, EnforceAction, enforce_after_beta
+from app.domain.billing import BetaProfile, EnforceAction, beta_ends_at, enforce_after_beta
 from app.domain.jobs import Job
 from app.domain.plans import PAID_PLANS
 from app.ports.billing_store import MAIL_JOB, ActiveProfile, BillingJobsStore
@@ -58,22 +61,28 @@ class Enforce:
     async def __call__(self, job: Job) -> None:
         now = self._clock()
         setting = await self._store.beta_setting()
-        if setting.launch_at is None or setting.beta_ends_at is None:
+        launch_at = setting.launch_at
+        if launch_at is None:
             return
+        ends_at = setting.beta_ends_at or beta_ends_at(launch_at)
+        assert ends_at is not None
         if (
-            now >= setting.launch_at - timedelta(days=BETA_NOTICE_DAYS)
-            and now < setting.beta_ends_at
-            and setting.beta_notice_for != setting.beta_ends_at
+            now >= launch_at - timedelta(days=BETA_NOTICE_DAYS)
+            and now < ends_at
+            and setting.beta_notice_for != ends_at
         ):
-            await self._notice(setting.beta_ends_at)
-        if now >= setting.beta_ends_at:
+            await self._notice(launch_at, ends_at)
+        if now >= ends_at:
             await self._enforce(now)
 
-    async def _notice(self, ends_at: datetime) -> None:
+    async def _notice(self, launch_at: datetime, ends_at: datetime) -> None:
         day = billing_mail.madrid_date(ends_at)
+        launch_day = billing_mail.madrid_date(launch_at)
         sent = 0
         for account_id, email in await self._store.beta_recipients():
-            mail = billing_mail.beta_mail(email, ends_on=day, offer=self._offer)
+            mail = billing_mail.beta_mail(
+                email, launch_on=launch_day, ends_on=day, offer=self._offer
+            )
             key = f"{MAIL_JOB}:beta_ending:{account_id}:{day.isoformat()}"
             if await self._store.enqueue(MAIL_JOB, mail, key):
                 sent += 1

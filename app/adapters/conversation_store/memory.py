@@ -9,8 +9,10 @@ from contextlib import asynccontextmanager
 from dataclasses import dataclass, replace
 from datetime import datetime
 
+from app.domain import message_allowance as allowance
 from app.domain.channel_messages import business_label
 from app.domain.conversation import (
+    DEFAULT_TIMEZONE,
     AccountInfo,
     ChannelIdentity,
     Conversation,
@@ -20,6 +22,7 @@ from app.domain.conversation import (
     normalize_address,
     plan_link,
     sees,
+    timezone_for,
 )
 from app.domain.link_codes import (
     CodeCheck,
@@ -75,6 +78,8 @@ class MemoryConversationStore:
         self.locations: dict[str, MemoryLocation] = {}
         self.lanes: dict[tuple[str, str], Lane] = {}
         self.focus: dict[str, Focus] = {}
+        # The bag of WhatsApp messages: (scope, start of the month) -> messages counted.
+        self.allowance_used: dict[tuple[str, datetime], int] = {}
 
     async def on_leave(self, account_id: str) -> bool:
         return account_id in self.leaves
@@ -252,6 +257,24 @@ class MemoryConversationStore:
         if location is None or location.account_id != account_id or not location.active:
             return None
         return location.plan
+
+    # --- the bag of WhatsApp messages --------------------------------------------
+    async def take_message_allowance(self, account_id: str, units: int, now: datetime) -> bool:
+        profiles = sum(
+            1
+            for location in self.locations.values()
+            if location.account_id == account_id
+            and location.active
+            and location.plan is Plan.PRO_WHATSAPP
+        )
+        limit = allowance.monthly_limit(profiles)
+        start, _ = allowance.month_window(now, timezone_for(DEFAULT_TIMEZONE))
+        key = (allowance.scope(account_id), start)
+        used = self.allowance_used.get(key, 0)
+        if units < 1 or used + units > limit:
+            return False
+        self.allowance_used[key] = used + units
+        return True
 
     # --- conversations ----------------------------------------------------------
     async def get_conversation(self, account_id: str) -> Conversation:

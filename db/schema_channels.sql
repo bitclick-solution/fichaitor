@@ -351,9 +351,9 @@ REVOKE SELECT (title) ON location FROM fichaitor_worker;
 -- a los tres roles.
 -- - El worker: todo (es quien ejecuta, planifica y borra).
 -- - La API: solo encola, y solo los tipos que encola su código: la respuesta y el horario
---   confirmados, el correo y la baja, la sincronización de la ficha, lo que llega por el
---   webhook de Telegram y, del cobro (schema_billing.sql), el evento de Stripe y la petición
---   de la web al proceso de cobro. No lee la cola.
+--   confirmados, el correo y la baja, la sincronización de la ficha, lo que llega por los
+--   webhooks de Telegram y de WhatsApp y, del cobro (schema_billing.sql), el evento de
+--   Stripe y la petición de la web al proceso de cobro. No lee la cola.
 -- - La conversación: ve, toma y cierra solo sus tipos (app/domain/channel_jobs.py:KINDS),
 --   así que nunca lee la carga de un send_mail (el correo del dueño, el código de baja y el
 --   token de restauración). Encola solo lo que encola su código.
@@ -365,11 +365,14 @@ REVOKE SELECT (title) ON location FROM fichaitor_worker;
 --   worker. La API no la puede ocupar: si lo hacía, su job (con su carga) ocupaba la
 --   franja y el planificador no encolaba el suyo. Las sincronizaciones que pide la API
 --   llevan "sync_profile:..." (app/application/profile_sync.py), otro espacio de claves.
+-- - WhatsApp (2026-11-13): un mensaje entrante es "whatsapp:<wamid>", el identificador que
+--   le da Meta (no son cifras). Solo para channel_inbound, como la forma de Telegram.
 CREATE OR REPLACE FUNCTION job_key_fits(kind text, key text) RETURNS boolean
 LANGUAGE sql IMMUTABLE SET search_path = pg_catalog, public, pg_temp AS $$
     SELECT key IS NULL
         OR starts_with(key, kind || ':')
         OR (kind = 'channel_inbound' AND key ~ '^(telegram|whatsapp|email):[0-9]{1,20}$')
+        OR (kind = 'channel_inbound' AND key ~ '^whatsapp:[A-Za-z0-9._=+/-]{1,190}$')
 $$;
 
 ALTER TABLE job ENABLE ROW LEVEL SECURITY;

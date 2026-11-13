@@ -36,7 +36,14 @@ BILLING_PREVIEWS = {
     "9-rectificativa",
     "10-fin-beta",
     "10-fin-beta-oferta",
+    "11-fin-prueba",
 }
+
+
+# The beta window (owner, 2026-11-13) changed the text of `beta_ending`; brand/correo
+# (vista.py and LEEME.md) is the interface session's, which lays it out next. Until then
+# its HTML is not compared with the preview; its text is checked below.
+PENDING_BRAND: set[str] = set()
 
 
 def plain(*paragraphs: str) -> str:
@@ -91,14 +98,27 @@ def ours(vista) -> dict:
             TO, numero="FCH-R/2027/00003", numero_original="FCH/2027/00042", importe="−42,35 €"
         ),
         "10-fin-beta": bm.beta_ending_email(
-            TO, fecha_fin="1 de marzo de 2027", oferta="", enlace=billing
+            TO,
+            fecha_lanzamiento="1 de marzo de 2027",
+            fecha_fin="31 de marzo de 2027",
+            oferta="",
+            enlace=billing,
         ),
         "10-fin-beta-oferta": bm.beta_ending_email(
             TO,
-            fecha_fin="1 de marzo de 2027",
+            fecha_lanzamiento="1 de marzo de 2027",
+            fecha_fin="31 de marzo de 2027",
             oferta=(
                 "Texto de ejemplo de la oferta para las cuentas de la beta, todavía sin decidir."
             ),
+            enlace=billing,
+        ),
+        "11-fin-prueba": bm.trial_ending_email(
+            TO,
+            plan="Pro",
+            ficha=ficha,
+            fecha_cobro="31 de marzo de 2027",
+            importe="42,35 €",
             enlace=billing,
         ),
     }
@@ -109,6 +129,8 @@ def test_the_html_is_byte_for_byte_the_one_of_the_brand_preview(vista):
     assert set(mails) == BILLING_PREVIEWS
     assert {n for n in vista["CORREOS"] if int(n.split("-")[0]) >= 5} == BILLING_PREVIEWS
     for name, mail in mails.items():
+        if name in PENDING_BRAND:
+            continue
         assert mail.html == vista["CORREOS"][name], name
 
 
@@ -154,12 +176,11 @@ def test_the_plain_texts_of_the_other_emails():
         TO, plan="Pro", fecha_renovacion="1 de abril de 2028", importe="40,23 €", enlace="L"
     )
     assert "Ir a Facturación: L\n\nTe avisamos 30 días antes" in unassigned.text
-    offer = bm.beta_ending_email(TO, fecha_fin="1 de marzo de 2027", oferta="Un 20 %.", enlace="L")
-    assert "Elige en Facturación el plan de cada ficha.\n\nUn 20 %.\n\nElegir los planes: L" in (
-        offer.text
-    )
-    none = bm.beta_ending_email(TO, fecha_fin="1 de marzo de 2027", oferta="  ", enlace="L")
-    assert "ficha.\n\nElegir los planes: L" in none.text and "destacado" not in none.html
+    dates = {"fecha_lanzamiento": "1 de marzo de 2027", "fecha_fin": "31 de marzo de 2027"}
+    offer = bm.beta_ending_email(TO, **dates, oferta="Un 20 %.", enlace="L")
+    assert "todo sigue como ahora.\n\nUn 20 %.\n\nElegir los planes: L" in offer.text
+    none = bm.beta_ending_email(TO, **dates, oferta="  ", enlace="L")
+    assert "ahora.\n\nElegir los planes: L" in none.text and "destacado" not in none.html
     credit = bm.credit_note_email(
         TO, numero="RFTR/2027/00001", numero_original="FTR/2027/00001", importe="−42,35 €"
     )
@@ -201,7 +222,8 @@ def test_every_link_comes_from_the_configuration_never_from_the_payload():
         bm.renewal_mail(
             TO, plan=Plan.PRO, title=None, assigned=False, renews_on=date(2028, 3, 14), total=4023
         ),
-        bm.beta_mail(TO, ends_on=date(2027, 3, 1), offer=""),
+        bm.beta_mail(TO, launch_on=date(2027, 3, 1), ends_on=date(2027, 3, 31), offer=""),
+        bm.trial_mail(TO, plan=Plan.PRO, title="Bar", charge_on=date(2027, 3, 31), total=4235),
     ]
     links = {
         "billing_blocked": "https://f.es/app#pagar",
@@ -209,6 +231,7 @@ def test_every_link_comes_from_the_configuration_never_from_the_payload():
         "renewal_notice": "https://f.es/app#facturacion",
         "renewal_notice_unassigned": "https://f.es/app#facturacion",
         "beta_ending": "https://f.es/app#facturacion",
+        "trial_ending": "https://f.es/app#facturacion",
     }
     for payload in payloads:
         evil = {**payload, "url": "https://evil.example/", "enlace": "https://evil.example/"}
@@ -337,3 +360,68 @@ def test_the_billing_process_refuses_a_fake_odoo_in_live_mode_or_a_wrong_odoo(mo
     assert "FICHAITOR_ODOO" in str(error.value)
     monkeypatch.delenv("FICHAITOR_ODOO_URL")
     BillingSettings(**base).check()  # without Odoo: invoices wait, pending
+
+
+# --- the beta window (owner, 2026-11-13) ---------------------------------------------
+
+
+def test_beta_ending_announces_the_launch_and_the_30_days_more():
+    mail = bm.beta_ending_email(
+        TO,
+        fecha_lanzamiento="1 de marzo de 2027",
+        fecha_fin="31 de marzo de 2027",
+        oferta="",
+        enlace="https://fichaitor.es/app#facturacion",
+    )
+    assert mail.subject == (
+        "Fichaitor se lanza el 1 de marzo de 2027: elige tu plan antes del 31 de marzo de 2027"
+    )
+    assert mail.text == plain(
+        "FIN DE LA BETA",
+        "Gracias por probar Fichaitor durante la beta. El 1 de marzo de 2027 lanzamos la"
+        " versión 1 y, desde ese día, las fichas de pago se cobran. Como estás en la beta,"
+        " tienes 30 días más, hasta el 31 de marzo de 2027, para elegir en Facturación el plan"
+        " de cada ficha. Hasta entonces todo sigue como ahora.",
+        "Elegir los planes: https://fichaitor.es/app#facturacion",
+        "Cada ficha de pago se cobra con tarjeta por años completos y se renueva sola cada año,"
+        " salvo que canceles la renovación. Si eliges un plan antes del 31 de marzo de 2027,"
+        " guardamos tu tarjeta pero no cobramos nada hasta ese día. Lo cobrado no se devuelve,"
+        " así que elige con calma.",
+        "Si no eliges plan antes del 31 de marzo de 2027, tu ficha más antigua pasará al plan"
+        " Gratis y las demás se desactivarán: dejaremos de leerlas y de avisarte de ellas, y si"
+        " no las vuelves a activar en 30 días, borraremos lo que tenemos de ellas. No te"
+        " cobraremos nada que no hayas pedido.",
+        "Te llega este correo porque tienes una cuenta de Fichaitor en la beta.",
+    )
+
+
+def test_trial_ending_says_the_price_the_date_and_how_to_cancel():
+    payload = bm.trial_mail(
+        TO, plan=Plan.PRO_WHATSAPP, title="Bar La Parra", charge_on=date(2027, 3, 31), total=7139
+    )
+    assert payload == {
+        "template": "trial_ending",
+        "to": TO,
+        "plan": "Pro+",
+        "ficha": "Bar La Parra",
+        "fecha_cobro": "31 de marzo de 2027",
+        "importe": "71,39 €",
+    }
+    mail = build_email(payload, "https://fichaitor.es")
+    assert mail.subject == "El 31 de marzo de 2027 cobraremos el plan Pro+ de Bar La Parra"
+    assert mail.text == plain(
+        "TERMINA TU BETA",
+        "Tu periodo de la beta termina el 31 de marzo de 2027. Ese día cobraremos 71,39 €"
+        " (IVA incluido) con la tarjeta que guardaste por el primer año del plan Pro+ de Bar"
+        " La Parra.",
+        "Si quieres seguir, no tienes que hacer nada. Si no, cancela la plaza desde"
+        " Facturación antes del 31 de marzo de 2027 y no te cobraremos nada. Una vez cobrado"
+        " el año, no se devuelve.",
+        "Ir a Facturación: https://fichaitor.es/app#facturacion",
+        "Después, el plan se renueva solo cada año, salvo que canceles la renovación. Te"
+        " avisaremos 30 días antes de cada renovación.",
+        "Te avisamos 7 días antes del primer cobro de una plaza contratada durante la beta,"
+        " como dicen las condiciones de uso.",
+    )
+    with pytest.raises(PermanentJobError):
+        build_email({**payload, "importe": ""}, "https://fichaitor.es")

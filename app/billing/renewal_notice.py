@@ -16,6 +16,13 @@ RENEWAL_NOTICE_DAYS and not noticed yet for that year:
 
 And for each seat still without an active profile UNASSIGNED_CANCEL_DAYS before its
 renewal: `cancel_at_period_end`, so that it is not charged. Its profile keeps its year.
+
+A seat a beta account bought in its window (30 days from the launch) is still in its
+Stripe trial: its first charge is not a renewal. Its price was fixed at the Checkout, so
+there is no T-30 notice; instead, BETA_WINDOW_NOTICE_DAYS before the first charge, the
+email `trial_ending` (the price with VAT, the date and how to cancel), once per trial
+end. A seat in trial without an active profile gets no email, and is cancelled at
+T-UNASSIGNED_CANCEL_DAYS as any other.
 """
 
 import logging
@@ -25,6 +32,7 @@ from datetime import UTC, datetime, timedelta
 
 from app.domain import billing_mail
 from app.domain.billing import (
+    BETA_WINDOW_NOTICE_DAYS,
     RENEWAL_NOTICE_DAYS,
     TAX_PERCENT,
     UNASSIGNED_CANCEL_DAYS,
@@ -55,10 +63,13 @@ class RenewalNotice:
 
     async def __call__(self, job: Job) -> None:
         now = self._clock()
-        noticed = cancelled = 0
+        noticed = cancelled = trials = 0
         for seat in await self._store.seats_renewing_by(now + timedelta(days=RENEWAL_NOTICE_DAYS)):
             try:
-                if await self._notice(seat):
+                if seat.in_trial:
+                    if await self._trial_notice(seat, now):
+                        trials += 1
+                elif await self._notice(seat):
                     noticed += 1
                 if await self._cancel_unassigned(seat, now):
                     cancelled += 1
@@ -68,7 +79,49 @@ class RenewalNotice:
                 # That subscription cannot change (cancelled in Stripe, most likely): the
                 # reconciliation copies its state; the others go on.
                 log.warning("aviso de renovación no aplicado a una plaza: %s", exc.code)
-        log.info("avisos de renovación: %s; plazas sin ficha canceladas: %s", noticed, cancelled)
+        log.info(
+            "avisos de renovación: %s; de fin de la ventana beta: %s; plazas sin ficha"
+            " canceladas: %s",
+            noticed,
+            trials,
+            cancelled,
+        )
+
+    async def _trial_notice(self, seat: SeatRow, now: datetime) -> bool:
+        """`trial_ending`, BETA_WINDOW_NOTICE_DAYS before the first charge of a seat
+        bought in the beta window, once per trial end. Its price is the one of the
+        Checkout (the subscription's), with the VAT of the customer."""
+        ends = seat.trial_ends_at
+        assert ends is not None
+        if ends > now + timedelta(days=BETA_WINDOW_NOTICE_DAYS) or seat.cancel_at_period_end:
+            return False
+        if seat.location_id is None:
+            return False
+        state = await self._store.location_state(seat.account_id, seat.location_id)
+        if not state.active:
+            return False  # not charged: cancelled at T-UNASSIGNED_CANCEL_DAYS
+        customer = await self._store.customer(seat.account_id)
+        if customer is None:
+            log.warning("plaza sin datos de facturación: sin aviso del fin de la ventana beta")
+            return False
+        key = seat.next_price_key
+        if key is None:
+            rows, active, _ = await self._seats(seat.account_id)
+            key = seat_price(
+                seat.plan, seat.id, seats_counting_at(self._domain(rows, active), ends)
+            )
+        treatment = customer.profile.tax_treatment
+        mail = billing_mail.trial_mail(
+            customer.profile.invoice_email,
+            plan=seat.plan,
+            title=state.title,
+            charge_on=billing_mail.madrid_date(ends),
+            total=billing_mail.with_tax(price_cents(key), TAX_PERCENT[treatment]),
+        )
+        day = ends.date().isoformat()
+        return await self._store.mark_trial_notice(
+            seat.id, ends, mail, f"{MAIL_JOB}:trial_ending:{seat.id}:{day}"
+        )
 
     async def _seats(self, account_id: str) -> tuple[list[SeatRow], dict[str, bool], dict]:
         """The seats of the account, with which ones hold an active profile now."""

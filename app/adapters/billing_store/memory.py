@@ -67,6 +67,9 @@ class MemoryBillingStore:
     jobs: list[tuple[str, dict]] = field(default_factory=list)
     outcomes: dict[str, str] = field(default_factory=dict)  # stripe_event.outcome
     funnel: list[tuple[str, str | None]] = field(default_factory=list)  # funnel_event
+    # The accounts of the beta and the end of their beta entitlement (beta_until): an
+    # account missing here was created from the launch.
+    beta: dict[str, datetime] = field(default_factory=dict)
 
     def _now(self) -> datetime:
         return self.clock()  # type: ignore[operator]
@@ -75,6 +78,9 @@ class MemoryBillingStore:
 
     async def launch_at(self) -> datetime | None:
         return self.store.launch_at
+
+    async def beta_until(self, account_id: str) -> datetime | None:
+        return self.beta.get(account_id)
 
     # --- API side --------------------------------------------------------------------
 
@@ -282,6 +288,7 @@ class MemoryBillingStore:
             current_period_end=sync.current_period_end,
             cancel_at_period_end=sync.cancel_at_period_end,
             next_price_key=sync.price_key or seat.next_price_key,
+            trial_ends_at=sync.trial_ends_at,
         )
         self.seat_rows[seat_id] = seat
         invoice = sync.invoice

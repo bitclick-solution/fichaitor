@@ -7,7 +7,7 @@ import json
 import logging
 import time
 from collections.abc import Callable
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import Any
 from urllib.parse import parse_qs
 
@@ -710,3 +710,80 @@ def test_the_daily_lists_read_every_page_of_paid_invoices_and_refunds() -> None:
     assert "status=paid" in str(lists[0].url) and "created[gte]=1803859200" in str(lists[0].url)
     refunds = run(stripe_.refunds_since(since))
     assert [(r.id, r.invoice_id, r.amount) for r in refunds] == [("re_1", "in_1", 4235)]
+
+
+# --- the beta window (owner, 2026-11-13) ---------------------------------------------
+
+
+def test_checkout_in_the_beta_window_has_a_trial_until_it_ends_and_takes_the_card() -> None:
+    server = FakeStripeServer()
+    ends = datetime(2027, 3, 31, 8, 0, tzinfo=UTC)
+    run(
+        adapter(server).create_checkout(
+            "cus_1",
+            PriceKey.PRO_FIRST,
+            TaxTreatment.IVA_21,
+            "acc_1",
+            "seat_3",
+            "https://fichaitor.es/app/ok",
+            "https://fichaitor.es/app/ko",
+            idempotency_key="s3",
+            trial_end=ends,
+        )
+    )
+    form = server.form()
+    assert form["subscription_data[trial_end]"] == [str(int(ends.timestamp()))]
+    assert form["payment_method_collection"] == ["always"]
+    assert "subscription_data[trial_period_days]" not in form
+
+
+def test_parse_subscription_of_a_seat_in_its_beta_window() -> None:
+    sub = parse_subscription({**SUBSCRIPTION, "status": "trialing", "trial_end": 1806000000})
+    assert sub.status == "trialing"
+    assert sub.trial_end == datetime.fromtimestamp(1806000000, UTC)
+    assert parse_subscription(SUBSCRIPTION).trial_end is None
+
+
+def test_fake_trial_charges_nothing_until_it_ends_and_then_a_whole_year() -> None:
+    fake, customer = fake_with_customer()
+    ends = datetime(2027, 4, 1, tzinfo=UTC)
+    session = run(
+        fake.create_checkout(
+            customer,
+            PriceKey.PRO_FIRST,
+            TaxTreatment.IVA_21,
+            "acc_1",
+            "seat_7",
+            "https://fichaitor.es/app/ok",
+            "https://fichaitor.es/app/ko",
+            idempotency_key="t",
+            trial_end=ends,
+        )
+    )
+    sub = fake.complete_checkout(session.id)
+    assert sub.status == "trialing" and sub.trial_end == ends and sub.current_period_end == ends
+    first = run(fake.invoice(sub.latest_invoice_id))
+    assert (first.status, first.total, first.amount_paid) == ("paid", 0, 0)
+    assert first.billing_reason == "subscription_create" and first.payment_intent_id is None
+    charged = fake.renew(sub.id)
+    assert charged.billing_reason == "subscription_cycle" and charged.total == 4235
+    assert charged.period_start == ends and charged.period_end == datetime(2028, 4, 1, tzinfo=UTC)
+    assert fake.seats[sub.id].subscription.status == "active"
+
+
+def test_fake_refuses_a_trial_end_less_than_48_hours_ahead_as_stripe() -> None:
+    fake, customer = fake_with_customer()
+    with pytest.raises(PaymentsRejected):
+        run(
+            fake.create_checkout(
+                customer,
+                PriceKey.PRO_FIRST,
+                TaxTreatment.IVA_21,
+                "acc_1",
+                "seat_8",
+                "https://fichaitor.es/app/ok",
+                "https://fichaitor.es/app/ko",
+                idempotency_key="u",
+                trial_end=NOW + timedelta(hours=47),
+            )
+        )

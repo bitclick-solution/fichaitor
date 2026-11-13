@@ -37,7 +37,7 @@ from app.ports.billing_store import EVENT_JOB, REQUEST_JOB
 from app.ports.google_oauth import Identity
 from app.ports.payments import Address, CustomerDetails
 from tests import test_multinegocio_conversation_service as conv
-from tests.test_me import START, Clock
+from tests.test_me import START, T0, Clock
 from tests.test_multinegocio_api import CALLBACK, ME, PUBLIC, activation, by_id, profile
 
 HEADER = {"X-Requested-With": "fichaitor"}
@@ -764,3 +764,106 @@ def test_invoices_list_credit_notes_negative_and_name_the_pdf_by_its_number():
     )
     assert other.get(f"{BILLING}/invoices/d2/pdf").status_code == 404
     assert other.get(f"{BILLING}/invoices").json() == {"invoices": []}
+
+
+# --- the beta window (owner, 2026-11-13) ---------------------------------------------
+# The accounts of the beta keep their beta seats 30 days from the launch; a seat they buy
+# then is first charged when the window ends (a Stripe trial, the card taken now). Any
+# other account pays its seat the day it buys it.
+
+API_NOW = datetime.fromtimestamp(T0, UTC)
+
+
+def _window_world(beta: bool):
+    world = World()
+    world.store.launch_at = API_NOW - timedelta(days=5)
+    world.payments = FakePayments(now=lambda: API_NOW)
+    world.requests = BillingRequests(
+        world.billing, world.payments, "https://fichaitor.es", clock=lambda: API_NOW
+    )
+    world.events = StripeEvents(world.billing, world.payments, clock=lambda: API_NOW)
+    client = world.owner()
+    world.with_profile(client)
+    account_id = world.store.accounts["ana"].id
+    if beta:
+        world.billing.beta[account_id] = API_NOW + timedelta(days=25)
+    return world, client
+
+
+def test_a_beta_account_buys_in_its_window_and_is_charged_when_it_ends():
+    world, client = _window_world(beta=True)
+    me = client.get(ME).json()
+    assert me["pricing"]["trial_days"] == 25 and me["pricing"]["charging"] is True
+    bar, _ = world.ids(client)
+    sub_id = world.buy(client, bar)
+    checkout = next(iter(world.payments.checkouts.values()))
+    assert checkout["trial_end"] == API_NOW + timedelta(days=25)
+    assert checkout["payment_method_collection"] == "always"
+    sub = world.payments.seats[sub_id].subscription
+    assert sub.status == "trialing" and sub.current_period_end == API_NOW + timedelta(days=25)
+    # Active now, with nothing charged: no legal invoice for the invoice of 0.
+    seat = client.get(ME).json()["billing"]["seats"][0]
+    assert seat["status"] == "active" and seat["location_id"] == bar
+    assert seat["trial_ends_at"].startswith((API_NOW + timedelta(days=25)).date().isoformat())
+    assert seat["renews_at"] == (API_NOW + timedelta(days=25)).date().isoformat()
+    assert seat["next_price"] == 3500
+    shown = {loc["id"]: loc for loc in client.get(ME).json()["locations"]}
+    assert shown[bar]["plan"] == "pro" and shown[bar]["active"] is True
+    charged = [i for i in world.payments.invoices.values() if i.amount_paid > 0]
+    assert charged == []
+    # The window ends: the first year is charged and the seat is an ordinary one.
+    invoice = world.payments.renew(sub_id)
+    assert invoice.billing_reason == "subscription_cycle" and invoice.amount_paid == 4235
+    world.stripe("invoice.paid", invoice.id)
+    seat = client.get(ME).json()["billing"]["seats"][0]
+    assert seat["trial_ends_at"] is None and seat["status"] == "active"
+    assert client.get(ME).json()["billing"]["blocked"] is None
+
+
+@pytest.mark.parametrize(
+    ("card", "event", "reason"),
+    [
+        ("declined", "invoice.payment_failed", "payment_failed"),
+        ("3ds", "invoice.payment_action_required", "action_required"),
+    ],
+)
+def test_a_first_charge_at_the_end_of_the_window_that_fails_blocks_as_a_renewal(
+    card, event, reason
+):
+    world, client = _window_world(beta=True)
+    bar, _ = world.ids(client)
+    sub_id = world.buy(client, bar)
+    invoice = world.payments.renew(sub_id, card=card)
+    world.stripe(event, invoice.id)
+    assert client.get(ME).json()["billing"]["blocked"]["reason"] == reason
+
+
+def test_a_new_account_has_no_window_and_pays_the_day_it_buys():
+    world, client = _window_world(beta=False)
+    assert client.get(ME).json()["pricing"]["trial_days"] is None
+    bar, _ = world.ids(client)
+    sub_id = world.buy(client, bar)
+    assert next(iter(world.payments.checkouts.values()))["trial_end"] is None
+    assert world.payments.seats[sub_id].subscription.status == "active"
+    seat = client.get(ME).json()["billing"]["seats"][0]
+    assert seat["trial_ends_at"] is None
+    assert [i.amount_paid for i in world.payments.invoices.values()] == [4235]
+
+
+def test_after_its_window_a_beta_account_pays_the_day_it_buys():
+    world, client = _window_world(beta=True)
+    world.billing.beta[world.store.accounts["ana"].id] = API_NOW - timedelta(days=1)
+    assert client.get(ME).json()["pricing"]["trial_days"] is None
+    bar, _ = world.ids(client)
+    sub_id = world.buy(client, bar)
+    assert world.payments.seats[sub_id].subscription.status == "active"
+
+
+def test_trial_will_end_only_copies_the_seat_again():
+    world, client = _window_world(beta=True)
+    bar, _ = world.ids(client)
+    sub_id = world.buy(client, bar)
+    world.stripe("customer.subscription.trial_will_end", sub_id)
+    seat = next(iter(world.billing.seat_rows.values()))
+    assert seat.in_trial and seat.status is SeatStatus.ACTIVE
+    assert client.get(ME).json()["billing"]["blocked"] is None

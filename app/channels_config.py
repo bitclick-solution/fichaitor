@@ -6,6 +6,8 @@ from datetime import time
 from pydantic import Field, SecretStr, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
+from app.adapters.messaging.whatsapp import API_VERSION as WHATSAPP_API_VERSION
+from app.adapters.messaging.whatsapp import link_url as whatsapp_link_url
 from app.application.conversation_service import ServiceConfig
 from app.domain.conversation import QuietHours
 
@@ -25,6 +27,21 @@ class ChannelsSettings(BaseSettings):
     telegram_webhook_secret: SecretStr = SecretStr("")
     # Local development without a public URL: long polling with getUpdates.
     telegram_polling: bool = False
+
+    # WhatsApp (Cloud API), one number of Fichaitor in Bitclick's WhatsApp Business
+    # Account (docs/canales.md, "WhatsApp"). Split by process:
+    # - the conversation sends: the phone number id and the access token (a permanent
+    #   token of a system user with whatsapp_business_messaging);
+    # - the API receives: the phone number id (to keep only what is for our number), the
+    #   app secret (signature of the webhook), the verify token (the GET of Meta) and the
+    #   display number (the wa.me link).
+    whatsapp_phone_number_id: str = Field(default="", pattern=r"^(\d{1,30})?$")
+    whatsapp_access_token: SecretStr = SecretStr("")
+    whatsapp_app_secret: SecretStr = SecretStr("")
+    whatsapp_verify_token: SecretStr = SecretStr("")
+    # The number as people dial it, in international form: "+34 600 000 000".
+    whatsapp_display_number: str = Field(default="", pattern=r"^(\+?[0-9 ]{8,20})?$")
+    whatsapp_api_version: str = Field(default=WHATSAPP_API_VERSION, pattern=r"^v\d{1,3}\.\d$")
 
     # Linking. A secret that is not in the database, mixed into the hash of the codes.
     # The API (which creates the codes) and the conversation (which checks them) need
@@ -57,6 +74,27 @@ class ChannelsSettings(BaseSettings):
         if secret and not secret.isascii():
             raise ValueError("solo admite caracteres ASCII")
         return value
+
+    @property
+    def whatsapp_enabled(self) -> bool:
+        """The conversation can send by WhatsApp."""
+        return bool(self.whatsapp_phone_number_id and self.whatsapp_access_token.get_secret_value())
+
+    @property
+    def whatsapp_webhook_enabled(self) -> bool:
+        """The API can receive by WhatsApp: without every secret, the route is not mounted."""
+        return bool(
+            self.whatsapp_phone_number_id
+            and self.whatsapp_app_secret.get_secret_value()
+            and self.whatsapp_verify_token.get_secret_value()
+        )
+
+    def whatsapp_link(self, token: str) -> str | None:
+        """`https://wa.me/<number>?text=Vincular%20Fichaitor%20<token>`, or None while the
+        channel is not configured (no number to show, or nothing receives)."""
+        if not self.whatsapp_display_number or not self.whatsapp_webhook_enabled:
+            return None
+        return whatsapp_link_url(self.whatsapp_display_number, token)
 
     @property
     def telegram_enabled(self) -> bool:

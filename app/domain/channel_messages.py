@@ -16,6 +16,7 @@
 import re
 import unicodedata
 from dataclasses import dataclass
+from datetime import datetime
 from enum import StrEnum
 
 # --- limits ------------------------------------------------------------------------
@@ -68,14 +69,32 @@ class Button:
 
 
 @dataclass(frozen=True)
+class TemplateFallback:
+    """What a channel with a customer service window (WhatsApp: 24 hours since the owner
+    last wrote) sends instead of the message once that window is closed: an approved
+    template (app/domain/whatsapp_templates.py), its body values in order and the
+    payload of each of its quick reply buttons, in order. The payloads are opaque button
+    ids, as those of the message: a press is checked exactly the same way."""
+
+    name: str
+    params: tuple[str, ...] = ()
+    button_ids: tuple[str, ...] = ()
+    category: str = "utility"  # as Meta classifies it: what it costs (message_allowance)
+
+
+@dataclass(frozen=True)
 class OutboundMessage:
     to: str  # channel_identity id; the adapter gets the address apart
     kind: MessageKind
     text: str
     buttons: tuple[Button, ...] = ()
-    template_fallback: str | None = None  # WhatsApp outside the 24 hour window
+    # WhatsApp outside the 24 hour window. None: the message is only sent inside it.
+    template_fallback: TemplateFallback | None = None
     key: str = ""  # catalog key, for the record
     proposal_id: str | None = None
+    # When the address last wrote to us (None: never, or unknown). A channel with a
+    # customer service window decides with it between the message and its template.
+    last_inbound_at: datetime | None = None
 
 
 class InvalidMessage(ValueError):
@@ -517,6 +536,11 @@ BUTTONS: dict[str, str] = {
     "change_hours": "Cambio horario",
     "nothing_this_year": "Nada este año",
 }
+
+# NEW (WhatsApp, 2026-11-13): the quick reply button of the templates that do not carry
+# the buttons of the step (a reminder, a notice). It asks to see the proposal: it shows
+# the step again, with its buttons, inside the window the press opens. Never confirms.
+SHOW_OPTION = "show"
 
 CHANNEL_WORDS: dict[str, tuple[str, str]] = {
     # channel: ("{canal}", "{este_chat}")

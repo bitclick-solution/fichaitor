@@ -19,11 +19,17 @@ docs/admin-facturacion.md (step 1 of section 7), with the decisions of the owner
 - Sold in Spain (peninsula, Baleares, Canarias, Ceuta and Melilla) and in the EU from
   the start, always B2B with a NIF or an EU VAT number. The VAT number is only checked
   for its form here; VIES is another step.
+- The beta window (owner, 2026-11-13): the beta is free until `launch_at`. The accounts
+  of the beta keep their beta seats for BETA_WINDOW_DAYS more (`beta_ends_at`) to choose
+  a plan; a seat one of them buys in that window is first charged when it ends, with no
+  days added. Nobody else has a trial: a seat of an account created from the launch is
+  charged the day it is bought.
 
 Points marked "(gestoría)" in the document are still to be confirmed by the tax advisers.
 """
 
 import hashlib
+import math
 import re
 from collections.abc import Collection, Iterable, Mapping
 from dataclasses import dataclass, replace
@@ -48,6 +54,12 @@ PAYMENT_METHOD_TYPES = ("card",)
 ENTITLEMENT_MARGIN = timedelta(days=2)
 RENEWAL_NOTICE_DAYS = 30  # the price is frozen and announced (clause 7 of the terms)
 UNASSIGNED_CANCEL_DAYS = 2  # a seat still without a profile this close to renewal ends
+BETA_WINDOW_DAYS = 30  # after launch_at, for the accounts of the beta to choose a plan
+BETA_WINDOW_NOTICE_DAYS = 7  # the email `trial_ending`, before the first charge
+# Checkout refuses a `trial_end` less than 48 hours ahead (docs.stripe.com, API reference
+# of Checkout Sessions, `subscription_data.trial_end`, read on 2026-11-13). One more hour
+# covers the 31 minutes a Checkout stays open.
+MIN_TRIAL_AHEAD = timedelta(hours=49)
 
 
 # --- price of a seat -----------------------------------------------------------------
@@ -615,6 +627,65 @@ def seat_state(snapshot: StripeSnapshot) -> SeatState:
 
 
 # --- end of the beta -----------------------------------------------------------------
+
+
+def beta_ends_at(launch_at: datetime | None) -> datetime | None:
+    """The end of the beta window: BETA_WINDOW_DAYS after the launch. The database
+    derives `billing_setting.beta_ends_at` the same way."""
+    return launch_at + timedelta(days=BETA_WINDOW_DAYS) if launch_at is not None else None
+
+
+def _window_until(
+    now: datetime, launch_at: datetime, beta_until: datetime | None, beta: bool
+) -> datetime | None:
+    """The end of the beta window of an account at `now`, or None if it has none now."""
+    window_end = beta_ends_at(launch_at)
+    assert window_end is not None
+    if beta_until is None and not beta:
+        return None
+    until = min(beta_until or window_end, window_end)
+    return until if launch_at <= now < until else None
+
+
+def first_charge_at(
+    now: datetime,
+    launch_at: datetime | None,
+    *,
+    beta_until: datetime | None,
+    beta: bool = False,
+) -> datetime | None:
+    """When a seat bought at `now` is first charged: None for at once (every account
+    created from the launch, and a beta account after its window), or the end of the
+    beta window of a beta account (its Stripe `trial_end`).
+
+    `beta_until`: the latest end of the beta entitlements of the account (None if it has
+    none; `beta=True` for one without an end, which then ends with the window). Never
+    later than the window; stretched to MIN_TRIAL_AHEAD in its last hours, which Checkout
+    needs. ValueError before the launch: nothing is charged in the beta."""
+    if launch_at is None or now < launch_at:
+        raise ValueError("beta: nothing is charged before the launch")
+    until = _window_until(now, launch_at, beta_until, beta)
+    if until is None:
+        return None
+    return max(until, now + MIN_TRIAL_AHEAD)
+
+
+def beta_window_days_left(
+    now: datetime,
+    launch_at: datetime | None,
+    *,
+    beta_until: datetime | None,
+    beta: bool = False,
+) -> int | None:
+    """`pricing.trial_days` of GET /me: whole days (rounded up) a beta account still has
+    before its first charge, or None (beta, an account created from the launch, or a
+    window that has ended)."""
+    if launch_at is None or now < launch_at:
+        return None
+    until = _window_until(now, launch_at, beta_until, beta)
+    if until is None:
+        return None
+    return math.ceil((until - now) / timedelta(days=1))
 
 
 class EnforceAction(StrEnum):

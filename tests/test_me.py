@@ -222,7 +222,9 @@ def test_me_has_the_shape_of_the_contract():
         "plans",
         "pricing",
         "billing",
+        "whatsapp",
     }
+    assert body["whatsapp"] is None  # no Pro+ profile: no bag
     assert body["connected"] is True and body["pending_deletion"] is None
     assert body["email"] == "dueno@example.com"
     assert body["selected_location_id"] is None

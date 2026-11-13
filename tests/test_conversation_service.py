@@ -23,6 +23,7 @@ from app.domain import channel_messages as cm
 from app.domain import link_codes
 from app.domain.channel_messages import InboundEvent, InboundKind
 from app.domain.conversation import AccountInfo, HoursAnswer, HoursKind
+from app.domain.plans import Plan
 from app.domain.proposals import OUTCOME_OFFBOARDING
 from app.domain.proposals import ProposalState as S
 from app.ports import proposal_actions as pa
@@ -317,6 +318,8 @@ def test_unlinking_from_the_panel_stops_sending_and_attending_at_once(w):
 
 def test_whatsapp_address_links_the_same_way_with_its_own_words():
     w = World()
+    # WhatsApp only speaks of Pro+ profiles, and its messages spend the bag of Pro+.
+    w.store.locations[LOCATION[ACC]] = MemoryLocation(ACC, "Bar Pepe", plan=Plan.PRO_WHATSAPP)
     code = w.run(w.service.create_link_code(ACC))
     w.say("hola", "+34600111222", channel="whatsapp")
     text = w.whatsapp.sent[-1].text

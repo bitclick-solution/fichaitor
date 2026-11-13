@@ -446,3 +446,68 @@ def test_the_env_examples_carry_the_allowance_pepper_where_it_is_used():
     assert "FICHAITOR_STRIPE_SECRET_KEY" not in (ROOT / "deploy" / "env.api.example").read_text(
         encoding="utf-8"
     )
+
+
+# --- WhatsApp (docs/canales.md, «WhatsApp») --------------------------------------------
+
+WA_ID = "106540352242922"
+WA_SECRET = "f" * 32
+WA_VERIFY = "v" * 64
+WA_TOKEN = "EAAG" + "t" * 196
+WA_API = (
+    f"FICHAITOR_WHATSAPP_PHONE_NUMBER_ID={WA_ID}\nFICHAITOR_WHATSAPP_APP_SECRET={WA_SECRET}\n"
+    f"FICHAITOR_WHATSAPP_VERIFY_TOKEN={WA_VERIFY}\n"
+    "FICHAITOR_WHATSAPP_DISPLAY_NUMBER=+34 600 000 000\n"
+)
+WA_CONVERSATION = (
+    f"FICHAITOR_WHATSAPP_PHONE_NUMBER_ID={WA_ID}\nFICHAITOR_WHATSAPP_ACCESS_TOKEN={WA_TOKEN}\n"
+)
+
+
+@needs_bash
+@pytest.mark.parametrize(
+    ("api", "conversation", "worker", "ok"),
+    [
+        ("", "", "", True),  # WhatsApp off
+        (WA_API, WA_CONVERSATION, "", True),
+        (WA_API, "", "", False),  # no token where it sends
+        ("", WA_CONVERSATION, "", False),  # nothing receives
+        (WA_API.replace(WA_SECRET, WA_SECRET[:31]), WA_CONVERSATION, "", False),
+        (WA_API.replace(WA_VERIFY, "corto"), WA_CONVERSATION, "", False),
+        (WA_API, WA_CONVERSATION.replace(WA_TOKEN, WA_TOKEN[:99]), "", False),
+        (WA_API, WA_CONVERSATION.replace(WA_ID, "999999999"), "", False),
+        (WA_API.replace("+34 600 000 000", "sin número"), WA_CONVERSATION, "", False),
+        # Each secret only in its process.
+        (WA_API + f"FICHAITOR_WHATSAPP_ACCESS_TOKEN={WA_TOKEN}\n", WA_CONVERSATION, "", False),
+        (WA_API, WA_CONVERSATION + f"FICHAITOR_WHATSAPP_APP_SECRET={WA_SECRET}\n", "", False),
+        (WA_API, WA_CONVERSATION + f"FICHAITOR_WHATSAPP_VERIFY_TOKEN={WA_VERIFY}\n", "", False),
+        (WA_API, WA_CONVERSATION, f"FICHAITOR_WHATSAPP_ACCESS_TOKEN={WA_TOKEN}\n", False),
+    ],
+)
+def test_deploy_requires_whatsapp_complete_split_by_process_and_long(
+    tmp_path, api, conversation, worker, ok
+):
+    result = _check(
+        tmp_path,
+        "comprobar_whatsapp",
+        {"api.env": api, "conversation.env": conversation, "worker.env": worker},
+    )
+    assert (result.returncode == 0) is ok, result.stderr
+    for secret in (WA_SECRET, WA_VERIFY, WA_TOKEN):
+        assert secret not in result.stderr
+
+
+def test_the_env_examples_split_whatsapp_by_process():
+    api = (ROOT / "deploy" / "env.api.example").read_text(encoding="utf-8")
+    conversation = (ROOT / "deploy" / "env.conversation.example").read_text(encoding="utf-8")
+    worker = (ROOT / "deploy" / "env.worker.example").read_text(encoding="utf-8")
+    local = (ROOT / ".env.example").read_text(encoding="utf-8")
+    for name in ("APP_SECRET", "VERIFY_TOKEN", "DISPLAY_NUMBER", "PHONE_NUMBER_ID"):
+        assert f"\nFICHAITOR_WHATSAPP_{name}=" in api
+    for name in ("ACCESS_TOKEN", "PHONE_NUMBER_ID"):
+        assert f"\nFICHAITOR_WHATSAPP_{name}=" in conversation
+    assert "\nFICHAITOR_WHATSAPP_ACCESS_TOKEN=" not in api
+    assert "\nFICHAITOR_WHATSAPP_APP_SECRET=" not in conversation
+    assert "FICHAITOR_WHATSAPP" not in worker
+    for name in ("PHONE_NUMBER_ID", "ACCESS_TOKEN", "APP_SECRET", "VERIFY_TOKEN", "DISPLAY_NUMBER"):
+        assert f"\nFICHAITOR_WHATSAPP_{name}=" in local

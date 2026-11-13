@@ -29,6 +29,7 @@ from typing import Any
 
 import asyncpg
 
+from app.domain import message_allowance as allowance
 from app.domain.channel_messages import business_label
 from app.domain.conversation import (
     BILLING_NOTICE_EVERY,
@@ -40,6 +41,7 @@ from app.domain.conversation import (
     LinkOutcome,
     normalize_address,
     plan_link,
+    timezone_for,
 )
 from app.domain.link_codes import (
     BLOCK_DURATION,
@@ -60,6 +62,11 @@ from app.ports.conversation_store import (
     MessageRecord,
     ReviewTarget,
 )
+
+
+class _BagFull(Exception):
+    """The bag of the month has no room for one more message: undo what was counted."""
+
 
 # The connection of the lock this task holds, if any, and the store it belongs to.
 _HELD: ContextVar[tuple[object, asyncpg.Connection] | None] = ContextVar(
@@ -612,6 +619,53 @@ class PostgresConversationStore:
                 location_id,
             )
         return parse_plan(value)
+
+    # --- the bag of WhatsApp messages (app/domain/message_allowance.py) ----------------
+
+    async def take_message_allowance(self, account_id: str, units: int, now: datetime) -> bool:
+        """In usage_counter, as every cap: the first message creates the counter with 1 and
+        each one after adds 1 while below the limit (B11: it only goes up, one by one). The
+        limit is read in the same transaction: 80 per active Pro+ profile now. Several
+        units are counted one by one inside a savepoint: all of them or none."""
+        if units < 1:
+            return False
+        info = await self.get_account_info(account_id)
+        start, end = allowance.month_window(now, timezone_for(info.timezone))
+        scope = allowance.scope(account_id)
+        async with self._conn() as conn, conn.transaction():
+            profiles = await conn.fetchval(
+                """
+                SELECT count(*) FROM location l
+                JOIN account a ON a.id = l.account_id AND a.deleted_at IS NULL
+                WHERE l.account_id = $1::uuid AND l.plan = 'pro_whatsapp'
+                  AND l.active_since IS NOT NULL AND l.removed_at IS NULL
+                """,
+                account_id,
+            )
+            limit = allowance.monthly_limit(int(profiles or 0))
+            if limit < units:
+                return False
+            try:
+                async with conn.transaction():
+                    for _ in range(units):
+                        hits = await conn.fetchval(
+                            """
+                            INSERT INTO usage_counter AS u (scope, window_start, expires_at, hits)
+                            VALUES ($1, $2, $3, 1)
+                            ON CONFLICT (scope, window_start) DO UPDATE SET hits = u.hits + 1
+                            WHERE u.hits < $4
+                            RETURNING hits
+                            """,
+                            scope,
+                            start,
+                            end,
+                            limit,
+                        )
+                        if hits is None:
+                            raise _BagFull
+            except _BagFull:
+                return False
+        return True
 
     # --- conversations ------------------------------------------------------------------
 

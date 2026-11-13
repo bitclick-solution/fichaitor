@@ -41,7 +41,17 @@ _PROFILE_COLUMNS = """
 _SEAT_COLUMNS = """
     id, account_id::text AS account_id, plan, status, created_at, location_id, collection,
     stripe_subscription_id, current_period_start, current_period_end, cancel_at_period_end,
-    next_price_key, request_id::text AS request_id, review_reason
+    next_price_key, request_id::text AS request_id, review_reason, trial_ends_at
+"""
+# The latest end of the beta entitlements of an account: an end left empty counts as the
+# end of the window (billing_setting.beta_ends_at; a century if there is no launch yet,
+# capped anyway by billing.first_charge_at). No row: an account created from the launch.
+BETA_UNTIL_SQL = """
+    SELECT max(coalesce(e.ends_at,
+                        (SELECT beta_ends_at FROM billing_setting LIMIT 1),
+                        now() + interval '100 years'))
+    FROM plan_entitlement e
+    WHERE e.account_id = $1::uuid AND e.source = 'beta'
 """
 _REQUEST_COLUMNS = """
     id::text AS id, account_id::text AS account_id, kind, state, created_at, location_id,
@@ -84,6 +94,7 @@ def seat_from_row(row: asyncpg.Record) -> SeatRow:
         next_price_key=PriceKey(key) if key else None,
         request_id=row["request_id"],
         review_reason=row["review_reason"],
+        trial_ends_at=row["trial_ends_at"],
     )
 
 
@@ -139,6 +150,11 @@ class PostgresBillingStore:
 
     async def launch_at(self) -> datetime | None:
         return await self._pool().fetchval("SELECT launch_at FROM billing_setting LIMIT 1")
+
+    async def beta_until(self, account_id: str) -> datetime | None:
+        if not _is_uuid(account_id):
+            return None
+        return await self._pool().fetchval(BETA_UNTIL_SQL, account_id)
 
     async def profile(self, account_id: str) -> FiscalProfile | None:
         row = await self._pool().fetchrow(

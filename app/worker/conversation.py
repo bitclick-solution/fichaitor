@@ -3,8 +3,9 @@
 Option A of docs/canales.md ("Paso 0"): the conversation runs apart from the worker that
 writes to Google, with its own database user (`fichaitor_conversation`).
 
-- It talks to the owner (Telegram) and, when the owner confirms, creates the action the
-  same way the panel does (`ReviewReplyActions` -> `ReviewReplies.confirm`).
+- It talks to the owner (Telegram, and WhatsApp with its access token) and, when the
+  owner confirms, creates the action the same way the panel does
+  (`ReviewReplyActions` -> `ReviewReplies.confirm`).
 - It never has the private key of the tokens and cannot read `google_connection`: it
   can create an action but never carry it out. The executor of the worker does, after
   checking that the account, its Google user, the profile and the review agree (M1).
@@ -33,7 +34,7 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 from app.adapters.calendar.loader import CalendarDataError, load_calendar
 from app.adapters.conversation_store.postgres import PostgresConversationStore
 from app.adapters.job_queue.postgres import PostgresJobQueue
-from app.adapters.messaging import telegram
+from app.adapters.messaging import telegram, whatsapp
 from app.adapters.messaging.offline import OfflineChannel
 from app.adapters.proposal_actions.review_replies import ReviewReplyActions
 from app.adapters.proposal_actions.special_hours import (
@@ -77,6 +78,10 @@ class ConversationSettings(BaseSettings):
     conversation_database_url: str = ""
     # Read only to refuse to start with it: this process must never have it.
     token_private_key: str = ""
+    # Read only to refuse to start with them: the secrets of the webhook of WhatsApp are
+    # the API's (docs/canales.md, "WhatsApp", variables by process).
+    whatsapp_app_secret: str = ""
+    whatsapp_verify_token: str = ""
 
     worker_poll_interval_seconds: float = Field(default=2.0, gt=0)
     worker_job_timeout_seconds: float = Field(default=30.0, gt=0)
@@ -95,6 +100,11 @@ class ConversationSettings(BaseSettings):
         if self.token_private_key:
             problems.append(
                 "FICHAITOR_TOKEN_PRIVATE_KEY no puede llegar al proceso de la conversación"
+            )
+        if self.whatsapp_app_secret or self.whatsapp_verify_token:
+            problems.append(
+                "FICHAITOR_WHATSAPP_APP_SECRET y FICHAITOR_WHATSAPP_VERIFY_TOKEN son de la "
+                "API: no pueden llegar al proceso de la conversación"
             )
         if self.worker_job_timeout_seconds >= self.worker_lock_timeout_seconds:
             problems.append(
@@ -166,15 +176,22 @@ def build_registry(
     replies: ReviewReplies,
     calendar: Calendar | None = None,
     lead_days: int = DEFAULT_LEAD_DAYS,
+    whatsapp_phone_number_id: str = "",
 ) -> HandlerRegistry:
-    """The jobs of the channels, and only them. Without a calendar, no key dates."""
+    """The jobs of the channels, and only them. Without a calendar, no key dates. With the
+    number of WhatsApp, its messages too (only those for that number)."""
     registry = HandlerRegistry()
     if calendar is not None:
         registry.register(
             plan_key_dates.KIND,
             plan_key_dates.PlanKeyDates(store, service, calendar, lead_days=lead_days),
         )
-    registry.register(channel_inbound.KIND, channel_inbound.ChannelInbound(service, store))
+    parsers: dict[str, channel_inbound.Parser] = {telegram.CHANNEL: telegram.parse_update}
+    if whatsapp_phone_number_id:
+        parsers[whatsapp.CHANNEL] = lambda update: whatsapp.parse_update(
+            update, whatsapp_phone_number_id
+        )
+    registry.register(channel_inbound.KIND, channel_inbound.ChannelInbound(service, store, parsers))
     registry.register(conversation_tick.KIND, conversation_tick.ConversationTick(service))
     registry.register(propose_review.KIND, propose_review.ProposeReview(store, replies, service))
     registry.register(
@@ -206,15 +223,22 @@ async def run(settings: ConversationSettings) -> None:
                 channel = OfflineChannel(telegram.CHANNEL)
             conversation_store = PostgresConversationStore(pool)
             replies = build_replies(store, writer, Settings())
-            service = build_service(
-                conversation_store, {telegram.CHANNEL: channel}, replies, channels_settings, store
-            )
+            channels = {
+                telegram.CHANNEL: channel,
+                whatsapp.CHANNEL: build_whatsapp(channels_settings, client),
+            }
+            service = build_service(conversation_store, channels, replies, channels_settings, store)
             calendar = load_key_dates_calendar(settings)
             queue = PostgresJobQueue(pool)
             worker = Worker(
                 queue,
                 build_registry(
-                    service, conversation_store, replies, calendar, settings.key_dates_lead_days
+                    service,
+                    conversation_store,
+                    replies,
+                    calendar,
+                    settings.key_dates_lead_days,
+                    channels_settings.whatsapp_phone_number_id,
                 ),
                 worker_id=settings.worker_id,
                 poll_interval=settings.worker_poll_interval_seconds,
@@ -248,6 +272,20 @@ async def run(settings: ConversationSettings) -> None:
                 await writer.close()
             await store.close()
             await pool.close()
+
+
+def build_whatsapp(settings: ChannelsSettings, client: httpx.AsyncClient) -> MessagingChannel:
+    """WhatsApp with its number and access token; without them, a channel that sends
+    nothing (and spends nothing of any bag): its addresses wait, the rest goes on."""
+    if not settings.whatsapp_enabled:
+        log.event("whatsapp_disabled", logging.INFO)
+        return OfflineChannel(whatsapp.CHANNEL)
+    return whatsapp.WhatsAppChannel(
+        settings.whatsapp_phone_number_id,
+        settings.whatsapp_access_token.get_secret_value(),
+        client,
+        api_version=settings.whatsapp_api_version,
+    )
 
 
 def load_key_dates_calendar(settings: ConversationSettings) -> Calendar | None:

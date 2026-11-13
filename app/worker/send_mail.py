@@ -18,7 +18,8 @@ formatted by the billing process:
 - {"template": "renewal_notice_unassigned", "to", "plan", "fecha_renovacion", "importe"}
 - {"template": "billing_blocked", "to", "importe", "ficha", "motivo"}
 - {"template": "billing_unblocked", "to", "ficha"}
-- {"template": "beta_ending", "to", "fecha_fin", "oferta"}
+- {"template": "beta_ending", "to", "fecha_lanzamiento", "fecha_fin", "oferta"}
+- {"template": "trial_ending", "to", "plan", "ficha", "fecha_cobro", "importe"}
 
 No payload carries a link: each link is made here from the public URL of the
 configuration.
@@ -165,7 +166,20 @@ def build_billing_email(payload: dict, base: str, pdf: bytes | None = None) -> E
         if not isinstance(offer, str):
             raise PermanentJobError("payload no válido")
         return t.beta_ending_email(
-            to, fecha_fin=_text(payload, "fecha_fin"), oferta=offer, enlace=t.billing_url(base)
+            to,
+            fecha_lanzamiento=_text(payload, "fecha_lanzamiento"),
+            fecha_fin=_text(payload, "fecha_fin"),
+            oferta=offer,
+            enlace=t.billing_url(base),
+        )
+    if template == t.TRIAL_ENDING:
+        return t.trial_ending_email(
+            to,
+            plan=_text(payload, "plan"),
+            ficha=_text(payload, "ficha"),
+            fecha_cobro=_text(payload, "fecha_cobro"),
+            importe=_text(payload, "importe"),
+            enlace=t.billing_url(base),
         )
     raise PermanentJobError("payload no válido")
 

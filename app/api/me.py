@@ -40,7 +40,9 @@ from app.api.session import (
 )
 from app.api.summary_out import SummaryResponse, seconds, to_summary_response
 from app.application.profile_sync import ProfileSync
+from app.domain import message_allowance as allowance
 from app.domain import plans
+from app.domain.billing import beta_window_days_left
 from app.domain.calendar import Holiday
 from app.domain.conversation import DEFAULT_TIMEZONE, timezone_for
 from app.domain.profile_summary import STATUS_OK, shown_status
@@ -162,6 +164,20 @@ class PricingOut(BaseModel):
     total: int
     if_activate: dict[str, int]  # by plan: the total after activating one more
     if_deactivate: dict[str, int]  # by active profile: the total after deactivating it
+    # Only for an account of the beta during its window (30 days from the launch): the
+    # whole days left before a seat it buys now is first charged. None for everyone else:
+    # a seat is charged the day it is bought (owner, 2026-11-13).
+    trial_days: int | None = None
+
+
+class WhatsAppBagOut(BaseModel):
+    """The monthly bag of WhatsApp messages of the account (app/domain/message_allowance.py):
+    80 of ours a month per active Pro+ profile, added up. Reset on the 1st (Madrid time)."""
+
+    month: str  # "2026-11"
+    used: int
+    limit: int  # 80 x active Pro+ profiles; 0 without any
+    remaining: int
 
 
 class PendingDeletionOut(BaseModel):
@@ -184,6 +200,30 @@ class MeResponse(BaseModel):
     # block for a payment not made, the paid seats and the price of a new one. None only
     # without a billing store (old tests).
     billing: BillingOut | None = None
+    # WhatsApp: what the account has used of its bag this month. None without any active
+    # Pro+ profile (nothing is told by WhatsApp then) or during a scheduled leave.
+    whatsapp: WhatsAppBagOut | None = None
+
+
+async def _whatsapp_bag(
+    store: Store, account_id: str, pro_whatsapp: int, now: datetime
+) -> WhatsAppBagOut | None:
+    limit = allowance.monthly_limit(pro_whatsapp)
+    if limit == 0:
+        return None
+    zone = timezone_for(DEFAULT_TIMEZONE)
+    start, _ = allowance.month_window(now, zone)
+    try:
+        used = await store.quota_used(allowance.scope(account_id), start)
+    except Exception as exc:  # GET /me never fails for a counter
+        log.warning("bolsa de WhatsApp no disponible: %s", type(exc).__name__)
+        used = 0
+    return WhatsAppBagOut(
+        month=allowance.month_label(now, zone),
+        used=used,
+        limit=limit,
+        remaining=max(limit - used, 0),
+    )
 
 
 class SelectLocationRequest(BaseModel):
@@ -280,8 +320,26 @@ async def me_body(
         plans=PlansOut.model_validate(
             plans.usage(overview.active_by_plan(), overview.entitlements, now)
         ),
-        pricing=PricingOut.model_validate(plans.pricing(overview.active(), now, launch_at)),
+        pricing=PricingOut.model_validate(
+            {
+                **plans.pricing(overview.active(), now, launch_at),
+                "trial_days": (
+                    beta_window_days_left(
+                        now, launch_at, beta_until=await billing.beta_until(account.id)
+                    )
+                    if billing is not None
+                    else None
+                ),
+            }
+        ),
         billing=await billing_body(billing, account, now) if billing is not None else None,
+        whatsapp=(
+            None
+            if leaving
+            else await _whatsapp_bag(
+                store, account.id, overview.active_by_plan().get(plans.Plan.PRO_WHATSAPP, 0), now
+            )
+        ),
     )
 
 

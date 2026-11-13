@@ -1,6 +1,6 @@
 # Canales de mensajería
 
-Base de los canales por los que el agente avisa al dueño y recibe sus respuestas: el motor de propuestas, el orquestador conversacional y el primer canal, Telegram. Fecha: 2026-11-12.
+Base de los canales por los que el agente avisa al dueño y recibe sus respuestas: el motor de propuestas, el orquestador conversacional y los canales, Telegram y WhatsApp. Fecha: 2026-11-12; WhatsApp, 2026-11-13.
 
 Este documento explica cómo funciona, qué límites aplica y cómo se integra con el resto del sistema. Los textos y botones son los de `docs/fase1/guion-conversacional.md`; los estados, los de `docs/01-flujos.md`.
 
@@ -17,6 +17,8 @@ Este documento explica cómo funciona, qué límites aplica y cómo se integra c
 | Puertos | `app/ports/messaging.py`, `conversation_store.py`, `proposal_actions.py` | Canal, almacén y puerta por la que una propuesta confirmada se convierte en acción |
 | Orquestador | `app/application/conversation_service.py` | `ConversationService`: recibe eventos, aplica las reglas y envía mensajes. Solo usa puertos |
 | Telegram | `app/adapters/messaging/telegram.py` | Bot API con `httpx`, webhook y sondeo largo. Solo atiende `/start`, `/ayuda` y `/privacidad` como comandos |
+| WhatsApp | `app/adapters/messaging/whatsapp.py` | Cloud API de Meta con `httpx`: mensajes de sesión dentro de la ventana de 24 horas, plantillas fuera, webhook firmado. Consulta [WhatsApp](#6b-whatsapp) |
+| Plantillas y bolsa | `app/domain/whatsapp_templates.py`, `app/domain/message_allowance.py` | Las plantillas de utilidad (`docs/whatsapp-plantillas.md`) y la bolsa mensual de mensajes de cada cuenta |
 | Almacén en PostgreSQL | `app/adapters/conversation_store/postgres.py` | `PostgresConversationStore`, con el rol `fichaitor_conversation` |
 | Puerta de las acciones | `app/adapters/proposal_actions/review_replies.py`, `special_hours.py` | `ReviewReplyActions` y `SpecialHoursActions`: la misma vía que el panel. `ProposalActionsByType` elige la de cada tipo |
 | Rutas | `app/api/channels.py` | Código de vinculación, canales vinculados, desvincular y webhook |
@@ -204,7 +206,7 @@ La vinculación es la misma para todos los canales. Una identidad de canal es `c
 1. La sesión web pide un código (`POST /api/v1/channels/link-code`). Son 6 dígitos y un testigo largo, un solo código de un solo uso, válido 10 minutos. Pedir otro invalida el anterior.
 2. El dueño envía el código desde su propio chat:
    - Telegram: `https://t.me/FichaitorBot?start=<testigo>` (43 caracteres aleatorios; nunca los 6 dígitos), o los 6 dígitos escritos en el chat.
-   - WhatsApp (cuando exista el adaptador): `https://wa.me/<número de Fichaitor>?text=<código>`. Enviarlo desde su teléfono demuestra que es suyo y abre la ventana de 24 horas.
+   - WhatsApp: `https://wa.me/<número de Fichaitor>?text=Vincular%20Fichaitor%20<testigo>` (el mismo testigo que Telegram, nunca los 6 dígitos), o los 6 dígitos escritos en el chat. Enviarlo desde su teléfono demuestra que es suyo y abre la ventana de 24 horas. El teléfono queda vinculado en E.164 (`+34600111222`).
 3. El orquestador valida el código y vincula la dirección a la cuenta.
 
 Reglas, todas con prueba:
@@ -296,6 +298,90 @@ Los límites de WhatsApp son los de `docs/fase0/whatsapp.md`.
 
 Solo tres: `/start` (con o sin testigo), `/ayuda` y `/privacidad`. Los dos últimos tienen una respuesta fija, sin datos de ningún negocio, para cualquier chat (vinculado o no; uno bloqueado no recibe nada). Cualquier otra cosa que empiece por `/` es texto normal.
 
+## 6b. WhatsApp
+
+Desde el 2026-11-13. Decisión del propietario: **un solo número de WhatsApp de Fichaitor**, en la WABA de Bitclick, con la Cloud API de Meta. Para enviar desde un número propio no hace falta ser Tech Provider (eso solo sirve para conectar los números de los clientes, y queda fuera). Cada dueño vincula su teléfono a su cuenta, y solo se atiende a los teléfonos vinculados. Los pasos en Meta: `docs/despliegue.md`, «WhatsApp».
+
+### Qué dice la documentación de Meta
+
+Consultada el 2026-11-13 en developers.facebook.com:
+
+| Punto | Dato | Fuente |
+|---|---|---|
+| Versión | Graph API **v27.0**, del 4 de noviembre de 2026 (v26.0, del 29 de julio; v25.0 vale hasta el 29-7-2028). `FICHAITOR_WHATSAPP_API_VERSION` permite cambiarla | [Graph API changelog](https://developers.facebook.com/docs/graph-api/changelog) |
+| Envío | `POST https://graph.facebook.com/<versión>/<PHONE_NUMBER_ID>/messages`. La respuesta trae `messages[0].id` (el `wamid`) y, en plantillas con ritmo, `message_status` (`accepted`, `held_for_quality_assessment`, `paused`). Aceptar no es entregar: la entrega llega por webhook | [Send messages](https://developers.facebook.com/documentation/business-messaging/whatsapp/messages/send-messages), [Message API](https://developers.facebook.com/documentation/business-messaging/whatsapp/reference/whatsapp-business-phone-number/message-api.md) |
+| Ventana | Un mensaje o una llamada del usuario abre una ventana de 24 horas; cada mensaje nuevo la reinicia. Dentro, mensajes libres; fuera, solo plantillas. Un mensaje de servicio fuera de ella falla con `131047` | [Send messages](https://developers.facebook.com/documentation/business-messaging/whatsapp/messages/send-messages), [Template fundamentals](https://developers.facebook.com/documentation/business-messaging/whatsapp/templates/overview), [Pricing](https://developers.facebook.com/documentation/business-messaging/whatsapp/pricing.md) |
+| Botones de respuesta | Hasta 3; título de 20 caracteres, distintos; id de 256; cuerpo de 1.024; pie de 60. La pulsación llega como `type: interactive`, `interactive.button_reply.id` y `context.id` (el mensaje del botón) | [Reply buttons](https://developers.facebook.com/docs/whatsapp/cloud-api/messages/interactive-reply-buttons-messages) |
+| Plantillas | Cuerpo de 1.024 con las variables; respuestas rápidas de 25 caracteres, hasta 10 botones (con 3 o más, WhatsApp enseña 2 y el resto tras «Ver todas las opciones»). Variables posicionales (`{{1}}`) o con nombre; los ejemplos son obligatorios. Solo se envían en estado `APPROVED` | [Components](https://developers.facebook.com/documentation/business-messaging/whatsapp/templates/components.md), [Template fundamentals](https://developers.facebook.com/documentation/business-messaging/whatsapp/templates/overview) |
+| Pulsación en una plantilla | `type: button` con `button.payload` y `button.text`, y `context.id` | [Webhook: button](https://developers.facebook.com/documentation/business-messaging/whatsapp/webhooks/reference/messages/button.md), [Supported message types](https://developers.facebook.com/documentation/business-messaging/whatsapp/direct-send/supported-message-types.md) |
+| Webhook: verificación | `GET <url>?hub.mode=subscribe&hub.challenge=…&hub.verify_token=…`: si el testigo es el nuestro, 200 con `hub.challenge`; si no, un 4xx | [Create a webhook endpoint](https://developers.facebook.com/documentation/business-messaging/whatsapp/webhooks/create-webhook-endpoint) |
+| Webhook: firma | `X-Hub-Signature-256: sha256=<hex>`, HMAC-SHA256 del cuerpo con el secreto de la app | Ídem |
+| Webhook: entrega | Hasta 3 MB; cualquier respuesta que no sea 200 se reintenta, cada vez con menos frecuencia, durante 7 días, y puede llegar duplicada. Una app tiene una URL; se puede sustituir por cartera o por número (`override_callback_uri`) | [Webhooks overview](https://developers.facebook.com/documentation/business-messaging/whatsapp/webhooks/overview), [Override the callback URL](https://developers.facebook.com/documentation/business-messaging/whatsapp/webhooks/override.md) |
+| Estados | `sent`, `delivered`, `read`, `played` y `failed` (con `errors[].code`). `pricing.category` dice la tarifa aplicada (`service`, `utility`, `marketing`) | [Webhook: status](https://developers.facebook.com/documentation/business-messaging/whatsapp/webhooks/reference/messages/status.md) |
+| Precio | Plantillas: marketing, utilidad o autenticación; mensajes libres: servicio. Desde el 1-10-2026 se cobran los de servicio (salvo 1.000 al mes por número) y las plantillas de utilidad dentro de la ventana. Solo se cobra lo **entregado**; lo que escribe el usuario, nunca | [Pricing](https://developers.facebook.com/documentation/business-messaging/whatsapp/pricing.md) |
+| Categorías | Utilidad: sin intención promocional, y específica del usuario o pedida por él. Contenido mixto o poco claro es marketing. Rechazo `INCORRECT_CATEGORY`; revisión periódica con un día de aviso (inmediata tras un aviso por mal uso); 60 días para recurrir | [Template categorization](https://developers.facebook.com/documentation/business-messaging/whatsapp/templates/template-categorization.md) |
+| Límites de envío | Personas distintas a las que se escribe **fuera** de la ventana en 24 horas, por cartera (todos sus números juntos): 250 sin verificar; 2.000 tras verificar el negocio; después 10.000, 100.000 e ilimitado. Rendimiento: hasta 80 mensajes por segundo por número (error `130429` por encima) y un límite por pareja de usuario (sin cifra publicada) | [Messaging limits](https://developers.facebook.com/documentation/business-messaging/whatsapp/messaging-limits.md), [Throughput](https://developers.facebook.com/documentation/business-messaging/whatsapp/throughput) |
+| Token | Usuario del sistema: token de larga duración; se elige la caducidad al generarlo. Permisos `business_management`, `whatsapp_business_management` y `whatsapp_business_messaging` | [Access tokens](https://developers.facebook.com/documentation/business-messaging/whatsapp/access-tokens.md) |
+| Enlace `wa.me` | La página de Meta solo menciona los enlaces cortos (`wa.me/message/…`, hasta 140 caracteres de texto). El formato `wa.me/<número>?text=<texto>` es el del centro de ayuda de WhatsApp | [QR codes and message links](https://developers.facebook.com/documentation/business-messaging/whatsapp/qr-codes.md) |
+
+### Cómo funciona
+
+```mermaid
+flowchart LR
+    WA["Meta"] -- "POST firmado" --> API["API: firma, 64 KB, un job por mensaje"]
+    API -- "channel_inbound whatsapp:<wamid>" --> CONV["Conversación"]
+    CONV -- "¿ficha Pro+? ¿cabe en la bolsa?" --> BAG["usage_counter whatsapp_month:<cuenta>"]
+    CONV -- "ventana abierta: sesión; cerrada: plantilla" --> WA
+```
+
+- **Recibir.** `GET /api/v1/webhooks/whatsapp` contesta la verificación. `POST` exige `X-Hub-Signature-256`; lee el cuerpo crudo con un tope de 64 KB (el mismo que nginx) y comprueba la firma, en tiempo constante, **antes** de interpretar el JSON. Encola un `channel_inbound` por mensaje de nuestro número, con la clave `whatsapp:<wamid>` (Meta repite las entregas: el mismo mensaje se encola una vez). Los estados solo se cuentan en el registro (un `failed` con su código, sin identificadores). Sin `FICHAITOR_WHATSAPP_PHONE_NUMBER_ID`, `FICHAITOR_WHATSAPP_APP_SECRET` y `FICHAITOR_WHATSAPP_VERIFY_TOKEN`, las rutas no existen.
+- **Qué se atiende.** Texto, pulsación de un botón (`button_reply`), de una lista (`list_reply`) y de una plantilla (`button`). «Vincular Fichaitor <testigo>» es la vinculación, como el `/start <testigo>` de Telegram. Lo demás (fotos, audios, reacciones, un remitente sin teléfono) se ignora. El mensaje citado (`context.id`) es `reply_to` del texto.
+- **Enviar.** Dentro de la ventana (24 horas menos 10 minutos de margen desde el último mensaje o pulsación del dueño, `channel_identity.last_inbound_at`), un texto, o un texto con hasta 3 botones de respuesta, o una lista si hubiera más. Fuera, la plantilla que el orquestador pone en `OutboundMessage.template_fallback` (`docs/whatsapp-plantillas.md`), con los identificadores opacos de los botones como `payload` de sus respuestas rápidas: una pulsación se comprueba igual que dentro. Sin plantilla, el mensaje no sale (`MessagingRejected`). Los textos se recortan a los límites; el orquestador ya los construye dentro.
+- **Errores.** Red, 429, 5xx y los códigos `1`, `2`, `4`, `17`, `341`, `80007`, `130429`, `131000`, `131016`, `131056` y `133004` son temporales (`MessagingUnavailable`); el resto, permanentes (`MessagingRejected`). El texto del error solo lleva qué se hacía, el estado HTTP y el código de Meta.
+- **El token.** Va en la cabecera `Authorization`, nunca en la URL. Ningún error lleva la URL, el cuerpo, el teléfono ni el texto de una excepción de `httpx`; el `repr` del canal no lo enseña.
+- **Lo que WhatsApp no puede.** No edita un mensaje enviado (`clear_buttons` no hace nada) ni enseña un aviso al pulsar (`shows_notices = False`): el orquestador envía el aviso («Ese botón ya no está activo…») como mensaje.
+
+### Solo las fichas Pro+
+
+Decisión 3 de `docs/multinegocio.md`: WhatsApp solo avisa de las fichas `pro_whatsapp` (Pro+). El orquestador lo aplica a un teléfono de WhatsApp en todo lo que «ve» (`_sees`, `_identities_for`): propuestas, recordatorios, resultados, candidatas de un texto, `text.which` y la bienvenida, que solo nombra fichas Pro+. Una pulsación desde WhatsApp sobre una propuesta de una ficha que no es Pro+ responde `stale.inactive` y no hace nada. Las demás fichas siguen por Telegram o por el panel.
+
+### La bolsa de mensajes
+
+`docs/fase0/precios.md`: 80 mensajes nuestros al mes por ficha Pro+ activa, sumados en una bolsa de la cuenta, porque el chat es uno. No hay monedero.
+
+- **Qué cuenta.** Cada mensaje nuestro a un teléfono vinculado, también la bienvenida, las respuestas y los avisos de una pulsación. Lo que escribe el dueño, nunca. La respuesta a un número desconocido y a un código incorrecto no es de ninguna cuenta: la paga Fichaitor (guion, flujo 13).
+- **Cuánto.** Un mensaje de servicio o una plantilla de utilidad, 1. Una plantilla de marketing contaría 4 (0,0585 / 0,0166 = 3,5); hoy no hay ninguna.
+- **Cuándo.** Se cuenta **antes** de enviar, en `usage_counter` (`whatsapp_month:<cuenta>`, ventana del mes natural en hora de Madrid), con el mismo `INSERT … ON CONFLICT DO UPDATE … WHERE hits < límite` de los topes: dos envíos a la vez nunca pasan del límite. El límite (80 × fichas Pro+ activas) se lee en la misma transacción. Varias unidades se cuentan de una en una dentro de un punto de guardado: todas o ninguna. El contador solo sube, de uno en uno (B11): un mensaje que después falla queda contado. Un canal sin configurar (`available = False`) no cuenta nada.
+- **Al agotarse.** No se envía nada por WhatsApp hasta el día 1. Las propuestas, recordatorios y resultados llegan a las demás direcciones vinculadas que ven esa ficha (Telegram); si no hay ninguna, la propuesta espera en `programada` y el panel la tiene, como sin chat vinculado. Lo que escriba el dueño se atiende (una pulsación confirma igual), pero no se le contesta por WhatsApp.
+- **Sin fichas Pro+**, la bolsa es 0: un WhatsApp vinculado no recibe nada, ni la bienvenida.
+- **`GET /api/v1/me`** enseña `whatsapp`: `month`, `used`, `limit` y `remaining` (`docs/contrato-web-api.md`).
+
+### Variables
+
+| Variable | Proceso | Secreto |
+|---|---|---|
+| `FICHAITOR_WHATSAPP_PHONE_NUMBER_ID` | API y conversación | No |
+| `FICHAITOR_WHATSAPP_ACCESS_TOKEN` | Solo la conversación | Sí |
+| `FICHAITOR_WHATSAPP_APP_SECRET` | Solo la API | Sí |
+| `FICHAITOR_WHATSAPP_VERIFY_TOKEN` | Solo la API | Sí |
+| `FICHAITOR_WHATSAPP_DISPLAY_NUMBER` | Solo la API (el enlace `wa.me`) | No |
+| `FICHAITOR_WHATSAPP_API_VERSION` | Conversación. Por defecto `v27.0` | No |
+
+`deploy.sh` exige que estén todas o ninguna, cada una en su archivo, con su longitud mínima (secreto de la app, 32; testigo, 32; token, 100). La conversación se niega a arrancar si recibe el secreto de la app o el testigo.
+
+### Decisiones
+
+| Decisión | Motivo |
+|---|---|
+| El enlace `wa.me` lleva el testigo, no los 6 dígitos | El testigo no se puede adivinar y sigue valiendo cuando los códigos tecleados están en pausa (B3). Los 6 dígitos se pueden escribir igual |
+| La bolsa se cuenta antes de enviar y no se devuelve | «El contador es atómico y respeta B11»: solo sube. Un fallo de envío es raro y queda contado |
+| Las respuestas al dueño también gastan bolsa | «Cada mensaje nuestro descuenta». Sin Pro+, ni la bienvenida sale |
+| Al agotarse, tampoco sale el resultado de un cambio ya confirmado | El encargo lo pide así. El guion (flujo 14) lo enviaba igual: queda como decisión abierta |
+| Una plantilla genérica (`aviso_pendiente_v1`) con «Ver aviso» | Cubre cualquier propuesta sin plantilla propia o que no cabe, sin enviar a revisión una plantilla por mensaje |
+| `recordatorio_v1` lleva «Ver propuesta» y no los botones del paso | Una plantilla tiene botones fijos; con uno solo, sirve para reseñas y festivos |
+| Sin encabezado ni pie | Cada carácter del pie se quita a la reseña |
+| Idioma `es` | Lo pide el encargo. `es_ES` sería «Español (ESP)» en WhatsApp Manager |
+
 ## 7. Probarlo en local con sondeo largo
 
 Con el sondeo largo no hace falta URL pública. Todo lo demás va en memoria: no se toca la base de datos ni Google.
@@ -358,9 +444,9 @@ Con la base de datos de desarrollo, la API, el worker y la conversación en Dock
 Pruebas automáticas, sin red:
 
 ```bash
-uv run pytest -q tests/test_proposals.py tests/test_conversation_rules.py tests/test_conversation_service.py tests/test_channel_messages.py tests/test_channel_config.py tests/test_telegram.py tests/test_link_codes.py tests/test_channels_linking.py tests/test_channels_api.py tests/test_channels_worker.py
+uv run pytest -q tests/test_proposals.py tests/test_conversation_rules.py tests/test_conversation_service.py tests/test_channel_messages.py tests/test_channel_config.py tests/test_telegram.py tests/test_link_codes.py tests/test_channels_linking.py tests/test_channels_api.py tests/test_channels_worker.py tests/test_whatsapp.py tests/test_whatsapp_templates.py tests/test_whatsapp_conversation.py tests/test_whatsapp_api.py
 # Con la base de pruebas (las cuatro URL de tests/conftest.py):
-uv run pytest -q tests/test_conversation_store_postgres.py
+uv run pytest -q tests/test_conversation_store_postgres.py tests/test_whatsapp_postgres.py
 ```
 
 ## 8. Tablas
@@ -590,5 +676,5 @@ Las que no venían dictadas. Las tres primeras se apartan del guion.
 - Agrupar un festivo y una fecha comercial de la misma semana en un mensaje (`holiday.ask_multi`).
 - Quitar los botones del mensaje de Telegram cuando la fecha se responde en el panel.
 - Si el bot está bloqueado por el dueño (error 403), la propuesta se queda en `programada` y se reintenta en cada `tick` hasta caducar. Falta marcar la dirección como inalcanzable y avisar en el panel.
-- Adaptador de WhatsApp. El modelo y las reglas ya no dependen de Telegram; faltan la ventana de 24 horas y las plantillas (`template_fallback`).
+- WhatsApp: el aviso `quota.reached` del guion (flujo 14) y `quota.reply`; enviar a aprobación las plantillas y probar con el número real; marcar como leídos los mensajes; tratar los estados `failed` (hoy solo se registran); audios y fotos.
 - Enlaces como botón de URL en Telegram (`Ver ficha`, `Abrir panel`). Hoy van en el texto.

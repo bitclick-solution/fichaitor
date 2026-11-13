@@ -30,6 +30,7 @@ BILLING_BLOCKED = "billing_blocked"
 BILLING_UNBLOCKED = "billing_unblocked"
 CREDIT_NOTE_ISSUED = "credit_note_issued"
 BETA_ENDING = "beta_ending"
+TRIAL_ENDING = "trial_ending"
 TEMPLATES = (
     INVOICE_ISSUED,
     RENEWAL_NOTICE,
@@ -38,6 +39,7 @@ TEMPLATES = (
     BILLING_UNBLOCKED,
     CREDIT_NOTE_ISSUED,
     BETA_ENDING,
+    TRIAL_ENDING,
 )
 
 PLAN_NAMES = {Plan.PRO: "Pro", Plan.PRO_WHATSAPP: "Pro+"}
@@ -338,17 +340,25 @@ def credit_note_email(
 
 
 # --- 10. end of the beta -------------------------------------------------------------
+# The beta window (owner, 2026-11-13): sent 30 days before the launch; the accounts of
+# the beta then have 30 days more, until `fecha_fin` (launch + 30 days), to choose. The
+# text changed: brand/correo has to follow it (the interface session lays it out).
 
 
-def beta_ending_email(to: str, *, fecha_fin: str, oferta: str, enlace: str) -> Email:
+def beta_ending_email(
+    to: str, *, fecha_lanzamiento: str, fecha_fin: str, oferta: str, enlace: str
+) -> Email:
     """`oferta` empty: no offer (decision 9.0, 10: not decided yet), no block for it."""
     first = (
-        f"Gracias por probar Fichaitor durante la beta. Termina el {fecha_fin} y, desde ese "
-        "día, las fichas de pago se cobran. Elige en Facturación el plan de cada ficha."
+        "Gracias por probar Fichaitor durante la beta. El "
+        f"{fecha_lanzamiento} lanzamos la versión 1 y, desde ese día, las fichas de pago se "
+        f"cobran. Como estás en la beta, tienes 30 días más, hasta el {fecha_fin}, para "
+        "elegir en Facturación el plan de cada ficha. Hasta entonces todo sigue como ahora."
     )
     yearly = (
-        "Cada ficha de pago se cobra con tarjeta por años completos desde su activación y se "
-        "renueva sola cada año, salvo que canceles la renovación. Lo cobrado no se devuelve, "
+        "Cada ficha de pago se cobra con tarjeta por años completos y se renueva sola cada "
+        f"año, salvo que canceles la renovación. Si eliges un plan antes del {fecha_fin}, "
+        "guardamos tu tarjeta pero no cobramos nada hasta ese día. Lo cobrado no se devuelve, "
         "así que elige con calma."
     )
     otherwise = (
@@ -371,12 +381,54 @@ def beta_ending_email(to: str, *, fecha_fin: str, oferta: str, enlace: str) -> E
     plain += [f"Elegir los planes: {enlace}", yearly, otherwise]
     return _email(
         to,
-        subject=f"La beta de Fichaitor termina el {fecha_fin}",
-        preheader="Elige el plan de cada ficha antes de esa fecha.",
+        subject=f"Fichaitor se lanza el {fecha_lanzamiento}: elige tu plan antes del {fecha_fin}",
+        preheader="La beta sigue gratis hasta el lanzamiento y 30 días más.",
         headline="Fin de la beta",
         blocks=blocks,
         plain=plain,
         reason="Te llega este correo porque tienes una cuenta de Fichaitor en la beta.",
+    )
+
+
+# --- 11. end of the beta window (trial_ending) --------------------------------------
+# New (owner, 2026-11-13): BETA_WINDOW_NOTICE_DAYS before the first charge of a seat a
+# beta account bought in its window. Paragraphs and a button only, until the interface
+# session lays it out in brand/correo.
+
+
+def trial_ending_email(
+    to: str, *, plan: str, ficha: str, fecha_cobro: str, importe: str, enlace: str
+) -> Email:
+    first = (
+        f"Tu periodo de la beta termina el {fecha_cobro}. Ese día cobraremos {importe} "
+        f"(IVA incluido) con la tarjeta que guardaste por el primer año del plan {plan} de "
+        f"{ficha}."
+    )
+    cancel = (
+        "Si quieres seguir, no tienes que hacer nada. Si no, cancela la plaza desde "
+        f"Facturación antes del {fecha_cobro} y no te cobraremos nada. Una vez cobrado el "
+        "año, no se devuelve."
+    )
+    yearly = (
+        "Después, el plan se renueva solo cada año, salvo que canceles la renovación. Te "
+        "avisaremos 30 días antes de cada renovación."
+    )
+    return _email(
+        to,
+        subject=f"El {fecha_cobro} cobraremos el plan {plan} de {ficha}",
+        preheader=f"Primer cobro: {importe}. Si no quieres seguir, cancélalo antes.",
+        headline="Termina tu beta",
+        blocks=[
+            _block("parrafo", texto=first),
+            _block("parrafo", texto=cancel),
+            _block("boton", etiqueta="Ir a Facturación", enlace=enlace),
+            _block("parrafo", texto=yearly),
+        ],
+        plain=[first, cancel, f"Ir a Facturación: {enlace}", yearly],
+        reason=(
+            "Te avisamos 7 días antes del primer cobro de una plaza contratada durante la "
+            "beta, como dicen las condiciones de uso."
+        ),
     )
 
 
@@ -457,8 +509,25 @@ def unblocked_mail(to: str, *, plan: Plan, title: str | None) -> dict:
     return {"template": BILLING_UNBLOCKED, "to": to, "ficha": profile_name(title, plan)}
 
 
-def beta_mail(to: str, *, ends_on: date, offer: str) -> dict:
-    return {"template": BETA_ENDING, "to": to, "fecha_fin": spanish_day(ends_on), "oferta": offer}
+def beta_mail(to: str, *, launch_on: date, ends_on: date, offer: str) -> dict:
+    return {
+        "template": BETA_ENDING,
+        "to": to,
+        "fecha_lanzamiento": spanish_day(launch_on),
+        "fecha_fin": spanish_day(ends_on),
+        "oferta": offer,
+    }
+
+
+def trial_mail(to: str, *, plan: Plan, title: str | None, charge_on: date, total: int) -> dict:
+    return {
+        "template": TRIAL_ENDING,
+        "to": to,
+        "plan": plan_name(plan),
+        "ficha": profile_name(title, plan),
+        "fecha_cobro": spanish_day(charge_on),
+        "importe": euros(total),
+    }
 
 
 def with_tax(base_cents: int, percent: int) -> int:

@@ -25,6 +25,7 @@ from app.adapters.billing_store.postgres import (
     _PROFILE_COLUMNS,
     _REQUEST_COLUMNS,
     _SEAT_COLUMNS,
+    BETA_UNTIL_SQL,
     profile_from_row,
     request_from_row,
     seat_from_row,
@@ -172,6 +173,11 @@ class PostgresBillingProcessStore:
 
     async def launch_at(self) -> datetime | None:
         return await self.pool.fetchval("SELECT launch_at FROM billing_setting LIMIT 1")
+
+    async def beta_until(self, account_id: str) -> datetime | None:
+        if not _is_uuid(account_id):
+            return None
+        return await self.pool.fetchval(BETA_UNTIL_SQL, account_id)
 
     # --- requests ------------------------------------------------------------------
 
@@ -329,7 +335,7 @@ class PostgresBillingProcessStore:
                     stripe_subscription_id = coalesce(stripe_subscription_id, $2),
                     status = $3, current_period_start = $4, current_period_end = $5,
                     cancel_at_period_end = $6, next_price_key = coalesce($7, next_price_key),
-                    updated_at = now()
+                    trial_ends_at = $8, updated_at = now()
                 WHERE id = $1
                 """,
                 seat_id,
@@ -339,6 +345,7 @@ class PostgresBillingProcessStore:
                 sync.current_period_end,
                 sync.cancel_at_period_end,
                 sync.price_key.value if sync.price_key else None,
+                sync.trial_ends_at,
             )
             invoice = sync.invoice
             if invoice is not None:
@@ -940,6 +947,23 @@ class PostgresBillingProcessStore:
                 seat_id,
                 period_end,
                 price_key.value,
+            )
+            if status.endswith(" 0"):
+                return False
+            await _enqueue(conn, MAIL_JOB, mail, key)
+        return True
+
+    async def mark_trial_notice(
+        self, seat_id: str, trial_ends_at: datetime, mail: dict, key: str
+    ) -> bool:
+        async with self.pool.acquire() as conn, conn.transaction():
+            status = await conn.execute(
+                """
+                UPDATE billing_seat SET trial_notice_for = $2, updated_at = now()
+                WHERE id = $1 AND trial_notice_for IS DISTINCT FROM $2
+                """,
+                seat_id,
+                trial_ends_at,
             )
             if status.endswith(" 0"):
                 return False

@@ -83,6 +83,26 @@ INSERT INTO billing_setting (id) VALUES (true) ON CONFLICT DO NOTHING;
 -- se vuelve a avisar.
 ALTER TABLE billing_setting ADD COLUMN IF NOT EXISTS beta_notice_for timestamptz;
 
+-- Ventana beta (decisión del propietario, 2026-11-13): las cuentas de la beta tienen 30 días
+-- desde el lanzamiento para elegir plan, con sus plazas beta. beta_ends_at ya no se fija a
+-- mano: es siempre launch_at + 30 días (app/domain/billing.py, BETA_WINDOW_DAYS), y vacío
+-- sin launch_at. El propietario solo escribe launch_at.
+CREATE OR REPLACE FUNCTION billing_setting_beta_end() RETURNS trigger
+LANGUAGE plpgsql SET search_path = pg_catalog, public, pg_temp AS $$
+BEGIN
+    NEW.beta_ends_at := NEW.launch_at + interval '30 days';
+    RETURN NEW;
+END
+$$;
+
+DROP TRIGGER IF EXISTS billing_setting_beta_end ON billing_setting;
+CREATE TRIGGER billing_setting_beta_end BEFORE INSERT OR UPDATE ON billing_setting
+    FOR EACH ROW EXECUTE FUNCTION billing_setting_beta_end();
+-- Corrige la fila existente (una fecha puesta a mano antes de esta regla). Repetirlo no
+-- cambia nada.
+UPDATE billing_setting SET launch_at = launch_at
+WHERE beta_ends_at IS DISTINCT FROM launch_at + interval '30 days';
+
 -- ---------------------------------------------------------------------------
 -- Datos fiscales de una cuenta (sección 4.8). Se conservan 6 años desde la última factura,
 -- también después de borrar la cuenta (la cuenta nunca se borra: queda como lápida).
@@ -199,6 +219,13 @@ CREATE TABLE IF NOT EXISTS billing_seat (
 -- renewal_notice_for: el fin de periodo cuyo aviso de renovación (T-30) ya se envió, con el
 -- precio congelado en Stripe (paso 8). Una vez por periodo.
 ALTER TABLE billing_seat ADD COLUMN IF NOT EXISTS renewal_notice_for timestamptz;
+
+-- Ventana beta: una plaza que una cuenta de la beta compra en sus 30 días tiene en Stripe una
+-- prueba hasta beta_ends_at; su primer año se cobra ese día. trial_ends_at: el trial_end de
+-- Stripe, copiado al volver a leer la suscripción. trial_notice_for: el trial_ends_at cuyo
+-- aviso (trial_ending, 7 días antes) ya se envió.
+ALTER TABLE billing_seat ADD COLUMN IF NOT EXISTS trial_ends_at timestamptz;
+ALTER TABLE billing_seat ADD COLUMN IF NOT EXISTS trial_notice_for timestamptz;
 
 CREATE INDEX IF NOT EXISTS billing_seat_account ON billing_seat (account_id);
 CREATE INDEX IF NOT EXISTS billing_seat_location ON billing_seat (location_id)

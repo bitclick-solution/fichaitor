@@ -38,10 +38,10 @@ Hoja oficial de Meta en euros, vigente desde el 1 de octubre de 2026 (aportada p
 
 ## Pendiente
 
-- Decidir el acceso: Cloud API directa (Bitclick ya es proveedor de tecnología) o intermediario.
-- Enviar a aprobación las cinco plantillas del guion y ver qué categoría les asigna Meta.
-- Confirmar que los mensajes con botones solo se pueden enviar dentro de la ventana y que fuera hace falta plantilla con respuestas rápidas.
-- Decidir entre un número compartido o uno por cliente (afecta a la franja gratuita y a la marca).
+- ~~Decidir el acceso~~: decidido (2026-11-13). Cloud API directa, con la WABA de Bitclick.
+- ~~Decidir entre un número compartido o uno por cliente~~: decidido (2026-11-13). Un solo número de Fichaitor; conectar números de clientes (Tech Provider) queda fuera.
+- ~~Confirmar que los botones solo van dentro de la ventana~~: confirmado (2026-11-13). Fuera de la ventana solo se pueden enviar plantillas, con respuestas rápidas (`docs/canales.md`, «WhatsApp»).
+- Enviar a aprobación las siete plantillas de `docs/whatsapp-plantillas.md` (sustituyen a las del guion) y anotar aquí la categoría que les asigna Meta.
 
 ## Fuentes
 

@@ -5,7 +5,10 @@ job; the web polls GET /me/billing/requests/{id}.
 - seat: a hosted Checkout (card only) for a seat of a plan for one profile, at the price
   of `billing.seat_price` over the seats in force (the 5 % from the second one), with the
   VAT of the customer's fiscal profile. The idempotency key of the Checkout is derived
-  from the request: a job cut halfway and run again never opens two.
+  from the request: a job cut halfway and run again never opens two. An account of the
+  beta that buys in its window (30 days from the launch) gets a Stripe trial until the
+  window ends (`billing.first_charge_at`): the card is taken now and the first year is
+  charged then. Every other seat is charged at once.
 - cancel and resume: `cancel_at_period_end` of that seat's subscription.
 - pay: the hosted page of the oldest unpaid invoice, to unblock the account.
 - portal: a session of the customer portal, to change the card.
@@ -23,7 +26,7 @@ from urllib.parse import urlencode, urlsplit
 
 from app.adapters.stripe.real import CHECKOUT_TTL_SECONDS
 from app.domain import plans
-from app.domain.billing import seat_price, seats_counting_at
+from app.domain.billing import first_charge_at, seat_price, seats_counting_at
 from app.domain.jobs import Job, JobError, PermanentJobError
 from app.ports.billing_store import (
     CANCEL,
@@ -191,7 +194,8 @@ class BillingRequests:
     async def _seat(self, request: BillingRequest) -> tuple[str, datetime]:
         assert request.location_id is not None and request.plan is not None
         now = self._clock()
-        if not plans.charging(now, await self._store.launch_at()):
+        launch_at = await self._store.launch_at()
+        if not plans.charging(now, launch_at):
             raise Failed("beta_no_charge")
         customer = await self._store.customer(request.account_id)
         if customer is None:
@@ -210,6 +214,9 @@ class BillingRequests:
         ]
         price_key = seat_price(request.plan, seat_id, seats_counting_at(others, now))
         success, cancel = checkout_urls(self._base, request.location_id)
+        trial_end = first_charge_at(
+            now, launch_at, beta_until=await self._store.beta_until(request.account_id)
+        )
         session = await self._payments.create_checkout(
             customer_id,
             price_key,
@@ -219,6 +226,7 @@ class BillingRequests:
             success,
             cancel,
             idempotency_key=f"billing_request:{request.id}:checkout",
+            trial_end=trial_end,
         )
         await self._store.record_funnel("checkout_started", request.plan.value)
         return session.url, now + timedelta(seconds=CHECKOUT_TTL_SECONDS)

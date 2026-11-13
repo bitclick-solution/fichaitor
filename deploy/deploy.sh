@@ -144,6 +144,53 @@ comprobar_secretos_telegram() {
         die "FICHAITOR_TELEGRAM_WEBHOOK_SECRET falta o tiene menos de 32 caracteres en api.env (openssl rand -hex 32)."
 }
 
+# WhatsApp (docs/canales.md, «WhatsApp»; docs/despliegue.md, «WhatsApp»). Es opcional: sin
+# ninguna variable de WhatsApp el canal queda apagado. Si hay alguna, tienen que estar
+# todas, cada una en su proceso y con su longitud mínima:
+# - api.env (recibe): el id del número, el secreto de la app (32 caracteres, el que da
+#   Meta), el testigo de verificación (32 o más) y el número que se muestra en el enlace.
+# - conversation.env (envía): el id del número (el mismo) y el token de acceso del usuario
+#   del sistema (100 caracteres o más).
+# El token nunca va en api.env ni en worker.env; los secretos del webhook, nunca en
+# conversation.env ni en worker.env. Solo se miden: el valor nunca se imprime.
+comprobar_whatsapp() {
+    local archivo variable numero hay=""
+    for variable in FICHAITOR_WHATSAPP_PHONE_NUMBER_ID FICHAITOR_WHATSAPP_APP_SECRET \
+        FICHAITOR_WHATSAPP_VERIFY_TOKEN FICHAITOR_WHATSAPP_DISPLAY_NUMBER \
+        FICHAITOR_WHATSAPP_ACCESS_TOKEN; do
+        for archivo in "${API_ENV}" "${CONVERSATION_ENV}"; do
+            [[ -z "$(valor_env "${archivo}" "${variable}")" ]] || hay=1
+        done
+    done
+    for archivo in "${API_ENV}" "${WORKER_ENV}"; do
+        [[ -z "$(valor_env "${archivo}" FICHAITOR_WHATSAPP_ACCESS_TOKEN)" ]] ||
+            die "$(basename "${archivo}") contiene FICHAITOR_WHATSAPP_ACCESS_TOKEN. Solo va en conversation.env."
+    done
+    for archivo in "${CONVERSATION_ENV}" "${WORKER_ENV}"; do
+        for variable in FICHAITOR_WHATSAPP_APP_SECRET FICHAITOR_WHATSAPP_VERIFY_TOKEN; do
+            [[ -z "$(valor_env "${archivo}" "${variable}")" ]] ||
+                die "$(basename "${archivo}") contiene ${variable}. Solo va en api.env."
+        done
+    done
+    [[ -n "${hay}" ]] || return 0
+    numero="$(valor_env "${API_ENV}" FICHAITOR_WHATSAPP_PHONE_NUMBER_ID)"
+    [[ "${numero}" =~ ^[0-9]{6,30}$ ]] ||
+        die "FICHAITOR_WHATSAPP_PHONE_NUMBER_ID falta o no es un id de número en api.env."
+    [[ "${numero}" == "$(valor_env "${CONVERSATION_ENV}" FICHAITOR_WHATSAPP_PHONE_NUMBER_ID)" ]] ||
+        die "FICHAITOR_WHATSAPP_PHONE_NUMBER_ID no coincide entre api.env y conversation.env."
+    variable="$(valor_env "${API_ENV}" FICHAITOR_WHATSAPP_APP_SECRET)"
+    ((${#variable} >= 32)) ||
+        die "FICHAITOR_WHATSAPP_APP_SECRET falta o tiene menos de 32 caracteres en api.env."
+    variable="$(valor_env "${API_ENV}" FICHAITOR_WHATSAPP_VERIFY_TOKEN)"
+    ((${#variable} >= 32)) ||
+        die "FICHAITOR_WHATSAPP_VERIFY_TOKEN falta o tiene menos de 32 caracteres en api.env (openssl rand -hex 32)."
+    [[ "$(valor_env "${API_ENV}" FICHAITOR_WHATSAPP_DISPLAY_NUMBER)" =~ ^\+?[0-9\ ]{8,20}$ ]] ||
+        die "FICHAITOR_WHATSAPP_DISPLAY_NUMBER falta o no es un número en api.env."
+    variable="$(valor_env "${CONVERSATION_ENV}" FICHAITOR_WHATSAPP_ACCESS_TOKEN)"
+    ((${#variable} >= 100)) ||
+        die "FICHAITOR_WHATSAPP_ACCESS_TOKEN falta o tiene menos de 100 caracteres en conversation.env."
+}
+
 # Las respuestas con IA del plan Gratis se cuentan por ficha de Google con una huella
 # (HMAC) que sobrevive a la baja (free_allowance): el secreto que la firma tiene que ser
 # largo y el mismo en la API y en la conversación, que cuentan las dos. Si cambia, cada
@@ -245,6 +292,7 @@ comprobar_entorno() {
     # Los códigos de vinculación los crea la API y los comprueba la conversación: el
     # secreto de su huella tiene que ser el mismo en los dos, y largo.
     comprobar_secretos_telegram
+    comprobar_whatsapp
     comprobar_pimienta_gratis
     comprobar_cobro
     [[ "$(valor_env "${API_ENV}" FICHAITOR_TOKEN_PUBLIC_KEY)" != "$(valor_env "${WORKER_ENV}" FICHAITOR_TOKEN_PRIVATE_KEY)" ]] ||

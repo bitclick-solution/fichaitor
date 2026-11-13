@@ -1,9 +1,10 @@
-"""Messaging channels: link a Telegram chat from the panel, list and unlink the linked
-addresses, and receive Telegram's webhook. Documented in docs/contrato-web-api.md,
-"Canales de mensajería", and in docs/canales.md.
+"""Messaging channels: link a Telegram chat or a WhatsApp phone from the panel, list and
+unlink the linked addresses, and receive the webhooks of Telegram and WhatsApp. Documented
+in docs/contrato-web-api.md, "Canales de mensajería", and in docs/canales.md.
 
-The API never talks to Telegram (docs/02-hld.md): the webhook checks the secret,
-reads the update and enqueues it; the conversation process does the rest.
+The API never talks to Telegram nor to Meta (docs/02-hld.md): a webhook checks the secret
+(WhatsApp: the signature of the raw body with the app secret), reads the update and
+enqueues it; the conversation process does the rest.
 
 Multinegocio, step 7 (docs/multinegocio.md, 3.7 and 6.4): each chat sees every active
 profile of the account or only those of its filter. The filter is chosen when the code
@@ -19,9 +20,10 @@ from collections.abc import Callable
 from datetime import datetime
 
 from fastapi import APIRouter, Body, Depends, HTTPException, Request, Response
+from fastapi.responses import PlainTextResponse
 from pydantic import BaseModel, ConfigDict, Field
 
-from app.adapters.messaging import telegram
+from app.adapters.messaging import telegram, whatsapp
 from app.api.session import (
     LOCATION_ID,
     MSG_LOCATION_INACTIVE,
@@ -44,6 +46,10 @@ log = logging.getLogger("fichaitor.channels")
 LINK_CODE_WINDOW_SECONDS = 3600
 WEBHOOK_MAX_BYTES = 64 * 1024
 WEBHOOK_PATH = "/api/v1/webhooks/telegram"
+WHATSAPP_WEBHOOK_PATH = "/api/v1/webhooks/whatsapp"
+# Meta's deliveries of messages are small (one text is about 1 KB); Meta allows up to 3 MB,
+# but nginx takes 64 KB at most on /api/v1/webhooks/ (web/nginx.conf). The same here.
+WHATSAPP_WEBHOOK_MAX_BYTES = 64 * 1024
 IDENTITY_ID = re.compile(r"chid_[0-9a-f]{8,32}")
 
 MSG_LINK_CODE_LIMIT = "Has pedido muchos códigos. Prueba dentro de un rato."
@@ -76,7 +82,9 @@ class LinkCodeResponse(BaseModel):
     code: str  # six digits, to type in the chat
     expires_at: datetime
     telegram_url: str  # https://t.me/<bot>?start=<token>: carries the token, never the code
-    whatsapp_url: str | None = None  # no WhatsApp adapter yet
+    # https://wa.me/<number>?text=Vincular%20Fichaitor%20<token>, or None while WhatsApp is
+    # not configured. Carries the token, never the code.
+    whatsapp_url: str | None = None
 
 
 class ChannelOut(BaseModel):
@@ -188,6 +196,7 @@ def build_router(
                 code=issued.code,
                 expires_at=issued.record.expires_at,
                 telegram_url=settings.telegram_link(issued.token),
+                whatsapp_url=settings.whatsapp_link(issued.token),
             )
         raise HTTPException(503, MSG_LINK_CODE_UNAVAILABLE)
 
@@ -239,6 +248,20 @@ def build_router(
             methods=["POST"],
             include_in_schema=False,
         )
+    if settings.whatsapp_webhook_enabled:
+        # Without the app secret, the verify token and the number, the routes do not exist.
+        verify, receive = _whatsapp_webhook(
+            settings.whatsapp_phone_number_id,
+            settings.whatsapp_app_secret.get_secret_value(),
+            settings.whatsapp_verify_token.get_secret_value(),
+            jobs,
+        )
+        router.add_api_route(
+            WHATSAPP_WEBHOOK_PATH, verify, methods=["GET"], include_in_schema=False
+        )
+        router.add_api_route(
+            WHATSAPP_WEBHOOK_PATH, receive, methods=["POST"], include_in_schema=False
+        )
     return router
 
 
@@ -280,3 +303,56 @@ def _webhook(secret: str, jobs: JobEnqueuer):
         return Response(status_code=200)
 
     return telegram_webhook
+
+
+def _whatsapp_webhook(phone_number_id: str, app_secret: str, verify_token: str, jobs: JobEnqueuer):
+    async def whatsapp_verify(request: Request) -> Response:
+        """Meta's check of the callback URL: echo `hub.challenge` if the token is ours."""
+        params = request.query_params
+        challenge = whatsapp.verify_subscription(
+            params.get("hub.mode"),
+            params.get("hub.verify_token"),
+            params.get("hub.challenge"),
+            verify_token,
+        )
+        if challenge is None:
+            raise HTTPException(403, "Petición no permitida.")
+        return PlainTextResponse(challenge)
+
+    async def whatsapp_receive(request: Request) -> Response:
+        # 1. A declared size over the cap is refused before reading anything.
+        declared = request.headers.get("content-length", "")
+        if declared.isdigit() and int(declared) > WHATSAPP_WEBHOOK_MAX_BYTES:
+            raise HTTPException(413, "Petición demasiado grande.")
+        signature = request.headers.get(whatsapp.SIGNATURE_HEADER)
+        if not signature or not signature.startswith("sha256="):
+            raise HTTPException(403, "Petición no permitida.")
+        # 2. The raw body, at most 64 KB, read as it arrives.
+        body = bytearray()
+        async for chunk in request.stream():
+            body.extend(chunk)
+            if len(body) > WHATSAPP_WEBHOOK_MAX_BYTES:
+                raise HTTPException(413, "Petición demasiado grande.")
+        # 3. The signature of those exact bytes with the app secret, in constant time,
+        #    before the body is parsed.
+        if not whatsapp.verify_signature(bytes(body), signature, app_secret):
+            raise HTTPException(403, "Petición no permitida.")
+        try:
+            payload = json.loads(bytes(body))
+        except ValueError:
+            return Response(status_code=200)  # nothing Meta could fix by retrying
+        # 4. Statuses are only counted in the log (no ids, no numbers).
+        for status, code in whatsapp.statuses(payload, phone_number_id):
+            if status == "failed":
+                log.warning("whatsapp: mensaje no entregado (código %s)", code)
+        # 5. One job per message for our number. Meta delivers again what failed.
+        for item in whatsapp.extract_messages(payload, phone_number_id):
+            await jobs.enqueue(
+                channel_jobs.CHANNEL_INBOUND,
+                {"channel": whatsapp.CHANNEL, "update": item},
+                idempotency_key=channel_jobs.whatsapp_inbound_key(whatsapp.message_id(item)),
+                max_attempts=channel_jobs.INBOUND_MAX_ATTEMPTS,
+            )
+        return Response(status_code=200)
+
+    return whatsapp_verify, whatsapp_receive

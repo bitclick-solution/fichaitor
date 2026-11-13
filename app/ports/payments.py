@@ -5,8 +5,10 @@ calls Stripe (rule 2 of docs/06-estandares.md).
 Rules every implementation keeps:
 
 - One Stripe subscription per seat, one item each, with `metadata = {account_id,
-  seat_id}`. No trial and no proration: a seat is charged a whole year the day it is
-  bought (P2).
+  seat_id}`. No proration: a seat is charged a whole year the day it is bought (P2).
+  The one exception is the beta window (`billing.first_charge_at`): a seat a beta account
+  buys then has a Stripe trial until the window ends, with the card taken at Checkout,
+  and its first year is charged on that day.
 - Card only (decision 9.0, 5 and 6): Apple Pay and Google Pay are cards to Stripe.
 - Prices are found by their `lookup_key` (`PriceKey`); no `price_…` id lives in code.
 - VAT is a fixed Tax Rate per `TaxTreatment` (section 2.6), never Stripe Tax.
@@ -129,6 +131,9 @@ class SubscriptionInfo:
     latest_invoice_id: str | None
     latest_invoice_status: str | None
     hosted_invoice_url: str | None  # to pay a pending invoice (3DS or unblock)
+    # The end of its trial: the first charge of a seat bought in the beta window. While
+    # `status` is `trialing`, `current_period_end` is this same moment.
+    trial_end: datetime | None = None
 
 
 @dataclass(frozen=True)
@@ -231,9 +236,11 @@ class Payments(Protocol):
         cancel_url: str,
         *,
         idempotency_key: str,
+        trial_end: datetime | None = None,
     ) -> CheckoutSession:
         """A hosted Checkout in `subscription` mode, card only, for a seat of a customer
-        without a saved card."""
+        without a saved card. The card is always taken. With `trial_end` (the beta window),
+        nothing is charged until then: the first year is charged at that moment."""
         ...
 
     async def checkout_session(self, session_id: str) -> CheckoutInfo:

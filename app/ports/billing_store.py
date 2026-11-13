@@ -106,6 +106,17 @@ class SeatRow:
     next_price_key: PriceKey | None = None
     request_id: str | None = None
     review_reason: str | None = None
+    # Stripe's trial_end: a seat bought in the beta window, first charged then.
+    trial_ends_at: datetime | None = None
+
+    @property
+    def in_trial(self) -> bool:
+        """Its current period is the free one before its first charge."""
+        return (
+            self.trial_ends_at is not None
+            and self.current_period_end is not None
+            and self.current_period_end <= self.trial_ends_at
+        )
 
     def domain(self) -> Seat:
         return Seat(
@@ -188,6 +199,12 @@ class BillingStore(Protocol):
         """`billing_setting.launch_at`: None during the beta (nothing is charged)."""
         ...
 
+    async def beta_until(self, account_id: str) -> datetime | None:
+        """The latest end of the beta entitlements of the account (one without an end
+        counts as `billing_setting.beta_ends_at`), or None for an account without any: one
+        created from the launch. `billing.first_charge_at` caps it to the window."""
+        ...
+
     async def profile(self, account_id: str) -> FiscalProfile | None: ...
 
     async def save_profile(self, account_id: str, profile: FiscalProfile) -> None: ...
@@ -237,6 +254,7 @@ class SeatSync:
     cancel_at_period_end: bool
     price_key: PriceKey | None
     invoice: InvoiceInfo | None = None
+    trial_ends_at: datetime | None = None  # Stripe's trial_end (the beta window)
     # A paid entitlement for that invoice until this date (None: grant nothing new).
     entitled_until: datetime | None = None
     # The right of the seat ends here (a cancellation): never later than it was.
@@ -263,6 +281,12 @@ class BillingProcessStore(Protocol):
     """The billing process side (fichaitor_billing)."""
 
     async def launch_at(self) -> datetime | None: ...
+
+    async def beta_until(self, account_id: str) -> datetime | None:
+        """The latest end of the beta entitlements of the account (one without an end
+        counts as `billing_setting.beta_ends_at`), or None for an account without any: one
+        created from the launch. `billing.first_charge_at` caps it to the window."""
+        ...
 
     async def get_request_by_id(self, request_id: str) -> BillingRequest | None: ...
 
@@ -504,6 +528,13 @@ class BillingJobsStore(BillingProcessStore, Protocol):
     ) -> bool:
         """Note the notice of that period and the frozen price, and enqueue its email,
         once per period. False if it had been noticed already."""
+        ...
+
+    async def mark_trial_notice(
+        self, seat_id: str, trial_ends_at: datetime, mail: dict, key: str
+    ) -> bool:
+        """Note the notice of the end of the beta window of that seat (`trial_ending`)
+        and enqueue its email, once per `trial_ends_at`. False if it had gone already."""
         ...
 
     # end of the beta

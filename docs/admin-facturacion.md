@@ -182,7 +182,7 @@ Asígnalos a cada suscripción según `billing_customer.tax_treatment`. Odoo apl
 - **Alta de una plaza:**
   - sin método de pago guardado: Checkout alojado en modo `subscription` (tarjeta o SEPA);
   - con método guardado: `fichaitor-billing` crea la suscripción con `payment_behavior = default_incomplete` y la confirma. Si el banco pide 3DS, devuelve `hosted_invoice_url`.
-  - Sin `trial` ni prorrateo: el año completo, el día de la compra.
+  - Sin prorrateo: el año completo, el día de la compra. La única excepción es la ventana beta ([sección 4.6](#46-fin-de-la-beta-y-launch_at)): una plaza que compra una cuenta de la beta en sus 30 días lleva `subscription_data.trial_end` = fin de su ventana y `payment_method_collection = always`, y su primer año se cobra ese día. No hay prueba gratis para nadie más.
 - **Renovación:** Stripe cobra en el aniversario, sin el cliente presente.
 - **Reintentos:** en **Billing > Revenue recovery**, **desactiva los reintentos automáticos** (o fíjalos al mínimo). Un fallo bloquea al momento (P3). Para desbloquear, el cliente paga la factura pendiente él mismo ([sección 3.6](#36-impago-y-bloqueo)).
 - **Cancelación:** desde el panel, por plaza (`cancel_at_period_end`). El portal del cliente queda solo para cambiar el método de pago.
@@ -327,7 +327,7 @@ La API no llama a Stripe: encola un `billing_request`, y la web consulta el resu
 Eventos suscritos:
 
 - `checkout.session.completed`
-- `customer.subscription.created`, `customer.subscription.updated` y `customer.subscription.deleted`
+- `customer.subscription.created`, `customer.subscription.updated`, `customer.subscription.deleted` y `customer.subscription.trial_will_end` (ventana beta: solo vuelve a copiar la plaza; el aviso al cliente lo manda `billing_renewal_notice`, 7 días antes)
 - `invoice.paid`, `invoice.payment_failed` e `invoice.payment_action_required`
 - `payment_intent.processing`
 - `charge.refunded`, `charge.dispute.created` y `charge.dispute.closed`
@@ -405,19 +405,25 @@ El módulo no sobrescribe ningún método de facturación: solo usa el ORM está
 
 ### 4.6 Fin de la beta y `LAUNCH_AT`
 
-1. Tabla de una sola fila, `billing_setting (launch_at, beta_ends_at)`. Solo la escribe el propietario. La API la lee y se la pasa a `plans.pricing(..., launch_at=...)`. La constante `LAUNCH_AT` de `app/domain/plans.py` se queda solo como valor por defecto en las pruebas.
-2. `account_beta_entitlement` solo da el derecho beta si `launch_at IS NULL OR now() < launch_at`, y le pone `ends_at = beta_ends_at` si está fijado.
-3. **Procedimiento** («Lanzar el cobro», en `docs/despliegue.md`):
-   1. Fija las fechas con al menos 30 días de antelación (cláusula 9 de las condiciones).
-   2. Un relleno pone `ends_at = beta_ends_at` a los derechos `beta` sin fin.
-   3. `billing_beta_notice` avisa por correo a las cuentas con fichas Pro.
-   4. Desde `launch_at`, la web vende plazas.
+Decisión del propietario (2026-11-13, [9.0](#90-decisiones-del-propietario-sobre-las-preguntas-abiertas-2026-11-13), fila 11): la beta es gratis hasta el lanzamiento de la v1, y las cuentas de la beta tienen una **ventana de 30 días** desde el lanzamiento para elegir plan. No hay prueba gratis para ninguna otra cuenta.
+
+1. Tabla de una sola fila, `billing_setting (launch_at, beta_ends_at)`. El propietario solo escribe `launch_at`: **`beta_ends_at` es siempre `launch_at` + 30 días**, lo pone el disparador `billing_setting_beta_end` y lo dice igual `billing.beta_ends_at()` (`BETA_WINDOW_DAYS = 30`). La API la lee y se la pasa a `plans.pricing(..., launch_at=...)`. La constante `LAUNCH_AT` de `app/domain/plans.py` se queda solo como valor por defecto en las pruebas.
+2. `account_beta_entitlement` solo da el derecho beta si `launch_at IS NULL OR now() < launch_at`, y le pone `ends_at = beta_ends_at` si está fijado. Una **cuenta de la beta** es una cuenta con un derecho `beta`: solo lo tienen las creadas antes del lanzamiento, así que una cuenta nueva no puede recuperar la ventana y no hace falta ninguna regla anti-abuso.
+3. **Ventana beta** (`billing.first_charge_at`): durante sus 30 días, la cuenta de la beta conserva sus plazas beta. Si compra una plaza, el Checkout lleva `subscription_data.trial_end` = el fin de su ventana (el `ends_at` de su derecho beta, nunca más tarde de `beta_ends_at`) y `payment_method_collection = always`: Stripe guarda la tarjeta y crea una factura de 0 € pagada (sin factura legal en Odoo: no hay cobro). La plaza queda `active` con el derecho hasta el primer cobro + 2 días y activa su ficha. Al acabar la ventana, Stripe cobra el primer año con una factura `subscription_cycle`: pagada, el derecho del año y su factura legal; rechazada o con 3DS pendiente, **bloqueo**, como en una renovación. En las últimas 49 horas de la ventana, el `trial_end` se alarga hasta 49 horas, porque Checkout exige al menos 48 en el futuro.
+4. **Avisos:**
+   - `beta_ending`, 30 días antes de `launch_at`, a las cuentas con fichas de pago: anuncia el lanzamiento y los 30 días más, hasta `beta_ends_at`.
+   - `trial_ending`, 7 días antes del primer cobro de una plaza comprada en la ventana (lo envía `billing_renewal_notice`, que no manda el aviso de T-30 a estas plazas): el precio con IVA, la fecha y cómo cancelar. Una plaza en la ventana sin ficha activa no recibe el correo y se cancela a T-2, como cualquier otra.
+5. **Procedimiento** («Lanzar el cobro», en `docs/despliegue.md`):
+   1. Fija `launch_at` con al menos 30 días de antelación (cláusula 9 de las condiciones). `beta_ends_at` sale solo.
+   2. Un relleno pone `ends_at = beta_ends_at` a los derechos `beta` sin fin (si no se hace, el código los trata igual).
+   3. `billing_enforce` avisa por correo (`beta_ending`) a las cuentas con fichas Pro, 30 días antes de `launch_at`.
+   4. Desde `launch_at`, la web vende plazas: a las cuentas de la beta, con el primer cobro al acabar su ventana; a las nuevas, el mismo día.
    5. En `beta_ends_at`, el job `billing_enforce` revisa las fichas Pro sin plaza:
       - la primera pasa a Gratis, si la cuenta tiene libre la ficha gratis y esa ficha de Google no está en Gratis en otra cuenta;
       - el resto se desactiva, con un correo que lo explica.
 
    No hay bloqueo, porque no ha habido impago.
-4. `location_activation_audit` anota `reason = 'billing'` cuando `session_user` es miembro de `fichaitor_billing`.
+6. `location_activation_audit` anota `reason = 'billing'` cuando `session_user` es miembro de `fichaitor_billing`.
 
 ### 4.7 `GET /me`, `pricing` y la web
 
@@ -765,7 +771,7 @@ stripe trigger invoice.payment_failed
     1. En el VPS, crea el usuario `fichaitor-tunel` con las opciones de la sección 6.1 y una clave pública por persona.
     2. Comprueba desde fuera que el 8090 no responde.
     3. Date de alta con `scripts/admin_usuario.py alta --rol propietario` y guarda tus códigos de recuperación fuera del ordenador.
-12. **Lanzamiento:** fija `launch_at` y `beta_ends_at` con 30 días de aviso como mínimo.
+12. **Lanzamiento:** fija `launch_at` con 30 días de aviso como mínimo; `beta_ends_at` es siempre `launch_at` + 30 días (lo pone la base).
 
 ## 9.0.1 Odoo por su API, sin módulo puente (2026-11-13)
 
@@ -788,7 +794,8 @@ Mandan sobre las recomendaciones de la sección 9.
 | 7 | Bizum | Después del lanzamiento, como plaza de pago manual, si funciona en el modo de prueba de Stripe |
 | 8 | Nombre de la ficha en la factura | **Sí**, y se dice en la política de privacidad |
 | 9 | Mercados | **España (península, Baleares, Canarias, Ceuta y Melilla) y la UE desde el inicio**, siempre con NIF o NIF-IVA. Antes de cobrar a la UE: alta en el ROI, modelo 349 y verificación en VIES |
-| 10 | Oferta para las cuentas beta | Sin decidir. Aviso de 30 días antes del fin de la beta |
+| 10 | Oferta para las cuentas beta | Sin decidir. Aviso de 30 días antes del lanzamiento (`beta_ending`) |
+| 11 | Paso de la beta al cobro (2026-11-13, corregida el mismo día) | **La beta es gratis hasta el lanzamiento de la v1** (`launch_at`). **Solo las cuentas que ya existen al lanzar** tienen una ventana de **30 días desde `launch_at`** para elegir plan, con sus plazas beta: `beta_ends_at = launch_at + 30 días`. Si contratan una plaza en ese plazo, su primer cobro llega al acabar la ventana (`trial_end = beta_ends_at`, la tarjeta se pide en el Checkout), sin días de más. Pasado el plazo, `enforce_after_beta`. **Nadie más tiene prueba gratis**: una cuenta creada desde el lanzamiento paga la plaza el día que la compra. Sin regla anti-abuso, porque una cuenta nueva no puede tener la ventana. Correo `trial_ending` 7 días antes del primer cobro. Sin prorrateo ni reembolsos, como siempre ([sección 4.6](#46-fin-de-la-beta-y-launch_at)) |
 
 ## 9. Riesgos y preguntas abiertas
 
@@ -831,6 +838,12 @@ Todas consultadas el 2026-11-13. Las del BOE y la AEAT no se pudieron abrir con 
 - RD 1619/2012, de facturación: https://www.boe.es/buscar/act.php?id=BOE-A-2012-14696
 - RD 1007/2023: https://www.boe.es/buscar/act.php?id=BOE-A-2023-24840
 - Portal de VERI\*FACTU de la AEAT: https://sede.agenciatributaria.gob.es/Sede/iva/sistemas-informaticos-facturacion-verifactu.html
+
+**Stripe: pruebas y ventana beta** (consultadas el 2026-11-13)
+
+- Checkout Sessions, `subscription_data.trial_end` («Has to be at least 48 hours in the future»), `trial_period_days` y `payment_method_collection` (por defecto `always`): https://docs.stripe.com/api/checkout/sessions/create
+- Pruebas con `trial_end` (marcadas como integración *legacy*, siguen admitidas): factura de 0 € al empezar, factura y cobro al acabar (unos 60 minutos después de `invoice.created`), `trial_end=now` para acabar antes: https://docs.stripe.com/billing/subscriptions/trials/free-trials
+- `customer.subscription.trial_will_end` (por defecto 3 días antes, configurable en el Dashboard) y recordatorios de Stripe 7 días antes: https://docs.stripe.com/billing/subscriptions/trials
 
 **Calendario de VERI\*FACTU**
 

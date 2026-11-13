@@ -3,13 +3,14 @@ their invoices, refunds and disputes, in memory.
 
 Keeps the contract of `app.ports.payments`: an idempotency key returns the first result
 and is refused with other parameters, unknown ids are PaymentsNotFound, card only, a
-whole year with no proration, and nothing about the card. `card` sets what the next
+whole year with no proration (or a trial until `trial_end`, the beta window, with a
+first invoice of 0), and nothing about the card. `card` sets what the next
 charge does (`ok`, `declined` or `3ds`); `fail_next` makes the next calls fail; `renew`
 and `open_dispute` move time and money as Stripe would."""
 
 from collections.abc import Callable
 from dataclasses import dataclass, replace
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import Any, Literal
 
 from app.domain.billing import TAX_PERCENT, PriceKey, TaxTreatment, price_cents
@@ -103,16 +104,27 @@ class FakePayments:
             raise PaymentsNotFound("Stripe: no existe", status=404, code="resource_missing")
 
     def _charge(
-        self, seat: _Seat, key: PriceKey, start: datetime, end: datetime, reason: str
+        self,
+        seat: _Seat,
+        key: PriceKey,
+        start: datetime,
+        end: datetime,
+        reason: str,
+        *,
+        free: bool = False,
     ) -> InvoiceInfo:
+        """An invoice of the seat. `free`: the one of 0 at the start of a trial, paid at
+        once and without a payment."""
         sub = seat.subscription
-        base = price_cents(key)
+        base = 0 if free else price_cents(key)
         tax = (base * TAX_PERCENT[seat.treatment] + 50) // 100
-        outcome = self.card
-        paid = outcome == "ok"
-        intent_status = {"ok": "succeeded", "declined": "requires_payment_method"}.get(
-            outcome, "requires_action"
-        )
+        outcome = "free" if free else self.card
+        paid = outcome in ("ok", "free")
+        intent_status = {
+            "ok": "succeeded",
+            "declined": "requires_payment_method",
+            "free": None,
+        }.get(outcome, "requires_action")
         invoice_id = self._new("in")
         invoice = InvoiceInfo(
             id=invoice_id,
@@ -130,9 +142,9 @@ class FakePayments:
             period_end=end,
             paid_at=self.now() if paid else None,
             hosted_invoice_url=f"https://invoice.stripe.com/i/test_{invoice_id}",
-            payment_intent_id=self._new("pi"),
+            payment_intent_id=None if free else self._new("pi"),
             payment_intent_status=intent_status,
-            charge_id=self._new("ch") if paid else None,
+            charge_id=self._new("ch") if paid and not free else None,
             disputed=False,
             amount_refunded=0,
             account_id=sub.account_id,
@@ -142,8 +154,8 @@ class FakePayments:
         return invoice
 
     def renew(self, subscription_id: str, card: CardOutcome | None = None) -> InvoiceInfo:
-        """The anniversary of a seat: a new year charged at the frozen price, or the end
-        of a seat cancelled at period end."""
+        """The anniversary of a seat (or the end of its trial): a new year charged at the
+        frozen price, or the end of a seat cancelled at period end."""
         seat = self._seat(subscription_id)
         sub = seat.subscription
         if card is not None:
@@ -175,7 +187,9 @@ class FakePayments:
         """The customer pays in the hosted Checkout."""
         pending = self.checkouts[session_id]
         params = {k: pending[k] for k in ("customer_id", "price_key", "treatment", "account_id")}
-        sub = self._subscribe(**params, seat_id=pending["seat_id"])
+        sub = self._subscribe(
+            **params, seat_id=pending["seat_id"], trial_end=pending.get("trial_end")
+        )
         pending["subscription_id"] = sub.id
         pending["status"] = "complete"
         return sub
@@ -245,10 +259,23 @@ class FakePayments:
         cancel_url: str,
         *,
         idempotency_key: str,
+        trial_end: datetime | None = None,
     ) -> CheckoutSession:
         self._start("checkout.sessions.create")
         self._customer(customer_id)
-        params = (customer_id, price_key, treatment, account_id, seat_id, success_url, cancel_url)
+        if trial_end is not None and trial_end < self.now() + timedelta(hours=48):
+            # As Stripe: a trial_end has to be at least 48 hours in the future.
+            raise PaymentsRejected("Stripe: trial_end", status=400, code="parameter_invalid")
+        params = (
+            customer_id,
+            price_key,
+            treatment,
+            account_id,
+            seat_id,
+            success_url,
+            cancel_url,
+            trial_end,
+        )
 
         def make() -> CheckoutSession:
             session_id = self._new("cs")
@@ -258,6 +285,8 @@ class FakePayments:
                 "treatment": treatment,
                 "account_id": account_id,
                 "seat_id": seat_id,
+                "trial_end": trial_end,
+                "payment_method_collection": "always",
             }
             return CheckoutSession(session_id, f"https://checkout.stripe.com/c/pay/{session_id}")
 
@@ -270,9 +299,10 @@ class FakePayments:
         treatment: TaxTreatment,
         account_id: str,
         seat_id: str,
+        trial_end: datetime | None = None,
     ) -> SubscriptionInfo:
         start = self.now()
-        end = _next_year(start)
+        end = trial_end or _next_year(start)
         subscription_id = self._new("sub")
         sub = SubscriptionInfo(
             id=subscription_id,
@@ -289,13 +319,17 @@ class FakePayments:
             latest_invoice_id=None,
             latest_invoice_status=None,
             hosted_invoice_url=None,
+            trial_end=trial_end,
         )
         seat = _Seat(sub, treatment, price_key)
         self.seats[subscription_id] = seat
-        invoice = self._charge(seat, price_key, start, end, "subscription_create")
+        invoice = self._charge(
+            seat, price_key, start, end, "subscription_create", free=trial_end is not None
+        )
+        status = "active" if invoice.status == "paid" else "incomplete"
         seat.subscription = replace(
             sub,
-            status="active" if invoice.status == "paid" else "incomplete",
+            status="trialing" if trial_end is not None else status,
             latest_invoice_id=invoice.id,
             latest_invoice_status=invoice.status,
             hosted_invoice_url=invoice.hosted_invoice_url,

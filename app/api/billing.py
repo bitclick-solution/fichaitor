@@ -101,6 +101,9 @@ class SeatOut(BaseModel):
     location_id: str | None  # None: a paid seat without a profile, free to assign
     status: str  # active, payment_failed, action_required, disputed or canceled
     renews_at: date | None  # the day the next year is charged (or the seat ends)
+    # A seat bought in the beta window, before its first charge: when it is charged (the
+    # same day as renews_at). None for any other seat, and once charged.
+    trial_ends_at: datetime | None = None
     cancel_at_period_end: bool
     next_price: int | None  # cents, without VAT, of the next year; None if it ends
     payment_method: str  # card: the only one at the launch
@@ -155,6 +158,7 @@ async def billing_body(billing: BillingStore, account: Account, now: datetime) -
                 location_id=s.location_id,
                 status=s.status.value,
                 renews_at=s.current_period_end.date() if s.current_period_end else None,
+                trial_ends_at=s.trial_ends_at if s.in_trial else None,
                 cancel_at_period_end=s.cancel_at_period_end,
                 next_price=_next_price(s, seats, now),
                 payment_method="card",
