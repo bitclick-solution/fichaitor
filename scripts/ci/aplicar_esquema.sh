@@ -42,6 +42,13 @@ aplicar_esquema() {
     if [[ -f db/schema_channels.sql ]]; then
         aplicar db/schema_channels.sql
     fi
+    # Cobro y backoffice, en el mismo orden que deploy.sh y preparar_bd_pruebas.sh.
+    if [[ -f db/schema_billing.sql ]]; then
+        aplicar db/schema_billing.sql
+    fi
+    if [[ -f db/schema_admin.sql ]]; then
+        aplicar db/schema_admin.sql
+    fi
 }
 
 echo "== Primera aplicación del esquema"

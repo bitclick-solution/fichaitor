@@ -67,6 +67,8 @@ jobs:
       FICHAITOR_TEST_OWNER_URL: postgresql://fichaitor:dev@127.0.0.1:5432/fichaitor_test
       FICHAITOR_TEST_WORKER_URL: postgresql://fichaitor_worker_dev:dev@127.0.0.1:5432/fichaitor_test
       FICHAITOR_TEST_CONVERSATION_URL: postgresql://fichaitor_conversation_dev:dev@127.0.0.1:5432/fichaitor_test
+      FICHAITOR_TEST_BILLING_URL: postgresql://fichaitor_billing_dev:dev@127.0.0.1:5432/fichaitor_test
+      FICHAITOR_TEST_ADMIN_URL: postgresql://fichaitor_admin_dev:dev@127.0.0.1:5432/fichaitor_test
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
