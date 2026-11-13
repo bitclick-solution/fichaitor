@@ -150,6 +150,11 @@ h1, h2, h3, p { margin: 0; }
   background: var(--tinta); transform: rotate(-5deg); box-shadow: 8px 8px 0 var(--rojo);
 }
 .sello svg { width: clamp(22px, 3.6vw, 56px); height: auto; fill: var(--estrella); }
+/* En móvil el titular ocupa casi todo el ancho y sube hasta la altura del sello: el sello
+   pasa al flujo, encima del titular y alineado a la derecha, para no tapar ninguna letra. */
+@media (max-width: 640px) {
+  .sello { position: static; align-self: flex-end; margin: 0 var(--margen) clamp(20px, 3.5vh, 32px) 0; }
+}
 .estado { display: inline-flex; align-items: center; gap: 10px; margin-bottom: clamp(16px, 3vh, 32px); }
 .ojo { width: 12px; height: 12px; border-radius: 50%; background: var(--rojo); animation: late 2.4s ease-in-out infinite; }
 @keyframes late { 0%, 100% { transform: scale(1); opacity: 1; } 50% { transform: scale(0.6); opacity: 0.55; } }
