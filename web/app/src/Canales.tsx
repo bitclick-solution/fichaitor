@@ -46,7 +46,10 @@ function hace(iso: string): string {
 export function Canales({
   negocios: negociosPanel,
   onSinSesion,
+  onWhatsappSinPlan,
 }: {
+  /** El plan de la ficha no incluye WhatsApp: «Conectar WhatsApp» abre el paywall de Pro+ en lugar del código. */
+  onWhatsappSinPlan?: (() => void) | undefined;
   /** Multinegocio: las fichas activas de la cuenta, entre las que se elige qué ve cada chat. Vacía sin multinegocio. */
   negocios: Location[];
   onSinSesion: () => void;
@@ -170,7 +173,7 @@ export function Canales({
         <div>
           <h3 className="rotulo">WhatsApp</h3>
           <p className="sec">Con el plan Pro+. Te escribe al WhatsApp de tu negocio.</p>
-          <button className="btn sec" type="button" onClick={() => setVinculando("whatsapp")}>
+          <button className="btn sec" type="button" onClick={() => (onWhatsappSinPlan ? onWhatsappSinPlan() : setVinculando("whatsapp"))}>
             {hay("whatsapp") ? "Conectar otro WhatsApp" : "Conectar WhatsApp"}
           </button>
         </div>

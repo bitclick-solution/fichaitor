@@ -885,7 +885,12 @@ function Panel({
         </Seccion>
       )}
 
-      <Canales negocios={negocios} onSinSesion={onSinSesion} />
+      <Canales
+        negocios={negocios}
+        onSinSesion={onSinSesion}
+        // Sin WhatsApp en el plan de esta ficha (Gratis o Pro), «Conectar WhatsApp» lleva al paywall de Pro+.
+        onWhatsappSinPlan={ficha.features?.whatsapp === false ? mejorar("whatsapp") : undefined}
+      />
 
       <Instalar />
 

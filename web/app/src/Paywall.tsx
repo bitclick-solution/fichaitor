@@ -10,7 +10,8 @@ import { urlDePago } from "./cobro";
 //    Stripe Checkout. Al volver, App sondea /me hasta ver la ficha en su plan nuevo.
 // Se puede cerrar siempre: cerrar no cambia nada.
 
-export type MotivoPaywall = "ai_replies" | "key_dates" | "no_seat" | "mejorar";
+/** Por qué se abre. Con «whatsapp» solo se ofrece Pro+, el único plan con WhatsApp. */
+export type MotivoPaywall = "ai_replies" | "key_dates" | "no_seat" | "mejorar" | "whatsapp";
 
 /**
  * La ficha cuyo pago acaba de volver de Stripe y aún se está activando. Mientras tanto, el paywall de esa
@@ -34,6 +35,7 @@ const INTRO: Record<MotivoPaywall, string> = {
   key_dates: "Los festivos y las fechas clave están en Pro: te preguntamos si abres y cambiamos el horario en Google cuando lo confirmas.",
   no_seat: "Para activar esta ficha necesitas una plaza de pago.",
   mejorar: "Pasa esta ficha a un plan de pago.",
+  whatsapp: "WhatsApp está en el plan Pro+: Fichaitor te escribe al WhatsApp de tu negocio y le respondes desde ahí.",
 };
 
 function euros(me: Me, centimos: number): string {
@@ -98,7 +100,11 @@ export function Paywall({
   const libres = me.plans?.available ?? { pro: 0, pro_whatsapp: 0 };
   // En la beta solo hay plazas Pro; con cobro, los dos planes se pueden comprar.
   const disponible = (p: PlanPago) => cobro || libres[p] > 0;
-  const [plan, setPlan] = useState<PlanPago>(disponible("pro") || !disponible("pro_whatsapp") ? "pro" : "pro_whatsapp");
+  // Planes que se ofrecen: para WhatsApp, solo Pro+ (Pro no lo incluye).
+  const planes: PlanPago[] = motivo === "whatsapp" ? ["pro_whatsapp"] : ["pro", "pro_whatsapp"];
+  const [plan, setPlan] = useState<PlanPago>(
+    motivo === "whatsapp" ? "pro_whatsapp" : disponible("pro") || !disponible("pro_whatsapp") ? "pro" : "pro_whatsapp",
+  );
   const [paso, setPaso] = useState<Paso>({ n: "elegir" });
   // Mientras se guardan los datos fiscales, el modal no se cierra: después sale la petición de pago.
   const [guardandoDatos, setGuardandoDatos] = useState(false);
@@ -207,7 +213,7 @@ export function Paywall({
     else setPaso({ n: "datos" });
   };
 
-  const titulo = paso.n === "datos" ? "Datos para la factura" : "Pásate a Pro";
+  const titulo = paso.n === "datos" ? "Datos para la factura" : motivo === "whatsapp" ? "Pásate a Pro+" : "Pásate a Pro";
   const ocupado = paso.n === "pagando" || paso.n === "activando";
 
   return (
@@ -220,22 +226,34 @@ export function Paywall({
             </p>
             <fieldset className="fecha-opciones">
               <legend className="sr">Elige el plan</legend>
-              <div className="opciones opciones-dos planes-pago">
-                {(["pro", "pro_whatsapp"] as const).map((p) => {
+              <div className={planes.length > 1 ? "opciones opciones-dos planes-pago" : "opciones planes-pago plan-unico"}>
+                {planes.map((p) => {
                   const euro = precio(p);
                   return (
                     <label className="opcion" key={p}>
                       <input type="radio" name={`${id}-plan`} checked={plan === p} disabled={!disponible(p) || ocupado} onChange={() => setPlan(p)} />
                       <span>
-                        {NOMBRE_PAGO[p]}
+                        {/* Nombre del plan grande; el «+» de Pro+ en rojo, como el punto de la marca. */}
+                        <span className="plan-nombre">{p === "pro_whatsapp" ? <>Pro<span className="mas">+</span></> : NOMBRE_PAGO[p]}</span>
+                        {/* El precio, lo primero que se mira: grande, con «+ IVA al año» al lado. */}
                         {cobro ? (
                           euro !== null && (
-                            <small className="plan-precio">
-                              {euros(me, euro)} + IVA al año{conDescuento(p) && " · 5 % menos por ser tu segunda ficha de pago o siguientes"}
-                            </small>
+                            <>
+                              <span className="plan-cifra">
+                                {euros(me, euro)}
+                                <small> + IVA al año</small>
+                              </span>
+                              {conDescuento(p) && <small className="plan-precio">5 % menos por ser tu segunda ficha de pago o siguientes</small>}
+                            </>
                           )
                         ) : disponible(p) ? (
-                          <small className="plan-precio">Gratis durante la beta{euro !== null && `. Después, ${euros(me, euro)} + IVA al año`}</small>
+                          <>
+                            <span className="plan-cifra">
+                              {euros(me, 0)}
+                              <small> durante la beta</small>
+                            </span>
+                            {euro !== null && <small className="plan-precio">Después, {euros(me, euro)} + IVA al año</small>}
+                          </>
                         ) : (
                           <small className="plan-precio">Sin plazas en la beta</small>
                         )}
@@ -258,8 +276,12 @@ export function Paywall({
                   devuelven importes. Pagas con tarjeta en Stripe; el periodo exacto va en la factura.
                 </p>
               )
-            ) : !disponible("pro") ? (
-              <p className="aviso">Ya usas todas las plazas Pro de la beta. Desactiva otra ficha Pro en «Tus negocios» para usar su plaza.</p>
+            ) : !disponible(plan) ? (
+              <p className="aviso">
+                {plan === "pro_whatsapp"
+                  ? "Pro+ con WhatsApp todavía no está disponible en la beta. Te avisaremos cuando lo esté."
+                  : "Ya usas todas las plazas Pro de la beta. Desactiva otra ficha Pro en «Tus negocios» para usar su plaza."}
+              </p>
             ) : (
               <p className="sec">Durante la beta no cobramos. Cuando termine, te avisaremos con 30 días de antelación para que elijas.</p>
             )}

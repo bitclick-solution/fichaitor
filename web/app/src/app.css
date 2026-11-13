@@ -410,6 +410,11 @@ html.lenis, html.lenis body { height: auto; }
 /* Paywall */
 .planes-pago .opcion span { gap: 6px; }
 .plan-precio { font-weight: 600; }
+.plan-cifra { display: block; margin: 4px 0 2px; font-weight: 900; font-stretch: 125%; letter-spacing: -0.03em; font-size: clamp(2rem, 6vw, 2.75rem); line-height: 1; }
+.plan-cifra small { font-weight: 600; font-stretch: 100%; letter-spacing: 0; font-size: 0.95rem; }
+/* El precio en rojo, como en la portada (también sobre la tarjeta elegida, en tinta) */
+/* `.opcion span` es la caja de la tarjeta: el precio (otro span dentro) no hereda borde, fondo ni relleno. */
+.planes-pago .opcion .plan-cifra { display: block; height: auto; padding: 0; border: 0; background: transparent; color: var(--rojo); }
 .plan-incluye { margin: 6px 0 0; padding: 0; list-style: none; display: grid; gap: 4px; font-weight: 500; font-size: 0.9rem; }
 .plan-incluye li::before { content: "· "; }
 .datos-fiscales { display: grid; gap: 14px; }
@@ -437,3 +442,7 @@ html.lenis, html.lenis body { height: auto; }
 .datos-guardados { line-height: 1.5; }
 .en-pausa { display: grid; gap: 18px; }
 .facturacion .hecho { margin: 0; padding: 10px 14px; border: 2px solid var(--tinta); font-weight: 700; }
+.plan-unico { grid-template-columns: minmax(0, 1fr); }
+/* Nombre del plan en el paywall: grande, como un cartel; el «+» de Pro+ en rojo. Sin la caja de `.opcion span`. */
+.planes-pago .opcion .plan-nombre { display: block; height: auto; padding: 0; border: 0; background: transparent; font-weight: 900; font-stretch: 125%; text-transform: uppercase; letter-spacing: -0.03em; font-size: clamp(1.5rem, 4vw, 2rem); line-height: 1; }
+.planes-pago .opcion .plan-nombre .mas { display: inline; padding: 0; border: 0; background: transparent; color: var(--rojo); }
