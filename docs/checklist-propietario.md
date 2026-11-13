@@ -61,7 +61,7 @@ Lo que solo puedes hacer tú: cuentas, consolas, servidor, decisiones y pruebas 
 - [ ] Cuenta de Stripe de Bitclick: alta, verificación y modo de prueba. Pásame solo que está lista; las claves nunca por el chat.
 - [ ] Gestoría: confirmar los puntos marcados «(gestoría)» del documento, sobre todo la fecha de VERI\*FACTU y la serie de facturas de Fichaitor en Odoo.
 - [ ] Alta en el ROI (operadores intracomunitarios), para vender a la UE con NIF-IVA, y presentar el modelo 349 cuando toque.
-- [ ] Odoo de Bitclick: acceso para instalar el módulo puente `fichaitor_bridge` y el de VERI\*FACTU (`l10n_es_edi_verifactu`), primero en un entorno de pruebas.
+- [ ] Odoo de Bitclick: usuario técnico «Fichaitor facturación» con solo permisos de facturación, su clave de API, un diario «Fichaitor» y la serie de facturas; ponerlo en `billing.env` del servidor. Sin módulos nuevos (como en Conectores ERP). VERI\*FACTU según confirme la gestoría.
 - [ ] Antes de activar el cobro: avisar a la sesión de interfaz para pasar Stripe a proveedores activos en la política de privacidad.
 - [ ] Decidir si hay oferta para las cuentas de la beta al terminarla (cupón de un solo uso, porcentaje y fechas).
 
