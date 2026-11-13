@@ -2,7 +2,7 @@
 
 > **BORRADOR — publicado antes de la revisión profesional** (decisión del propietario, 2026-11-12). Debe revisarlo un profesional de protección de datos antes del lanzamiento: los puntos abiertos están en `notas-revision.md`. La compilación quita este aviso.
 
-BITCLICK SOLUTIONS S.L.U. · C.I.F. B88994777 · Última revisión: 12 de noviembre de 2026
+BITCLICK SOLUTIONS S.L.U. · C.I.F. B88994777 · Última revisión: 13 de noviembre de 2026
 
 Fichaitor es un producto de Bitclick Solutions. Es un asistente que ayuda a los dueños de negocios locales a llevar su ficha de Google Business Profile. Esta política explica qué datos tratamos, para qué y qué puedes hacer al respecto.
 
@@ -29,6 +29,8 @@ Fichaitor está en pruebas. Hoy están activos la prueba con una captura, la lis
 | Prestar el servicio sobre tu ficha de Google | Los datos obtenidos de las API de Google que se detallan en el apartado 3 | Ejecución del contrato — art. 6.1.b | Mientras tu ficha esté conectada. Tras desconectarla: 48 horas para restaurarla y, desde que la baja es efectiva, 30 días como máximo para el borrado; el registro de respuestas, 12 meses. Ver apartado 3 |
 | Conversar contigo y proponerte acciones (por Telegram y, en el plan Pro+, por WhatsApp) | El chat de Telegram o el número de WhatsApp que vinculas (su identificador; en tu panel solo ves los últimos dígitos), los mensajes que intercambias con Fichaitor, incluidos el texto de las reseñas que te enviamos y los borradores de respuesta, las propuestas que apruebas o descartas y, con WhatsApp, cuántos mensajes te enviamos cada mes | Ejecución del contrato — art. 6.1.b | Los mensajes y las propuestas terminadas, 90 días; el chat, mientras esté vinculado y 90 días después de desvincularlo. Con la baja efectiva se borran los mensajes y las propuestas y, si la baja es de la cuenta, también los chats vinculados |
 | Cobro y facturación | Razón social, NIF o número de IVA intracomunitario, dirección, correo para las facturas, los cobros y las facturas, y el nombre de cada ficha facturada, que figura en su factura y en los correos del cobro para identificar el servicio. Los datos completos de la tarjeta los recoge Stripe: Fichaitor solo ve la marca y los últimos 4 dígitos. Las facturas se emiten en el sistema de gestión de Bitclick Solutions (Odoo), alojado en IONOS. Para clientes de otros países de la UE, comprobamos el número de IVA en el sistema VIES de la Comisión Europea | Ejecución del contrato — art. 6.1.b, y obligación legal (fiscal y mercantil) — art. 6.1.c. Las facturas se comunican a la Agencia Tributaria cuando lo exige la ley (sistema VERI\*FACTU) | 6 años desde la última factura (art. 30 del Código de Comercio), también después de borrar la cuenta |
+| Comunicaciones de servicio: cambios en el producto o en las condiciones de uso, incidencias y el fin de la beta | El correo de tu cuenta. De cada comunicación guardamos el texto, el tipo, a qué grupo de cuentas fue, cuántos correos se enviaron y las fechas, no la lista de direcciones | Ejecución del contrato — art. 6.1.b. Te llegan aunque te hayas dado de baja de las comerciales | La comunicación, 12 meses |
+| Comunicaciones comerciales a clientes: novedades, ofertas y boletines sobre Fichaitor y productos o servicios parecidos a los que ya usas | El correo de tu cuenta y, si te das de baja, que no quieres recibirlas, con la fecha y cómo nos lo pediste | Interés legítimo — art. 6.1.f, en los términos del art. 21.2 de la LSSI: solo a clientes y con la posibilidad de oponerte en cada correo (apartado 8) | La comunicación, 12 meses. Tu baja, mientras exista tu cuenta |
 | Prevención del abuso del plan gratuito: que las 25 respuestas con IA del plan Gratis se den una sola vez por ficha de Google | Una huella cifrada e irreversible del identificador de esa ficha (un HMAC con una clave secreta del servidor), el número de respuestas usadas y la fecha del primer y del último uso. No guardamos el identificador en claro, ni tu cuenta, ni tu correo | Interés legítimo en prevenir el abuso del plan gratuito — art. 6.1.f | 3 años desde su último uso, y después se borra. Se conserva aunque te des de baja o retires el acceso a Google |
 | Seguridad y registros del servidor | Dirección IP, fecha y hora, navegador, y las sesiones iniciadas | Interés legítimo en la seguridad del servicio — art. 6.1.f | Registros técnicos: se sobrescriben automáticamente al alcanzar un tamaño máximo y solo se usan para la seguridad del servicio. Sesiones caducadas o cerradas, 30 días |
 | Analítica y medición de campañas | Los indicados en la Política de Cookies (Google Analytics y píxel de TikTok) | Consentimiento — art. 6.1.a | Los indicados en la Política de Cookies |
@@ -135,7 +137,7 @@ No vendemos ni cedemos datos a terceros, salvo obligación legal. Acceden a ello
 
 | Proveedor | Para qué | Qué datos ve | Dónde trata |
 |---|---|---|---|
-| IONOS Cloud S.L.U., Madre de Dios nº 21, 26004 Logroño (La Rioja), España | Alojamiento del servicio y de la base de datos, buzón de soporte y envío de los correos de Fichaitor (por ahora, los códigos y avisos de baja) | Todos los datos del servicio, los registros técnicos, los mensajes que envíes a soporte@fichaitor.es y los correos que te enviamos | España / Unión Europea |
+| IONOS Cloud S.L.U., Madre de Dios nº 21, 26004 Logroño (La Rioja), España | Alojamiento del servicio y de la base de datos, buzón de soporte y envío de los correos de Fichaitor (los códigos, los avisos de baja y las comunicaciones a clientes) | Todos los datos del servicio, los registros técnicos, los mensajes que envíes a soporte@fichaitor.es y los correos que te enviamos | España / Unión Europea |
 | Google Ireland Ltd. | API de Google Business Profile y de Google Places | Las consultas y los cambios que Fichaitor hace en tu ficha en tu nombre | Unión Europea y Estados Unidos |
 | Meta Platforms Ireland Ltd. (WhatsApp Business) | Envío y recepción de los mensajes por WhatsApp, en el plan Pro+ | Tu número de teléfono y el contenido de los mensajes | Unión Europea y Estados Unidos |
 | Google (la entidad del grupo Google con la que está contratado el servicio), API de Gemini | Modelo de inteligencia artificial: lectura de la captura de reseñas, redacción de propuestas y comprensión de mensajes | Lo indicado en el apartado 5 | Unión Europea y terceros países, incluido Estados Unidos |
@@ -171,6 +173,8 @@ Cuando la base del tratamiento es el interés legítimo, puedes oponerte en cual
 
 Para darte de baja de la lista de espera, basta con responder «baja» al mensaje que recibas o escribir a ese mismo correo.
 
+**Comunicaciones comerciales.** Si tienes una cuenta, podemos escribirte a su correo sobre novedades, ofertas y productos o servicios de Fichaitor parecidos a los que ya usas. Puedes oponerte gratis en cualquier momento: cada correo comercial lleva el enlace «Darme de baja de estas comunicaciones», que funciona con un clic, igual que la opción para darse de baja que muestra tu programa de correo. También puedes pedirlo en soporte@fichaitor.es. Seguirás recibiendo los correos necesarios de tu servicio: los códigos, los avisos de baja, las facturas y las comunicaciones de servicio. Nunca escribimos a la lista de espera con este fin, no usamos datos obtenidos de Google en estos correos, no medimos si los abres y no cedemos tu dirección a nadie.
+
 Si crees que no hemos tratado bien tus datos, puedes reclamar ante la Agencia Española de Protección de Datos (C/ Jorge Juan 6, 28001 Madrid — www.aepd.es).
 
 ## 9. De dónde salen los datos
@@ -183,4 +187,4 @@ Aplicamos las medidas técnicas y organizativas del artículo 32 del RGPD según
 
 ## 11. Cambios en esta política
 
-Puede actualizarse para adaptarse a cambios normativos o del servicio. Si el cambio afecta al uso de los datos obtenidos de Google, te avisaremos y, cuando sea necesario, te pediremos de nuevo el consentimiento. La versión vigente es siempre la publicada aquí, con su fecha: la de este texto es el 12 de noviembre de 2026.
+Puede actualizarse para adaptarse a cambios normativos o del servicio. Si el cambio afecta al uso de los datos obtenidos de Google, te avisaremos y, cuando sea necesario, te pediremos de nuevo el consentimiento. La versión vigente es siempre la publicada aquí, con su fecha: la de este texto es el 13 de noviembre de 2026.
