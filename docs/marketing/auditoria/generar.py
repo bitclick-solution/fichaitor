@@ -1,3 +1,4 @@
+# ruff: noqa: E501  -- plantilla HTML y textos para imprimir: las líneas largas son contenido, no código.
 """Genera la auditoría en una página de cada bar, en HTML y PDF, para imprimir.
 
 Entrada: un JSON con lo que el PM ve en Google Maps de cada bar (ver bares.ejemplo.json).
@@ -62,25 +63,30 @@ def problemas(b: dict) -> tuple[int, str, list[dict]]:
     # ficha conectada (app/domain/profile_diagnosis.py): festivo sin horario, 8;
     # reseñas sin responder, 8, o 15 si alguna es de 1 o 2 estrellas.
     if b.get("festivo_8_dic") is False:
-        found.append(Finding(
-            "festivo",
-            "Tu ficha no dice si abres el martes 8 de diciembre",
-            "Es festivo. Quien te busque ese día verá tu horario de un martes normal.",
-            Impact.HIGH, 8,
-        ))
+        found.append(
+            Finding(
+                "festivo",
+                "Tu ficha no dice si abres el martes 8 de diciembre",
+                "Es festivo. Quien te busque ese día verá tu horario de un martes normal.",
+                Impact.HIGH,
+                8,
+            )
+        )
     sin = int(b.get("sin_responder", 0))
     malas = int(b.get("malas_sin_responder", 0))
     if sin > 0:
         detalle = "Quien lee las reseñas ve que nadie contesta. Una respuesta corta y educada cambia esa impresión."
         if malas > 0:
             detalle = f"{malas} son de 1 o 2 estrellas. Una crítica sin respuesta es lo que más frena a quien te compara."
-        found.append(Finding(
-            "sin_responder",
-            f"{sin} de tus 10 últimas reseñas no tienen respuesta",
-            detalle,
-            Impact.HIGH if malas > 0 else Impact.MEDIUM,
-            15 if malas > 0 else 8,
-        ))
+        found.append(
+            Finding(
+                "sin_responder",
+                f"{sin} de tus 10 últimas reseñas no tienen respuesta",
+                detalle,
+                Impact.HIGH if malas > 0 else Impact.MEDIUM,
+                15 if malas > 0 else 8,
+            )
+        )
     score, label, ranked = score_and_rank(found)
     lista = [
         {"titulo": f.title, "detalle": f.detail, "arreglo": ARREGLO.get(f.code, ARREGLO_TU)}
@@ -102,8 +108,8 @@ def pagina(b: dict) -> str:
     score, label, lista = problemas(b)
     e = html.escape
     filas = "".join(
-        f"""<li><span class="num">0{i}</span><div><h3>{e(p['titulo'])}<b>.</b></h3>
-        <p>{e(p['detalle'])}</p><p class="arreglo">{e(p['arreglo'])}</p></div></li>"""
+        f"""<li><span class="num">0{i}</span><div><h3>{e(p["titulo"])}<b>.</b></h3>
+        <p>{e(p["detalle"])}</p><p class="arreglo">{e(p["arreglo"])}</p></div></li>"""
         for i, p in enumerate(lista, 1)
     )
     if not lista:
@@ -112,7 +118,7 @@ def pagina(b: dict) -> str:
     if b.get("calle"):
         calle = f'<p class="calle">{e(b["calle"])}</p>'
     return f"""<!doctype html>
-<html lang="es"><head><meta charset="utf-8"><title>La ficha de Google de {e(b['negocio'])}</title>
+<html lang="es"><head><meta charset="utf-8"><title>La ficha de Google de {e(b["negocio"])}</title>
 <style>
 @font-face {{ font-family: "Archivo"; src: url("{FUENTE}") format("woff2"); font-weight: 100 900; font-stretch: 62% 125%; }}
 @page {{ size: A4; margin: 0; }}
@@ -150,8 +156,8 @@ footer p {{ font-size: 10pt; }}
 .origen {{ font-size: 8pt; color: #55504a; margin-top: 3mm; }}
 </style></head>
 <body>
-<header><img src="{LOGO}" alt="Fichaitor"><p class="fecha">Revisado a mano en Google Maps<br>el {e(b['fecha'])}</p></header>
-<h1 class="cartel">La ficha de Google de {e(b['negocio'])}<b>.</b></h1>
+<header><img src="{LOGO}" alt="Fichaitor"><p class="fecha">Revisado a mano en Google Maps<br>el {e(b["fecha"])}</p></header>
+<h1 class="cartel">La ficha de Google de {e(b["negocio"])}<b>.</b></h1>
 <p class="sub">Así te ve quien te busca en Google Maps antes de venir.</p>
 <section class="nota"><span class="cifra cartel">{score}</span><span class="de cartel">/100</span>
 <span class="etiqueta"><strong>{e(label)}</strong><span>Nota orientativa con lo que se ve desde fuera</span></span></section>
@@ -180,9 +186,17 @@ def main() -> None:
         h.write_text(pagina(b), encoding="utf-8")
         pdf = salida / f"{b['id']}.pdf"
         subprocess.run(
-            [str(CHROME), "--headless=new", "--disable-gpu", "--allow-file-access-from-files",
-             "--no-pdf-header-footer", f"--print-to-pdf={pdf}", h.as_uri()],
-            check=True, capture_output=True,
+            [
+                str(CHROME),
+                "--headless=new",
+                "--disable-gpu",
+                "--allow-file-access-from-files",
+                "--no-pdf-header-footer",
+                f"--print-to-pdf={pdf}",
+                h.as_uri(),
+            ],
+            check=True,
+            capture_output=True,
         )
         print(pdf)
 
