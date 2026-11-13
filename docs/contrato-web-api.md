@@ -151,6 +151,8 @@ navigator.sendBeacon("/api/v1/public/visit", JSON.stringify({ source: origen() }
 
 `GET /api/v1/google/oauth/start` es una **navegación del navegador**, no una llamada `fetch`: un enlace o `window.location`.
 
+**Parámetro opcional `commercial_optout=1` (2026-11-13).** La casilla del alta para oponerse a las comunicaciones comerciales (artículo 21.2 de la LSSI). Si está marcada, navega a `/api/v1/google/oauth/start?commercial_optout=1`; si no, sin el parámetro. Consulta [Comunicaciones comerciales: en el alta y en Ajustes](#comunicaciones-comerciales-en-el-alta-y-en-ajustes-2026-11-13).
+
 Al terminar, Google devuelve al usuario a `/app` con uno de estos parámetros:
 
 | URL de vuelta | Qué mostrar |
@@ -188,6 +190,7 @@ Al volver a conectar, las fichas se actualizan con lo que Google lista en ese mo
 - `place_id` puede ser `null`: Google no siempre lo da (fichas sin verificar o sin ubicación en el mapa).
 - 401 si no hay sesión.
 - **Multinegocio (2026-11-12):** cada ficha trae además `active`, `plan`, `active_since`, `status` y `pending`, y el cuerpo trae `plans` y `pricing`. `selected_location_id` pasa a ser la ficha preferida del panel. Consulta [Multinegocio](#multinegocio-2026-11-12).
+- **No trae la preferencia de comunicaciones comerciales** (2026-11-13): `GET /me` es también la respuesta de elegir, activar y desactivar fichas, y la preferencia solo se enseña en Ajustes. Léela con `GET /api/v1/me/communications`.
 
 ### `POST /api/v1/me/location`
 
@@ -649,11 +652,11 @@ Para la página `fichaitor.es/baja-comunicaciones`, que hace la sesión de inter
 Respuesta **204** sin cuerpo.
 
 - La página lee el token del fragmento (`location.hash`), lo quita de la barra de direcciones (`history.replaceState`) y lo envía en el cuerpo. Sin token en el fragmento, no llames a la API.
-- **Siempre 204**, sea el token válido, ya usado, de una cuenta que se dio de baja, de otro secreto o no sea un token. La respuesta no dice nada de ninguna cuenta. Enseña siempre el mismo texto, por ejemplo: «Listo. No te enviaremos más comunicaciones comerciales. Seguirás recibiendo los correos sobre tu cuenta y tu servicio.»
+- **Siempre 204**, sea el token válido, ya usado, de una cuenta que se dio de baja, de otro secreto o no sea un token. La respuesta no dice nada de ninguna cuenta. Enseña siempre el mismo texto: «Hecho: no te enviaremos más comunicaciones comerciales. Seguirás recibiendo los correos necesarios de tu servicio». 429 → «Demasiados intentos…»; 503 o error de red → «Ahora mismo no podemos…», con reintento.
 - **Idempotente:** repetirla no cambia nada.
 - **429** con más de 20 intentos por dirección IP en una hora (`FICHAITOR_UNSUBSCRIBE_RATE_LIMIT`). Texto: «Demasiados intentos. Prueba dentro de un rato.»
 - **503** si la base no responde o si falta `FICHAITOR_UNSUBSCRIBE_SECRET`: «Ahora mismo no podemos hacerlo. Prueba otra vez en un minuto.» Ofrece reintentar.
-- No pide confirmación en la página: la baja es de un clic. Tampoco ofrece «volver a darse de alta» (no hay ruta para eso).
+- La página **no** da de baja al abrirse: la baja ocurre al pulsar el botón «Darme de baja de las comunicaciones comerciales», para que los analizadores de enlaces que ejecutan JavaScript no den de baja a nadie. El clic único real (RFC 8058) es `POST /api/v1/public/unsubscribe/one-click`, desde la cabecera `List-Unsubscribe`. La página quita el token de la URL al cargar y llama sin cookies ni `X-Requested-With`. La página no ofrece «volver a darse de alta»: eso se hace con sesión, desde Ajustes (`PUT /api/v1/me/communications`). Puede enlazar a Ajustes con un texto como «¿Te has equivocado? Puedes volver a activarlas en Ajustes».
 
 ### `POST /api/v1/public/unsubscribe/one-click?token=<token>`
 
@@ -672,13 +675,74 @@ List-Unsubscribe-Post: List-Unsubscribe=One-Click
 
 ### Qué se guarda
 
-Una fila por cuenta en `communication_optout`: el id de la cuenta, la fecha y si fue por la página (`enlace`) o por el cliente de correo (`un_clic`). Ni el token, ni la IP. Se borra con la cuenta (`docs/retencion.md`).
+Una fila por cuenta en `communication_optout`: el id de la cuenta, la fecha y el medio: la página (`enlace`), el cliente de correo (`un_clic`), la casilla del alta (`signup`) o Ajustes (`settings`). Ni el token, ni la IP. Se borra con la cuenta (`docs/retencion.md`).
 
 ### Lo que la web NO debe hacer con la baja de comunicaciones
 
 - No envíes el token a herramientas de analítica o de registro de errores, ni lo guardes.
 - No muestres un mensaje distinto si el token no vale: la API no lo dice a propósito.
 - No pongas la página detrás del inicio de sesión.
+
+## Comunicaciones comerciales: en el alta y en Ajustes (2026-11-13)
+
+El artículo 21.2 de la LSSI pide ofrecer al cliente oponerse a las comunicaciones comerciales **al recoger su correo** y que pueda cambiarlo **en cualquier momento**. Hay dos sitios: una casilla antes de «Conectar con Google» y un interruptor en Ajustes. Los dos escriben en la misma tabla que el enlace de cada correo ([Baja de las comunicaciones comerciales](#baja-de-las-comunicaciones-comerciales-2026-11-13)), y el envío solo mira esa tabla.
+
+Sin oposición, la cuenta recibe las comerciales por interés legítimo (artículo 21.2): no hace falta un consentimiento previo, así que **la casilla no viene marcada**. Los correos de servicio (códigos, bajas, facturas, avisos, comunicaciones de servicio) llegan siempre.
+
+### En el alta: la casilla y `commercial_optout=1`
+
+No hay formulario de registro: la cuenta se crea al volver de «Conectar con Google». Junto al botón, en la pantalla de conectar, pon una casilla **sin marcar** con este texto:
+
+> No quiero recibir novedades ni ofertas de Fichaitor por correo. Los correos de servicio te llegarán igual.
+
+- Marcada: el botón navega a `/api/v1/google/oauth/start?commercial_optout=1`. Sin marcar: a `/api/v1/google/oauth/start`, sin el parámetro (o con `commercial_optout=0`).
+- El valor viaja **firmado dentro del `state`** de OAuth, el mismo que se guarda en la cookie `HttpOnly` del flujo. No hay otra cookie ni otro parámetro: cambiarlo a la vuelta de Google invalida el `state` (400, «La conexión ha caducado. Vuelve a empezar.»).
+- **Solo cuenta si la vuelta crea la cuenta.** Se guarda en la misma escritura que crea la cuenta (medio `signup`). Si la cuenta ya existía (alguien que vuelve a entrar), la casilla se ignora y su preferencia no cambia, esté marcada o no.
+- Un valor que no sea booleano (`commercial_optout=quizas`) responde **422** antes de ir a Google. Envía solo `1`.
+- La vuelta no cambia (`/app?google=ok&fichas=…`): no dice si se guardó la oposición. Si quieres confirmarlo, lee `GET /api/v1/me/communications`.
+- Muestra la casilla donde la persona conecta por primera vez (la pantalla de alta). En un botón que solo sirve para volver a entrar no hace falta: no tendría efecto.
+
+### `GET /api/v1/me/communications`
+
+```json
+{ "commercial": false, "changed_at": "2026-11-13T10:42:07Z", "source": "signup" }
+```
+
+- `commercial`: `true` si la cuenta recibe las comunicaciones comerciales; `false` si se opuso.
+- `changed_at` y `source`: el último cambio. Los dos `null` si nunca cambió (recibe las comerciales por interés legítimo).
+- `source`: con `commercial: false`, por dónde se opuso: `signup` (la casilla del alta), `settings` (Ajustes), `enlace` (la página de baja de un correo) o `un_clic` (el botón «Cancelar suscripción» del cliente de correo). Con `commercial: true`, `settings` si la última vez la volvió a activar en Ajustes.
+- **401** sin sesión. **503** si la base no responde: «Ahora mismo no podemos leerlo. Prueba otra vez en un minuto.»
+
+### `PUT /api/v1/me/communications`
+
+Con la cabecera `X-Requested-With: fichaitor`, como las demás rutas `/me` que escriben.
+
+```json
+{ "commercial": false }
+```
+
+- `false`: se opone (medio `settings`). `true`: retira la oposición y vuelve a recibirlas.
+- Responde **200** con el mismo cuerpo que el `GET`, ya con el cambio.
+- **Idempotente.** Oponerse estando ya opuesto no cambia nada: conserva la fecha y el medio de la primera vez (por ejemplo, `enlace`). Activarlas estando activas tampoco cambia nada.
+- `commercial` tiene que ser un booleano JSON: `"false"`, `0`, `null`, un cuerpo vacío o un campo de más responden **422**.
+- **401** sin sesión, **403** sin la cabecera, **503** si la base no responde: «Ahora mismo no podemos guardarlo. Prueba otra vez en un minuto.» Ofrece reintentar y deja el interruptor como estaba.
+- **Quién.** Solo la cuenta de la sesión, y una sesión web solo se abre conectando con la cuenta de Google del titular. Los encargados de un negocio solo existen como canales de chat (Telegram, WhatsApp) y no llegan a estas rutas.
+- Responde también con una baja programada y con la cuenta bloqueada por un pago (402 `account_blocked` en otras rutas): oponerse tiene que poder hacerse siempre.
+
+### Lo que la web debe mostrar en Ajustes
+
+Un interruptor en **Ajustes**, en un apartado propio (por ejemplo, «Correos de Fichaitor»), separado de Facturación y de la baja de la cuenta:
+
+- Etiqueta: «Recibir novedades y ofertas de Fichaitor por correo». Encendido = `commercial: true`.
+- Debajo: «Los correos de servicio (avisos de tu cuenta, facturas y cambios en el servicio) te llegarán siempre.»
+- Con `commercial: false`, puedes decir cuándo y cómo se desactivó a partir de `changed_at` y `source` (por ejemplo, «Desactivado el 13 de noviembre desde un correo»).
+- Al cambiarlo, haz el `PUT` y pinta lo que responda. Sin pedir confirmación.
+
+### Lo que la web NO debe hacer con estas preferencias
+
+- No marques la casilla del alta por defecto ni la escondas.
+- No guardes la casilla en una cookie, en `localStorage` ni en otro parámetro: solo `commercial_optout=1` en la URL de inicio.
+- No la uses para los correos de servicio: no se pueden desactivar.
 
 ## Reseñas y respuestas (2026-11-12)
 

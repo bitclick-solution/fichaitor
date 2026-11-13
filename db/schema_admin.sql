@@ -2270,12 +2270,14 @@ CREATE INDEX IF NOT EXISTS admin_communication_keyset ON admin_communication (cr
 -- Baja de las comunicaciones comerciales, por cuenta: una fila por cuenta que no quiere
 -- recibirlas. La escribe la API (enlace del correo o un clic de List-Unsubscribe) con
 -- fichaitor_communication_unsubscribe. source: 'enlace' (página de la web) o 'un_clic'
--- (el cliente de correo, RFC 8058). Se borra con la cuenta: al darse de baja (disparador
--- de abajo) y por la clave ajena si alguna vez se borra la fila de la cuenta.
+-- (el cliente de correo, RFC 8058); desde 2026-11-13 también 'signup' (la casilla del
+-- alta) y 'settings' (Ajustes): consulta la migración del final. Se borra con la cuenta:
+-- al darse de baja (disparador de abajo) y por la clave ajena si alguna vez se borra la
+-- fila de la cuenta.
 CREATE TABLE IF NOT EXISTS communication_optout (
     account_id uuid PRIMARY KEY REFERENCES account (id) ON DELETE CASCADE,
     created_at timestamptz NOT NULL DEFAULT now(),
-    source     text NOT NULL CHECK (source IN ('enlace', 'un_clic'))
+    source     text NOT NULL CHECK (source IN ('enlace', 'un_clic', 'signup', 'settings'))
 );
 
 -- Ningún rol de la aplicación lee ni escribe estas tablas directamente: solo por las
@@ -2303,6 +2305,8 @@ LANGUAGE plpgsql SECURITY DEFINER SET search_path = pg_catalog, public, pg_temp 
 BEGIN
     IF NEW.deleted_at IS NOT NULL AND OLD.deleted_at IS NULL THEN
         DELETE FROM public.communication_optout o WHERE o.account_id = NEW.id;
+        -- La retirada de la oposición (2026-11-13, al final del archivo), también.
+        DELETE FROM public.communication_optout_withdrawal w WHERE w.account_id = NEW.id;
     END IF;
     RETURN NULL;
 END
@@ -2745,3 +2749,86 @@ GRANT EXECUTE ON FUNCTION
     fichaitor_communication_purge()
 TO fichaitor_worker;
 GRANT EXECUTE ON FUNCTION fichaitor_communication_unsubscribe(uuid, text) TO fichaitor_api;
+
+-- ---------------------------------------------------------------------------------------
+-- Migración 2026-11-13: oposición a las comunicaciones comerciales en el alta y en Ajustes
+-- (LSSI art. 21.2; docs/contrato-web-api.md, «Comunicaciones comerciales: en el alta y en
+-- Ajustes»). communication_optout sigue siendo la única fuente de verdad del envío: una
+-- fila es una cuenta que no las recibe. Idempotente.
+-- ---------------------------------------------------------------------------------------
+
+-- Dos medios nuevos: 'signup' (la casilla del alta, en la misma transacción que crea la
+-- cuenta) y 'settings' (el interruptor de Ajustes). En una base anterior la restricción
+-- solo admitía 'enlace' y 'un_clic'.
+ALTER TABLE communication_optout DROP CONSTRAINT IF EXISTS communication_optout_source_check;
+ALTER TABLE communication_optout ADD CONSTRAINT communication_optout_source_check
+    CHECK (source IN ('enlace', 'un_clic', 'signup', 'settings'));
+
+-- La última vez que la cuenta retiró su oposición (volver a recibirlas desde Ajustes): la
+-- prueba de que la retiró, si un día alguien dice que no. El envío NO la lee: solo
+-- importa que ya no haya fila en communication_optout. Una fila por cuenta; se borra con
+-- la cuenta (disparador communication_optout_on_leave y ON DELETE CASCADE).
+CREATE TABLE IF NOT EXISTS communication_optout_withdrawal (
+    account_id   uuid PRIMARY KEY REFERENCES account (id) ON DELETE CASCADE,
+    withdrawn_at timestamptz NOT NULL DEFAULT now(),
+    source       text NOT NULL CHECK (source IN ('settings'))
+);
+
+ALTER TABLE communication_optout_withdrawal ENABLE ROW LEVEL SECURITY;
+REVOKE ALL ON communication_optout_withdrawal
+    FROM PUBLIC, fichaitor_api, fichaitor_worker, fichaitor_admin;
+DO $$
+BEGIN
+    IF EXISTS (SELECT FROM pg_catalog.pg_roles WHERE rolname = 'fichaitor_conversation') THEN
+        REVOKE ALL ON communication_optout_withdrawal FROM fichaitor_conversation;
+    END IF;
+    IF EXISTS (SELECT FROM pg_catalog.pg_roles WHERE rolname = 'fichaitor_billing') THEN
+        REVOKE ALL ON communication_optout_withdrawal FROM fichaitor_billing;
+    END IF;
+END
+$$;
+
+-- La API (GET /api/v1/me/communications): si la cuenta recibe las comerciales y su último
+-- cambio. Opuesta: la fecha y el medio de la oposición. No opuesta: la última retirada,
+-- o nada si nunca cambió (interés legítimo). Sin filas para una cuenta que no existe o
+-- está dada de baja.
+CREATE OR REPLACE FUNCTION fichaitor_communication_preference(p_account uuid)
+RETURNS TABLE (commercial boolean, changed_at timestamptz, source text)
+LANGUAGE sql STABLE SECURITY DEFINER SET search_path = pg_catalog, public, pg_temp AS $$
+    SELECT o.account_id IS NULL,
+           CASE WHEN o.account_id IS NOT NULL THEN o.created_at ELSE w.withdrawn_at END,
+           CASE WHEN o.account_id IS NOT NULL THEN o.source ELSE w.source END
+    FROM public.account x
+    LEFT JOIN public.communication_optout o ON o.account_id = x.id
+    LEFT JOIN public.communication_optout_withdrawal w ON w.account_id = x.id
+    WHERE x.id = p_account AND x.deleted_at IS NULL
+$$;
+
+-- La API (PUT /api/v1/me/communications con commercial = true): retira la oposición.
+-- Idempotente: si la cuenta no estaba opuesta no cambia nada (ni la fecha de la última
+-- retirada). La oposición, con fichaitor_communication_unsubscribe(p_account, 'settings').
+CREATE OR REPLACE FUNCTION fichaitor_communication_resubscribe(p_account uuid, p_source text)
+RETURNS void
+LANGUAGE plpgsql SECURITY DEFINER SET search_path = pg_catalog, public, pg_temp AS $$
+BEGIN
+    DELETE FROM public.communication_optout o
+    WHERE o.account_id = p_account
+      AND EXISTS (SELECT 1 FROM public.account x
+                  WHERE x.id = p_account AND x.deleted_at IS NULL);
+    IF FOUND THEN
+        INSERT INTO public.communication_optout_withdrawal (account_id, withdrawn_at, source)
+        VALUES (p_account, now(), p_source)
+        ON CONFLICT (account_id) DO UPDATE
+            SET withdrawn_at = EXCLUDED.withdrawn_at, source = EXCLUDED.source;
+    END IF;
+END
+$$;
+
+REVOKE ALL ON FUNCTION
+    fichaitor_communication_preference(uuid),
+    fichaitor_communication_resubscribe(uuid, text)
+FROM PUBLIC;
+GRANT EXECUTE ON FUNCTION
+    fichaitor_communication_preference(uuid),
+    fichaitor_communication_resubscribe(uuid, text)
+TO fichaitor_api;

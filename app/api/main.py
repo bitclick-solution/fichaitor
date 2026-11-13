@@ -28,6 +28,7 @@ from app.adapters.store.postgres import PostgresStore
 from app.adapters.worker_store.memory import MemoryWorkerStore
 from app.api.billing import build_router as build_billing_router
 from app.api.channels import build_router as build_channels_router
+from app.api.communication_preferences import build_router as build_communications_router
 from app.api.diagnosis_out import DiagnosisResponse, to_response
 from app.api.google_oauth import build_router as build_google_router
 from app.api.key_dates import build_router as build_key_dates_router
@@ -457,6 +458,11 @@ def create_app(
             clock=clock,
             cookie_secure=settings.cookie_secure,
         )
+    )
+
+    # The commercial communications in Ajustes (LSSI art. 21.2): read, oppose, withdraw.
+    app.include_router(
+        build_communications_router(store=store, clock=clock, cookie_secure=settings.cookie_secure)
     )
 
     # Opting out of the commercial communications, from the link of each email or from

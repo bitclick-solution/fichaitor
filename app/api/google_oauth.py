@@ -4,7 +4,7 @@ from collections.abc import Callable
 from dataclasses import asdict
 from urllib.parse import urlencode
 
-from fastapi import APIRouter, HTTPException, Request
+from fastapi import APIRouter, HTTPException, Query, Request
 from fastapi.responses import RedirectResponse
 
 from app.adapters.crypto.sealed import seal
@@ -57,10 +57,16 @@ def build_router(
         return resp
 
     @router.get("/api/v1/google/oauth/start")
-    async def start(request: Request) -> RedirectResponse:
+    async def start(
+        request: Request,
+        # LSSI art. 21.2: the box of the sign-up to oppose the commercial communications.
+        # It travels inside the signed state, never in a cookie of its own; it only counts
+        # if the callback creates the account (docs/contrato-web-api.md).
+        commercial_optout: bool = Query(False),  # noqa: B008
+    ) -> RedirectResponse:
         if not limiter.allow(client_ip(request)):
             raise HTTPException(429, "Demasiados intentos. Prueba dentro de un rato.")
-        state = make_state(state_secret, clock())
+        state = make_state(state_secret, clock(), commercial_optout=commercial_optout)
         resp = RedirectResponse(google.authorization_url(state), status_code=302)
         # Lax: the cookie must travel on Google's top-level redirect back to us.
         resp.set_cookie(
@@ -82,7 +88,9 @@ def build_router(
         error: str | None = None,
     ) -> RedirectResponse:
         try:
-            verify_state(state_secret, state or "", request.cookies.get(state_cookie), clock())
+            checked = verify_state(
+                state_secret, state or "", request.cookies.get(state_cookie), clock()
+            )
         except InvalidState as exc:
             raise HTTPException(400, "La conexión ha caducado. Vuelve a empezar.") from exc
         if error or not code:
@@ -128,7 +136,12 @@ def build_router(
             now = clock()
             # The funnel counts the first connection of an identity, not every sign-in.
             first_time = not await store.account_exists(identity.sub)
-            account_id = await store.upsert_account(identity.sub, identity.email)
+            # The opposition of the sign-up is written with the account, in the same
+            # transaction, and only if this call creates it: an account that already
+            # existed keeps whatever it chose (LSSI art. 21.2).
+            account_id = await store.upsert_account(
+                identity.sub, identity.email, commercial_optout=checked.commercial_optout
+            )
             if locations is not None:  # not listed: keep whatever the account already had
                 await store.sync_locations(account_id, locations, utc(now))
             previous = request.cookies.get(session_cookie)

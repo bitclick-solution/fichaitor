@@ -85,6 +85,7 @@ from app.ports.store import (
     Account,
     ActiveProfile,
     BillingBlock,
+    CommunicationPreference,
     FreeTaken,
     GoogleConnection,
     Location,
@@ -344,6 +345,25 @@ class PostgresStore:
             "SELECT fichaitor_communication_unsubscribe($1::uuid, $2)", account_id, source
         )
 
+    async def communication_preference(self, account_id: str) -> CommunicationPreference | None:
+        """Whether the account gets the commercial communications, and its last change
+        (fichaitor_communication_preference). None for an account that does not exist."""
+        row = await self._require_pool().fetchrow(
+            "SELECT commercial, changed_at, source"
+            " FROM fichaitor_communication_preference($1::uuid)",
+            account_id,
+        )
+        if row is None:
+            return None
+        return CommunicationPreference(row["commercial"], row["changed_at"], row["source"])
+
+    async def resubscribe_communications(self, account_id: str, source: str) -> None:
+        """The account withdraws its opposition (fichaitor_communication_resubscribe).
+        Idempotent: nothing if it was not opposed."""
+        await self._require_pool().execute(
+            "SELECT fichaitor_communication_resubscribe($1::uuid, $2)", account_id, source
+        )
+
     async def account_exists(self, google_sub: str) -> bool:
         return bool(
             await self._require_pool().fetchval(
@@ -351,17 +371,27 @@ class PostgresStore:
             )
         )
 
-    async def upsert_account(self, google_sub: str, email: str) -> str:
-        return await self._require_pool().fetchval(
-            """
-            INSERT INTO account (google_sub, email) VALUES ($1, $2)
-            ON CONFLICT (google_sub) DO UPDATE
-                SET email = EXCLUDED.email, disconnected_at = NULL
-            RETURNING id::text
-            """,
-            google_sub,
-            email,
-        )
+    async def upsert_account(
+        self, google_sub: str, email: str, *, commercial_optout: bool = False
+    ) -> str:
+        async with self._require_pool().acquire() as conn, conn.transaction():
+            # xmax = 0 only on the row this INSERT made: an update of an existing account
+            # (a sign-in) never records the opposition of the sign-up.
+            row = await conn.fetchrow(
+                """
+                INSERT INTO account (google_sub, email) VALUES ($1, $2)
+                ON CONFLICT (google_sub) DO UPDATE
+                    SET email = EXCLUDED.email, disconnected_at = NULL
+                RETURNING id::text AS id, (xmax = 0) AS created
+                """,
+                google_sub,
+                email,
+            )
+            if commercial_optout and row["created"]:
+                await conn.execute(
+                    "SELECT fichaitor_communication_unsubscribe($1::uuid, 'signup')", row["id"]
+                )
+            return row["id"]
 
     async def sync_locations(
         self, account_id: str, locations: Sequence[ProfileLocation], now: datetime

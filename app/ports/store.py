@@ -57,6 +57,18 @@ class Account:
 
 
 @dataclass(frozen=True)
+class CommunicationPreference:
+    """Whether the account gets the commercial communications (db/schema_admin.sql,
+    `communication_optout`). `changed_at` and `source`: the last change, None if it never
+    changed (it gets them by legitimate interest, LSSI art. 21.2). Sources: signup,
+    settings, enlace, un_clic (opposing) and settings (withdrawing the opposition)."""
+
+    commercial: bool
+    changed_at: datetime | None = None
+    source: str | None = None
+
+
+@dataclass(frozen=True)
 class Location:
     id: str
     title: str
@@ -301,16 +313,36 @@ class Store(Protocol):
         """Append a connection. A reconnection is a new row; the newest one wins."""
         ...
 
+    async def unsubscribe_communications(self, account_id: str, source: str) -> None:
+        """The account opposes the commercial communications (communication_optout).
+        Idempotent: an opposition already there keeps its date and source."""
+        ...
+
+    async def resubscribe_communications(self, account_id: str, source: str) -> None:
+        """The account withdraws its opposition. Idempotent: nothing if not opposed."""
+        ...
+
+    async def communication_preference(self, account_id: str) -> CommunicationPreference | None:
+        """Whether the account gets the commercial communications, and its last change.
+        None for an account that does not exist or left."""
+        ...
+
     async def account_exists(self, google_sub: str) -> bool:
         """Whether that Google identity already has an account (deleted ones do not count:
         `upsert_account` would make a new one). Tells a first connection from a sign-in."""
         ...
 
-    async def upsert_account(self, google_sub: str, email: str) -> str:
+    async def upsert_account(
+        self, google_sub: str, email: str, *, commercial_optout: bool = False
+    ) -> str:
         """Create the account of that Google identity, or refresh its email. Returns its id.
 
         Connecting again after a leave of the profile makes the account connected again.
         A deleted account is never found: the same Google identity gets a new, empty one.
+
+        `commercial_optout`: the box of the sign-up (LSSI art. 21.2). Only when this call
+        creates the account, in the same write, it is recorded as opposed to the commercial
+        communications (source `signup`). An account that already existed keeps its choice.
         """
         ...
 

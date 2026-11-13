@@ -63,6 +63,7 @@ from app.ports.store import (
     Account,
     ActiveProfile,
     BillingBlock,
+    CommunicationPreference,
     FreeTaken,
     GoogleConnection,
     Location,
@@ -209,6 +210,9 @@ class MemoryStore:
         self.billing_blocks: list[BlockRow] = []
         # communication_optout: the accounts that opted out of the commercial emails.
         self.communication_optout: dict[str, str] = {}  # account id -> source
+        self.communication_optout_at: dict[str, datetime] = {}
+        # communication_optout_withdrawal: the last time each account withdrew it.
+        self.communication_withdrawal: dict[str, tuple[datetime, str]] = {}
         self._fail = fail
 
     def _check(self) -> None:
@@ -253,16 +257,45 @@ class MemoryStore:
     async def unsubscribe_communications(self, account_id: str, source: str) -> None:
         self._check()
         if any(a.id == account_id for a in self.accounts.values()):
+            if account_id not in self.communication_optout:
+                self.communication_optout_at[account_id] = datetime.now(UTC)
             self.communication_optout.setdefault(account_id, source)
+
+    async def resubscribe_communications(self, account_id: str, source: str) -> None:
+        self._check()
+        if account_id in self.communication_optout:
+            del self.communication_optout[account_id]
+            self.communication_optout_at.pop(account_id, None)
+            self.communication_withdrawal[account_id] = (datetime.now(UTC), source)
+
+    async def communication_preference(self, account_id: str) -> CommunicationPreference | None:
+        self._check()
+        if not any(a.id == account_id for a in self.accounts.values()):
+            return None
+        if account_id in self.communication_optout:
+            return CommunicationPreference(
+                False,
+                self.communication_optout_at.get(account_id),
+                self.communication_optout[account_id],
+            )
+        if account_id in self.communication_withdrawal:
+            at, source = self.communication_withdrawal[account_id]
+            return CommunicationPreference(True, at, source)
+        return CommunicationPreference(True)
 
     async def account_exists(self, google_sub: str) -> bool:
         self._check()
         return google_sub in self.accounts
 
-    async def upsert_account(self, google_sub: str, email: str) -> str:
+    async def upsert_account(
+        self, google_sub: str, email: str, *, commercial_optout: bool = False
+    ) -> str:
         self._check()
+        created = google_sub not in self.accounts
         row = self.accounts.setdefault(google_sub, AccountRow(str(uuid.uuid4()), google_sub, email))
         row.email = email
+        if created and commercial_optout:
+            await self.unsubscribe_communications(row.id, "signup")
         return row.id
 
     async def sync_locations(
