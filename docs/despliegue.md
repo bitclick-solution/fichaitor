@@ -14,7 +14,7 @@ Esta guía explica cómo publicar Fichaitor en el VPS de Bitclick y cómo actual
 | `fichaitor-conversation` | Conversación por Telegram (`docs/canales.md`), con la misma imagen | `fichaitor-interna` | `conversation.env` |
 | `fichaitor-web` | Sitio público, `/app` y reenvío de `/api/` | `fichaitor-interna` y `bitclick-network` | Ninguno |
 | `fichaitor-billing` | El cobro: Stripe, facturas en Odoo, avisos de renovación, fin de la beta y conciliación ([Cobro: Stripe, Odoo y el túnel](#cobro-stripe-odoo-y-el-túnel)), con la misma imagen | `fichaitor-interna` | `billing.env` |
-| `fichaitor-admin` | El backoffice, solo por túnel SSH: publicado en `127.0.0.1:8090` del VPS y en ninguna otra parte. No arranca hasta el paso 12 de `docs/admin-facturacion.md` (perfil `backoffice`) | `fichaitor-interna` | `admin.env` |
+| `fichaitor-admin` | El backoffice (`python -m app.admin`), solo por túnel SSH: publicado en `127.0.0.1:8090` del VPS y en ninguna otra parte ([Túnel del backoffice](#túnel-del-backoffice)) | `fichaitor-interna` | `admin.env` |
 | `fichaitor-baja` | Solo con `docker compose run --rm`: la baja por correo ([Tareas habituales](#tareas-habituales)), con la imagen de la API. No arranca con el despliegue (perfil `herramientas`) | `fichaitor-interna` | `db.env` |
 
 - Ningún contenedor publica puertos hacia fuera del servidor; el backoffice, solo en el *loopback* (`127.0.0.1:8090`), para el túnel SSH. Nginx Proxy Manager (`bitclick-proxy`) llega a `fichaitor-web:8080` por la red `bitclick-network`. La base de datos y la API solo son visibles dentro de `fichaitor-interna`.
@@ -620,13 +620,21 @@ El cobro tiene dos procesos propios (`docs/admin-facturacion.md`, 4.1): `fichait
 
    `FICHAITOR_BILLING_DATABASE_URL` la escribe `init-roles.sh`: déjala vacía. Sin `FICHAITOR_ODOO_URL`, el cobro funciona, pero ninguna factura sale: quedan pendientes y el registro avisa con `invoice_overdue`.
 
-4. En `admin.env`, deja vacía `FICHAITOR_ADMIN_DATABASE_URL` (la escribe `init-roles.sh`). La clave del TOTP y la pimienta se rellenan en el paso 12, con `openssl rand -hex 32`.
+4. En `admin.env`, deja vacía `FICHAITOR_ADMIN_DATABASE_URL` (la escribe `init-roles.sh`) y rellena:
+
+   | Variable | Valor |
+   |---|---|
+   | `FICHAITOR_ADMIN_TOTP_KEY` | La clave que cifra los secretos TOTP: `openssl rand -hex 32` (64 caracteres hexadecimales) |
+   | `FICHAITOR_ADMIN_PASSWORD_PEPPER` | La «pimienta» de las contraseñas y de los códigos de recuperación: otro `openssl rand -hex 32`, distinto del anterior |
+   | `FICHAITOR_ADMIN_AUTHSERV_ID` | El `authserv-id` de nuestro servidor de correo: lo primero de la cabecera `Authentication-Results` que añade (por ejemplo, `mx.fichaitor.es`). Sirve para comprobar el DMARC de las bajas pedidas por correo |
+
+   Guarda la clave y la pimienta en tu gestor de contraseñas. Si se pierden o se cambian, los TOTP y las contraseñas guardadas dejan de valer y hay que restablecer a todas las personas. `deploy.sh` se detiene si falta alguna de las tres, si la clave no tiene 64 caracteres hexadecimales, si la pimienta tiene menos de 32 o si son iguales.
 
    > **Precaución:** `admin.env` no puede contener ninguna variable de Stripe ni de Odoo (`STRIPE_` u `ODOO_`), ni vacía: `deploy.sh` se detiene. Tampoco SMTP ni Google.
 
 5. En `api.env`, pon el secreto de firma del webhook, `FICHAITOR_STRIPE_WEBHOOK_SECRET=whsec_…`. Es lo único de Stripe que tiene la API.
 
-6. Lanza un despliegue. `deploy.sh` comprueba los secretos, crea `fichaitor_billing_prod` y `fichaitor_admin_prod` y arranca `fichaitor-billing`. Al arrancar, el proceso revisa la configuración de Odoo y escribe en el registro `odoo_setup_problem` por cada cosa que falte:
+6. Lanza un despliegue. `deploy.sh` comprueba los secretos, crea `fichaitor_billing_prod` y `fichaitor_admin_prod` y arranca `fichaitor-billing` y `fichaitor-admin`. Al arrancar, el proceso revisa la configuración de Odoo y escribe en el registro `odoo_setup_problem` por cada cosa que falte:
 
    ```bash
    docker logs --tail 40 fichaitor-billing
@@ -675,7 +683,64 @@ El backoffice escucha solo en `127.0.0.1:8090` del VPS: no hay host en Nginx Pro
 
    Debe fallar. Si conecta, no sigas: revisa `ports:` de `fichaitor-admin` en el Compose.
 
-> **Nota:** el servicio `fichaitor-admin` está en el perfil `backoffice` hasta que exista `app.admin` (paso 12): el despliegue todavía no lo arranca.
+6. Comprueba en el VPS que el backoffice está en marcha y solo en el *loopback*:
+
+   ```bash
+   docker inspect --format '{{.State.Health.Status}}' fichaitor-admin
+   ss -ltnp | grep 8090
+   ```
+
+   El primero debe decir `healthy`; el segundo, solo `127.0.0.1:8090`.
+
+### Alta del primer usuario del backoffice
+
+Las personas del backoffice no se crean desde el backoffice: solo el propietario, en el servidor, con `scripts/admin_usuario.py` y el rol propietario de la base, en un contenedor de un solo uso (`fichaitor-admin-usuario`, como `fichaitor-baja`). El script imprime un enlace de alta, nunca contraseñas.
+
+1. En el VPS, desde la carpeta del despliegue, date de alta con el rol `propietario`:
+
+   ```bash
+   cd /opt/bitclick/fichaitor
+   docker compose run --rm fichaitor-admin-usuario        alta --usuario <tu-usuario> --rol propietario
+   ```
+
+   El usuario va en minúsculas (de 2 a 40 caracteres: letras, cifras, punto, guion o guion bajo). El script escribe un enlace como `http://localhost:8090/#alta=…`, válido **24 horas** y de **un solo uso**. De la base solo sale su huella.
+
+2. Abre el túnel desde tu equipo ([Uso diario por el túnel](#uso-diario-por-el-túnel)) y abre el enlace en el navegador.
+3. Elige una contraseña de al menos 12 caracteres. El backoffice rechaza las contraseñas comunes, las secuencias y las que contienen tu usuario.
+4. Escanea el QR con Google Authenticator (o cualquier aplicación TOTP) y escribe el código de 6 cifras que muestra.
+5. Guarda los **10 códigos de recuperación** que aparecen, fuera del ordenador (papel o gestor de contraseñas). Solo se enseñan esta vez. Cada uno vale una vez.
+6. Entra con tu usuario, tu contraseña y un código TOTP.
+
+Para el resto de personas, repite el paso 1 con `--rol soporte` o `--rol finanzas` y dale el enlace por un canal privado. Añade también su clave pública al túnel ([Túnel del backoffice](#túnel-del-backoffice), paso 2).
+
+**Si alguien pierde el acceso:**
+
+| Caso | Qué hacer |
+|---|---|
+| Perdió el móvil | Entra con un código de recuperación. En ese momento el backoffice le pide dar de alta un TOTP nuevo (tiene 5 minutos) y le da 10 códigos nuevos |
+| Olvidó la contraseña, o perdió el móvil y los códigos | Comprueba su identidad en persona o por teléfono y ejecuta `… run --rm fichaitor-admin-usuario restablecer --usuario <usuario>`. Se cierran sus sesiones y recibe un enlace de alta nuevo |
+| Deja el equipo | `… run --rm fichaitor-admin-usuario desactivar --usuario <usuario>` y borra su línea de `authorized_keys` del usuario `fichaitor-tunel` |
+| Tú, el propietario | Tus códigos de recuperación o, como último recurso, `restablecer` con tu acceso SSH al servidor |
+
+> **Nota:** 5 fallos seguidos (de contraseña, de TOTP o de código de recuperación) bloquean a esa persona 15 minutos, y el doble en cada bloqueo seguido. 20 fallos en una hora, de quien sea, detienen el inicio de sesión de todo el backoffice hasta que pase la hora.
+
+### Uso diario por el túnel
+
+1. Abre el túnel y deja la terminal abierta:
+
+   ```bash
+   ssh -N -L 8090:127.0.0.1:8090 fichaitor-tunel@<vps>
+   ```
+
+2. Abre `http://localhost:8090` (o `http://127.0.0.1:8090`). Cualquier otro nombre, aunque apunte a tu equipo, recibe un error: el backoffice solo responde a esos dos.
+3. Entra con tu usuario, tu contraseña y el código TOTP.
+4. La sesión caduca a las 8 horas, o tras 30 minutos sin actividad.
+5. Reembolsar, conceder o recortar derechos, cerrar un bloqueo, tramitar una baja y cambiar tu contraseña piden un código TOTP nuevo si el último tiene más de 5 minutos.
+6. Al terminar, pulsa **Salir** y cierra el túnel (`Ctrl+C`).
+
+> **Importante:** el backoffice escribe en su registro de auditoría cada inicio de sesión, cada fallo, cada lectura de una cuenta y cada acción. Para ver el nombre de una ficha o la dirección fiscal de un cliente pide la referencia del ticket: escribe la del caso, nunca una dirección de correo.
+
+Lo que puede hacer cada rol está en la sección 6.3 de `docs/admin-facturacion.md`; las pantallas y sus rutas, en `docs/contrato-backoffice.md`.
 
 ## Probar un pago en local
 

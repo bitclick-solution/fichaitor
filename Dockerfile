@@ -11,6 +11,8 @@ COPY app ./app
 COPY data ./data
 # Herramienta de soporte para las bajas pedidas por correo (docs/despliegue.md).
 COPY scripts/baja_manual.py ./scripts/baja_manual.py
+# Alta, restablecimiento y desactivación de las personas del backoffice (docs/despliegue.md).
+COPY scripts/admin_usuario.py ./scripts/admin_usuario.py
 
 RUN useradd --system --uid 10001 fichaitor
 USER fichaitor

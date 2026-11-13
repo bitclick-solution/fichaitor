@@ -18,8 +18,8 @@
 #      db/schema_billing.sql y db/schema_admin.sql en una sola transacción.
 #      Si falla, no se aplica nada y las vuelve a arrancar con la versión anterior.
 #   5. Crea los usuarios de base de datos que falten (init-roles.sh).
-#   6. Recrea la API, el worker, la conversación, el cobro y la web con la etiqueta nueva.
-#      El backoffice (perfil "backoffice", paso 12) no arranca todavía.
+#   6. Recrea la API, el worker, la conversación, el cobro, el backoffice y la web con la
+#      etiqueta nueva. El backoffice solo escucha en 127.0.0.1:8090 (túnel SSH).
 #   7. Comprueba la salud. Si falla, vuelve a la etiqueta anterior y termina con error.
 #
 # La vuelta atrás cambia las imágenes, no el esquema: el esquema solo añade, así
@@ -38,6 +38,7 @@ API_CONTAINER="fichaitor-api"
 WORKER_CONTAINER="fichaitor-worker"
 CONVERSATION_CONTAINER="fichaitor-conversation"
 BILLING_CONTAINER="fichaitor-billing"
+ADMIN_CONTAINER="fichaitor-admin"
 WEB_CONTAINER="fichaitor-web"
 DB_USER="fichaitor"
 DB_NAME="fichaitor"
@@ -246,6 +247,26 @@ comprobar_cobro() {
     fi
 }
 
+# El backoffice (docs/admin-facturacion.md, 6.1 y 6.2): la clave del TOTP (32 bytes en
+# hexadecimal) y la pimienta de las contraseñas, distintas entre sí, y el authserv-id del
+# servidor de correo para las bajas por correo. Nada de SMTP ni de Google (lo de Stripe y
+# Odoo ya lo rechaza comprobar_cobro). Solo se miden: el valor nunca se imprime.
+comprobar_backoffice() {
+    local clave pimienta
+    exigir_variables "${ADMIN_ENV}" FICHAITOR_ADMIN_TOTP_KEY FICHAITOR_ADMIN_PASSWORD_PEPPER         FICHAITOR_ADMIN_AUTHSERV_ID
+    clave="$(valor_env "${ADMIN_ENV}" FICHAITOR_ADMIN_TOTP_KEY)"
+    pimienta="$(valor_env "${ADMIN_ENV}" FICHAITOR_ADMIN_PASSWORD_PEPPER)"
+    [[ "${clave}" =~ ^[0-9a-fA-F]{64}$ ]] ||
+        die "FICHAITOR_ADMIN_TOTP_KEY de admin.env no son 64 caracteres hexadecimales (openssl rand -hex 32)."
+    ((${#pimienta} >= 32)) ||
+        die "FICHAITOR_ADMIN_PASSWORD_PEPPER de admin.env tiene menos de 32 caracteres (openssl rand -hex 32)."
+    [[ "${clave}" != "${pimienta}" ]] ||
+        die "FICHAITOR_ADMIN_TOTP_KEY y FICHAITOR_ADMIN_PASSWORD_PEPPER son el mismo valor."
+    if grep -qE '^[[:space:]]*(export[[:space:]]+)?[A-Z0-9_]*(SMTP|GOOGLE|TOKEN_PRIVATE)[A-Z0-9_]*=' "${ADMIN_ENV}"; then
+        die "admin.env contiene variables de SMTP, Google o de la clave privada. Quítalas: el backoffice no las usa."
+    fi
+}
+
 exigir_privado() {
     local archivo="$1" modo
     [[ -f "${archivo}" ]] || die "No existe ${archivo}. Créalo a partir del ejemplo (docs/despliegue.md)."
@@ -295,6 +316,7 @@ comprobar_entorno() {
     comprobar_whatsapp
     comprobar_pimienta_gratis
     comprobar_cobro
+    comprobar_backoffice
     [[ "$(valor_env "${API_ENV}" FICHAITOR_TOKEN_PUBLIC_KEY)" != "$(valor_env "${WORKER_ENV}" FICHAITOR_TOKEN_PRIVATE_KEY)" ]] ||
         die "La clave pública de api.env y la privada de worker.env son el mismo valor."
     [[ "$(valor_env "${API_ENV}" FICHAITOR_GOOGLE_CLIENT_ID)" == "$(valor_env "${WORKER_ENV}" FICHAITOR_GOOGLE_CLIENT_ID)" ]] ||
@@ -469,10 +491,14 @@ health_check() {
             { mostrar_logs "${BILLING_CONTAINER}"; fallo=1; }
     fi
     if [[ "${fallo}" == "0" ]]; then
+        esperar_salud "${ADMIN_CONTAINER}" 60 || { mostrar_logs "${ADMIN_CONTAINER}"; fallo=1; }
+    fi
+    if [[ "${fallo}" == "0" ]]; then
         if [[ "$(imagen_en_uso "${API_CONTAINER}")" != "${API_IMAGE_BASE}:${tag}" ||
             "$(imagen_en_uso "${WORKER_CONTAINER}")" != "${API_IMAGE_BASE}:${tag}" ||
             "$(imagen_en_uso "${CONVERSATION_CONTAINER}")" != "${API_IMAGE_BASE}:${tag}" ||
             "$(imagen_en_uso "${BILLING_CONTAINER}")" != "${API_IMAGE_BASE}:${tag}" ||
+            "$(imagen_en_uso "${ADMIN_CONTAINER}")" != "${API_IMAGE_BASE}:${tag}" ||
             "$(imagen_en_uso "${WEB_CONTAINER}")" != "${WEB_IMAGE_BASE}:${tag}" ]]; then
             err "Algún contenedor no usa la etiqueta ${tag}."
             fallo=1

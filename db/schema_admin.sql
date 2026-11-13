@@ -1123,6 +1123,633 @@ END
 $$;
 
 -- ---------------------------------------------------------------------------
+-- Paso 12 (backend del backoffice, app/admin). Mismo patrón que las anteriores: quien
+-- llama es miembro de fichaitor_admin, admin_actor comprueba la sesión, el rol y, en las
+-- acciones sensibles, un TOTP de menos de 5 minutos; cada lectura y cada acción deja su
+-- fila en admin_audit_log en la misma transacción. Las que tocan tablas de cobro son
+-- plpgsql: se pueden crear antes que schema_billing.sql (fallan al llamarlas, no al
+-- crearlas). search_path = pg_catalog, public, pg_temp y nombres cualificados (M6).
+
+-- La persona de una sesión, para comprobar su TOTP: la sesión a la espera del código
+-- (abierta hace menos de 5 minutos) o una sesión confirmada, con actividad en los últimos
+-- 30 minutos y sin alta pendiente (confirmación de una acción sensible). Ninguna fila si
+-- no vale. Sin esta función el proceso tendría que fiarse del usuario que manda el
+-- navegador junto al código, y con la contraseña de una persona y el TOTP de otra se
+-- podría confirmar la sesión de la primera.
+CREATE OR REPLACE FUNCTION admin_session_pending_user(p_token_hash text)
+RETURNS TABLE (username text, totp_secret_enc text)
+LANGUAGE sql STABLE SECURITY DEFINER SET search_path = pg_catalog, public, pg_temp AS $$
+    SELECT u.username, u.totp_secret_enc
+    FROM public.admin_session s JOIN public.admin_user u ON u.id = s.admin_user_id
+    WHERE s.token_hash = p_token_hash AND s.revoked_at IS NULL AND s.expires_at > now()
+      AND s.last_seen_at > now() - interval '30 minutes'
+      AND u.active AND NOT u.must_enroll AND u.totp_secret_enc IS NOT NULL
+      AND (u.locked_until IS NULL OR u.locked_until <= now())
+      AND (s.totp_verified_at IS NOT NULL OR s.created_at > now() - interval '5 minutes')
+      AND pg_catalog.pg_has_role(session_user, 'fichaitor_admin', 'MEMBER')
+$$;
+
+-- La persona de una sesión con el TOTP (o un código de recuperación) de hace menos de 5
+-- minutos, también con el alta del TOTP pendiente: para la etiqueta del QR y el cifrado del
+-- secreto nuevo (admin_set_totp). Ninguna fila si no vale.
+CREATE OR REPLACE FUNCTION admin_session_username(p_token_hash text) RETURNS text
+LANGUAGE sql STABLE SECURITY DEFINER SET search_path = pg_catalog, public, pg_temp AS $$
+    SELECT u.username
+    FROM public.admin_session s JOIN public.admin_user u ON u.id = s.admin_user_id
+    WHERE s.token_hash = p_token_hash AND s.revoked_at IS NULL AND s.expires_at > now()
+      AND s.totp_verified_at > now() - interval '5 minutes' AND u.active
+      AND (u.locked_until IS NULL OR u.locked_until <= now())
+      AND pg_catalog.pg_has_role(session_user, 'fichaitor_admin', 'MEMBER')
+$$;
+
+-- La referencia del caso (interna): de 3 a p_max caracteres, en una línea y sin
+-- direcciones de correo. Devuelve el texto sin espacios a los lados.
+CREATE OR REPLACE FUNCTION admin_ticket(p_ticket text, p_max integer) RETURNS text
+LANGUAGE plpgsql IMMUTABLE SECURITY DEFINER SET search_path = pg_catalog, public, pg_temp AS $$
+DECLARE
+    ticket text := btrim(coalesce(p_ticket, ''));
+BEGIN
+    IF length(ticket) NOT BETWEEN 3 AND p_max OR ticket ~ '[[:cntrl:]]'
+       OR ticket ~ '[^[:space:]]+@[^[:space:]]+' THEN
+        RAISE EXCEPTION 'hace falta la referencia del ticket (de 3 a % caracteres, en una línea y sin direcciones de correo)',
+            p_max USING ERRCODE = 'check_violation';
+    END IF;
+    RETURN ticket;
+END
+$$;
+
+-- Resumen de una cuenta (sección 6.3, fila 2; todos los roles): plan, plazas, derechos,
+-- bloqueo, activaciones y bajas. Sin el nombre de las fichas (admin_account_detail, con
+-- ticket), sin direcciones y sin identificadores de Stripe (eso es de finanzas). El correo,
+-- enmascarado.
+CREATE OR REPLACE FUNCTION admin_account_overview(p_session text, p_account uuid)
+RETURNS jsonb
+LANGUAGE plpgsql SECURITY DEFINER SET search_path = pg_catalog, public, pg_temp AS $$
+DECLARE
+    who uuid;
+    result jsonb;
+BEGIN
+    SELECT a.actor_id INTO who
+    FROM public.admin_actor(p_session, ARRAY['soporte', 'finanzas', 'propietario'], false) a;
+    IF NOT EXISTS (SELECT 1 FROM public.account x WHERE x.id = p_account) THEN
+        RAISE EXCEPTION 'no existe esa cuenta' USING ERRCODE = 'no_data_found';
+    END IF;
+    PERFORM public.admin_audit_write(who, 'account_overview_read', p_account, NULL, NULL, NULL);
+    SELECT jsonb_build_object(
+        'account', (SELECT jsonb_build_object(
+                        'id', x.id, 'email_masked', public.admin_mask_email(x.email),
+                        'created_at', x.created_at, 'deleted_at', x.deleted_at,
+                        'disconnected_at', x.disconnected_at)
+                    FROM public.account x WHERE x.id = p_account),
+        'blocked', EXISTS (SELECT 1 FROM public.account_billing_block b
+                           WHERE b.account_id = p_account AND b.unblocked_at IS NULL),
+        'locations', coalesce((SELECT jsonb_agg(jsonb_build_object(
+                        'id', l.id, 'plan', l.plan, 'active_since', l.active_since,
+                        'deactivated_at', l.deactivated_at, 'removed_at', l.removed_at,
+                        'verified', l.verified) ORDER BY l.id)
+                    FROM public.location l WHERE l.account_id = p_account), '[]'::jsonb),
+        'entitlements', coalesce((SELECT jsonb_agg(jsonb_build_object(
+                        'id', e.id, 'plan', e.plan, 'quantity', e.quantity,
+                        'starts_at', e.starts_at, 'ends_at', e.ends_at, 'source', e.source,
+                        'seat_id', e.seat_id, 'provisional', e.provisional,
+                        'granted_by', e.granted_by, 'note_code', e.note_code,
+                        'current', e.starts_at <= now() AND (e.ends_at IS NULL OR e.ends_at > now()))
+                        ORDER BY e.starts_at DESC)
+                    FROM public.plan_entitlement e WHERE e.account_id = p_account), '[]'::jsonb),
+        'seats', coalesce((SELECT jsonb_agg(jsonb_build_object(
+                        'id', s.id, 'plan', s.plan, 'collection', s.collection,
+                        'location_id', s.location_id, 'status', s.status,
+                        'current_period_start', s.current_period_start,
+                        'current_period_end', s.current_period_end,
+                        'cancel_at_period_end', s.cancel_at_period_end,
+                        'next_price_key', s.next_price_key, 'trial_ends_at', s.trial_ends_at,
+                        'review_reason', s.review_reason, 'created_at', s.created_at)
+                        ORDER BY s.created_at)
+                    FROM public.billing_seat s WHERE s.account_id = p_account), '[]'::jsonb),
+        'blocks', coalesce((SELECT jsonb_agg(jsonb_build_object(
+                        'id', b.id, 'blocked_at', b.blocked_at, 'reason', b.reason,
+                        'seat_id', b.seat_id, 'unblocked_at', b.unblocked_at,
+                        'unblocked_by', b.unblocked_by) ORDER BY b.blocked_at DESC)
+                    FROM public.account_billing_block b WHERE b.account_id = p_account),
+                    '[]'::jsonb),
+        'activations', coalesce((SELECT jsonb_agg(jsonb_build_object(
+                        'at', g.at, 'location_id', g.location_id, 'event', g.event,
+                        'plan', g.plan, 'reason', g.reason) ORDER BY g.at DESC)
+                    FROM (SELECT * FROM public.location_activation_log k
+                          WHERE k.account_id = p_account ORDER BY k.at DESC LIMIT 100) g),
+                    '[]'::jsonb),
+        'offboardings', coalesce((SELECT jsonb_agg(jsonb_build_object(
+                        'id', o.id, 'scope', o.scope, 'confirmed_at', o.confirmed_at,
+                        'delete_at', o.delete_at, 'restored_at', o.restored_at,
+                        'effective_at', o.effective_at, 'reason', o.reason)
+                        ORDER BY o.confirmed_at DESC)
+                    FROM public.offboarding o WHERE o.account_id = p_account), '[]'::jsonb)
+    ) INTO result;
+    RETURN result;
+END
+$$;
+
+-- El último modo de Stripe visto (interna): el de los eventos que la API acepta
+-- (FICHAITOR_STRIPE_LIVEMODE). Sirve para construir los enlaces al panel de Stripe sin
+-- que admin.env lleve nada de Stripe. false si aún no hay eventos.
+CREATE OR REPLACE FUNCTION admin_stripe_livemode() RETURNS boolean
+LANGUAGE plpgsql STABLE SECURITY DEFINER SET search_path = pg_catalog, public, pg_temp AS $$
+BEGIN
+    RETURN coalesce((SELECT e.livemode FROM public.stripe_event e
+                     ORDER BY e.received_at DESC LIMIT 1), false);
+END
+$$;
+
+-- Cobro de una cuenta (sección 6.3, «Pagos, facturas, enlaces»: finanzas y propietario).
+-- El espejo de billing_*, sin el PDF, sin la dirección y sin invoice_email (esos, con
+-- admin_billing_contact y la referencia del ticket).
+CREATE OR REPLACE FUNCTION admin_account_billing(p_session text, p_account uuid)
+RETURNS jsonb
+LANGUAGE plpgsql SECURITY DEFINER SET search_path = pg_catalog, public, pg_temp AS $$
+DECLARE
+    who uuid;
+    result jsonb;
+BEGIN
+    SELECT a.actor_id INTO who
+    FROM public.admin_actor(p_session, ARRAY['finanzas', 'propietario'], false) a;
+    IF NOT EXISTS (SELECT 1 FROM public.account x WHERE x.id = p_account) THEN
+        RAISE EXCEPTION 'no existe esa cuenta' USING ERRCODE = 'no_data_found';
+    END IF;
+    PERFORM public.admin_audit_write(who, 'account_billing_read', p_account, NULL, NULL, NULL);
+    SELECT jsonb_build_object(
+        'livemode', public.admin_stripe_livemode(),
+        'customer', (SELECT jsonb_build_object(
+                        'stripe_customer_id', c.stripe_customer_id, 'legal_name', c.legal_name,
+                        'tax_id_type', c.tax_id_type, 'tax_id', c.tax_id,
+                        'country', c.country, 'territory', c.territory,
+                        'tax_treatment', c.tax_treatment, 'updated_at', c.updated_at)
+                     FROM public.billing_customer c WHERE c.account_id = p_account),
+        'seats', coalesce((SELECT jsonb_agg(jsonb_build_object(
+                        'id', s.id, 'plan', s.plan, 'collection', s.collection,
+                        'stripe_subscription_id', s.stripe_subscription_id,
+                        'location_id', s.location_id, 'status', s.status,
+                        'current_period_end', s.current_period_end,
+                        'cancel_at_period_end', s.cancel_at_period_end,
+                        'next_price_key', s.next_price_key, 'review_reason', s.review_reason)
+                        ORDER BY s.created_at)
+                    FROM public.billing_seat s WHERE s.account_id = p_account), '[]'::jsonb),
+        'charges', coalesce((SELECT jsonb_agg(jsonb_build_object(
+                        'stripe_invoice_id', h.stripe_invoice_id, 'seat_id', h.seat_id,
+                        'status', h.status, 'billing_reason', h.billing_reason,
+                        'currency', h.currency, 'subtotal', h.subtotal, 'tax', h.tax,
+                        'total', h.total, 'amount_paid', h.amount_paid,
+                        'amount_refunded', h.amount_refunded, 'price_key', h.price_key,
+                        'period_start', h.period_start, 'period_end', h.period_end,
+                        'paid_at', h.paid_at, 'payment_intent_id', h.payment_intent_id,
+                        'charge_id', h.charge_id, 'disputed', h.disputed)
+                        ORDER BY h.created_at DESC)
+                    FROM public.billing_charge h WHERE h.account_id = p_account), '[]'::jsonb),
+        'documents', coalesce((SELECT jsonb_agg(jsonb_build_object(
+                        'id', d.id, 'kind', d.kind, 'stripe_invoice_id', d.stripe_invoice_id,
+                        'stripe_refund_id', d.stripe_refund_id, 'state', d.state,
+                        'odoo_move_id', d.odoo_move_id, 'number', d.number,
+                        'amount_untaxed', d.amount_untaxed, 'amount_tax', d.amount_tax,
+                        'amount_total', d.amount_total, 'verifactu_state', d.verifactu_state,
+                        'review_reason', d.review_reason, 'created_at', d.created_at,
+                        'issued_at', d.issued_at) ORDER BY d.created_at DESC)
+                    FROM public.billing_document d WHERE d.account_id = p_account), '[]'::jsonb),
+        'refunds', coalesce((SELECT jsonb_agg(jsonb_build_object(
+                        'id', r.id, 'stripe_invoice_id', r.stripe_invoice_id,
+                        'amount', r.amount, 'reason', r.reason, 'ticket_ref', r.ticket_ref,
+                        'requested_by', r.requested_by, 'state', r.state,
+                        'stripe_refund_id', r.stripe_refund_id, 'created_at', r.created_at,
+                        'finished_at', r.finished_at) ORDER BY r.created_at DESC)
+                    FROM public.billing_refund_request r WHERE r.account_id = p_account),
+                    '[]'::jsonb),
+        'blocks', coalesce((SELECT jsonb_agg(jsonb_build_object(
+                        'id', b.id, 'blocked_at', b.blocked_at, 'reason', b.reason,
+                        'stripe_invoice_id', b.stripe_invoice_id, 'seat_id', b.seat_id,
+                        'unblocked_at', b.unblocked_at, 'unblocked_by', b.unblocked_by)
+                        ORDER BY b.blocked_at DESC)
+                    FROM public.account_billing_block b WHERE b.account_id = p_account),
+                    '[]'::jsonb)
+    ) INTO result;
+    RETURN result;
+END
+$$;
+
+-- La dirección fiscal y el correo de facturas de una cuenta (sección 6.6: «Los ve
+-- finanzas, por función»): solo con la referencia del ticket, que se audita con la lectura.
+CREATE OR REPLACE FUNCTION admin_billing_contact(p_session text, p_account uuid, p_ticket_ref text)
+RETURNS jsonb
+LANGUAGE plpgsql SECURITY DEFINER SET search_path = pg_catalog, public, pg_temp AS $$
+DECLARE
+    who uuid;
+    ticket text;
+    result jsonb;
+BEGIN
+    SELECT a.actor_id INTO who
+    FROM public.admin_actor(p_session, ARRAY['finanzas', 'propietario'], false) a;
+    ticket := public.admin_ticket(p_ticket_ref, 500);
+    PERFORM public.admin_audit_write(who, 'billing_contact_read', p_account, NULL, ticket, NULL);
+    SELECT jsonb_build_object(
+        'legal_name', c.legal_name, 'tax_id', c.tax_id, 'address_line1', c.address_line1,
+        'address_line2', c.address_line2, 'postal_code', c.postal_code, 'city', c.city,
+        'province', c.province, 'country', c.country, 'invoice_email', c.invoice_email)
+    INTO result
+    FROM public.billing_customer c WHERE c.account_id = p_account;
+    IF result IS NULL THEN
+        RAISE EXCEPTION 'esa cuenta no tiene datos fiscales' USING ERRCODE = 'no_data_found';
+    END IF;
+    RETURN result;
+END
+$$;
+
+-- Cola de revisión del cobro y salud del cobro (secciones 4.3, 4.4 y 6.4; finanzas y
+-- propietario): facturas en revisión o pendientes desde hace más de una hora, plazas con
+-- algo que revisar, reembolsos pendientes o fallidos, eventos huérfanos o sin procesar
+-- desde hace más de una hora, derechos pagados sin factura y bloqueos abiertos. Solo
+-- identificadores, códigos e importes.
+CREATE OR REPLACE FUNCTION admin_billing_review(p_session text)
+RETURNS jsonb
+LANGUAGE plpgsql SECURITY DEFINER SET search_path = pg_catalog, public, pg_temp AS $$
+DECLARE
+    who uuid;
+    result jsonb;
+BEGIN
+    SELECT a.actor_id INTO who
+    FROM public.admin_actor(p_session, ARRAY['finanzas', 'propietario'], false) a;
+    PERFORM public.admin_audit_write(who, 'billing_review_read', NULL, NULL, NULL, NULL);
+    SELECT jsonb_build_object(
+        'livemode', public.admin_stripe_livemode(),
+        'counts', jsonb_build_object(
+            'events_unprocessed', (SELECT count(*) FROM public.stripe_event e
+                                   WHERE e.processed_at IS NULL),
+            'documents_pending', (SELECT count(*) FROM public.billing_document d
+                                  WHERE d.state = 'pendiente'),
+            'documents_overdue', (SELECT count(*) FROM public.billing_document d
+                                  WHERE d.state = 'pendiente'
+                                    AND d.created_at < now() - interval '1 hour'),
+            'documents_review', (SELECT count(*) FROM public.billing_document d
+                                 WHERE d.state = 'revision'),
+            'blocks_open', (SELECT count(*) FROM public.account_billing_block b
+                            WHERE b.unblocked_at IS NULL),
+            'refunds_pending', (SELECT count(*) FROM public.billing_refund_request r
+                                WHERE r.state = 'pendiente'),
+            'paid_without_document', (SELECT count(*) FROM public.plan_entitlement p
+                                      WHERE p.source = 'pago' AND NOT p.provisional
+                                        AND NOT EXISTS (
+                                            SELECT 1 FROM public.billing_document d
+                                            WHERE d.kind = 'factura'
+                                              AND d.stripe_invoice_id = p.external_ref))),
+        'documents', coalesce((SELECT jsonb_agg(jsonb_build_object(
+                        'id', d.id, 'account_id', d.account_id, 'kind', d.kind,
+                        'stripe_invoice_id', d.stripe_invoice_id,
+                        'stripe_refund_id', d.stripe_refund_id, 'state', d.state,
+                        'odoo_move_id', d.odoo_move_id, 'number', d.number,
+                        'amount_total', d.amount_total, 'verifactu_state', d.verifactu_state,
+                        'review_reason', d.review_reason, 'created_at', d.created_at)
+                        ORDER BY d.created_at)
+                    FROM (SELECT * FROM public.billing_document k
+                          WHERE k.state = 'revision'
+                             OR (k.state = 'pendiente' AND k.created_at < now() - interval '1 hour')
+                          ORDER BY k.created_at LIMIT 200) d), '[]'::jsonb),
+        'seats', coalesce((SELECT jsonb_agg(jsonb_build_object(
+                        'id', s.id, 'account_id', s.account_id, 'plan', s.plan,
+                        'status', s.status, 'stripe_subscription_id', s.stripe_subscription_id,
+                        'review_reason', s.review_reason) ORDER BY s.updated_at)
+                    FROM (SELECT * FROM public.billing_seat k WHERE k.review_reason IS NOT NULL
+                          ORDER BY k.updated_at LIMIT 200) s), '[]'::jsonb),
+        'refunds', coalesce((SELECT jsonb_agg(jsonb_build_object(
+                        'id', r.id, 'account_id', r.account_id,
+                        'stripe_invoice_id', r.stripe_invoice_id, 'amount', r.amount,
+                        'reason', r.reason, 'state', r.state, 'requested_by', r.requested_by,
+                        'created_at', r.created_at) ORDER BY r.created_at)
+                    FROM (SELECT * FROM public.billing_refund_request k
+                          WHERE k.state IN ('pendiente', 'fallido')
+                          ORDER BY k.created_at DESC LIMIT 200) r), '[]'::jsonb),
+        'events', coalesce((SELECT jsonb_agg(jsonb_build_object(
+                        'id', e.id, 'type', e.type, 'object_id', e.object_id,
+                        'received_at', e.received_at, 'processed_at', e.processed_at,
+                        'outcome', e.outcome) ORDER BY e.received_at)
+                    FROM (SELECT * FROM public.stripe_event k
+                          WHERE k.outcome = 'orphan'
+                             OR (k.processed_at IS NULL AND k.received_at < now() - interval '1 hour')
+                          ORDER BY k.received_at DESC LIMIT 200) e), '[]'::jsonb),
+        'paid_without_document', coalesce((SELECT jsonb_agg(jsonb_build_object(
+                        'entitlement_id', p.id, 'account_id', p.account_id,
+                        'stripe_invoice_id', p.external_ref, 'seat_id', p.seat_id,
+                        'starts_at', p.starts_at) ORDER BY p.starts_at)
+                    FROM (SELECT * FROM public.plan_entitlement k
+                          WHERE k.source = 'pago' AND NOT k.provisional
+                            AND NOT EXISTS (SELECT 1 FROM public.billing_document d
+                                            WHERE d.kind = 'factura'
+                                              AND d.stripe_invoice_id = k.external_ref)
+                          ORDER BY k.starts_at LIMIT 200) p), '[]'::jsonb),
+        'blocks', coalesce((SELECT jsonb_agg(jsonb_build_object(
+                        'id', b.id, 'account_id', b.account_id, 'blocked_at', b.blocked_at,
+                        'reason', b.reason, 'stripe_invoice_id', b.stripe_invoice_id,
+                        'seat_id', b.seat_id) ORDER BY b.blocked_at)
+                    FROM (SELECT * FROM public.account_billing_block k WHERE k.unblocked_at IS NULL
+                          ORDER BY k.blocked_at LIMIT 200) b), '[]'::jsonb)
+    ) INTO result;
+    RETURN result;
+END
+$$;
+
+-- Salud general (sección 6.4; soporte y propietario): estado de los resúmenes de las fichas
+-- y chats vinculados por canal. Solo recuentos: sin hechos de la ficha ni direcciones.
+CREATE OR REPLACE FUNCTION admin_health_summary(p_session text)
+RETURNS jsonb
+LANGUAGE plpgsql SECURITY DEFINER SET search_path = pg_catalog, public, pg_temp AS $$
+DECLARE
+    who uuid;
+    result jsonb;
+BEGIN
+    SELECT a.actor_id INTO who
+    FROM public.admin_actor(p_session, ARRAY['soporte', 'propietario'], false) a;
+    PERFORM public.admin_audit_write(who, 'health_read', NULL, NULL, NULL, NULL);
+    SELECT jsonb_build_object(
+        'summaries', coalesce((SELECT jsonb_object_agg(t.status, t.n)
+                     FROM (SELECT ps.status, count(*) AS n FROM public.profile_summary ps
+                           GROUP BY ps.status) t), '{}'::jsonb),
+        'summaries_stale', (SELECT count(*) FROM public.profile_summary ps
+                            WHERE ps.synced_at IS NULL OR ps.synced_at < now() - interval '24 hours'),
+        'channels', coalesce((SELECT jsonb_object_agg(t.channel, jsonb_build_object(
+                                 'linked', t.linked, 'unlinked', t.unlinked))
+                     FROM (SELECT c.channel,
+                                  count(*) FILTER (WHERE c.unlinked_at IS NULL) AS linked,
+                                  count(*) FILTER (WHERE c.unlinked_at IS NOT NULL) AS unlinked
+                           FROM public.channel_identity c GROUP BY c.channel) t), '{}'::jsonb),
+        'jobs_stuck', (SELECT count(*) FROM public.job j
+                       WHERE j.state = 'running' AND j.locked_at < now() - interval '15 minutes'),
+        'jobs_failed_24h', (SELECT count(*) FROM public.job j
+                            WHERE j.state = 'failed' AND j.finished_at > now() - interval '24 hours')
+    ) INTO result;
+    RETURN result;
+END
+$$;
+
+-- Conceder un derecho a mano (sección 6.4; solo propietario y con TOTP de menos de 5
+-- minutos): 'cortesia', 'recomendacion', 'manual' o 'beta' (ampliar la beta es un derecho
+-- 'beta' nuevo con un fin posterior). Los límites de plan_entitlement_guard (10 como mucho,
+-- un fin de 2 años como mucho, empieza ahora, granted_by), comprobados aquí también: la
+-- función es del propietario de las tablas y el disparador la eximiría.
+CREATE OR REPLACE FUNCTION admin_grant_entitlement(
+    p_session text, p_account uuid, p_plan text, p_quantity integer, p_source text,
+    p_ends_at timestamptz, p_note_code text, p_ticket_ref text)
+RETURNS uuid
+LANGUAGE plpgsql SECURITY DEFINER SET search_path = pg_catalog, public, pg_temp AS $$
+DECLARE
+    who uuid;
+    who_name text;
+    ticket text;
+    granted uuid;
+    at_now timestamptz := now();
+BEGIN
+    SELECT a.actor_id INTO who
+    FROM public.admin_actor(p_session, ARRAY['propietario'], true) a;
+    ticket := public.admin_ticket(p_ticket_ref, 500);
+    IF p_source IS NULL OR p_source NOT IN ('cortesia', 'recomendacion', 'manual', 'beta') THEN
+        RAISE EXCEPTION 'origen no permitido: cortesia, recomendacion, manual o beta'
+            USING ERRCODE = 'check_violation';
+    END IF;
+    IF p_plan IS NULL OR p_plan NOT IN ('pro', 'pro_whatsapp') THEN
+        RAISE EXCEPTION 'plan desconocido' USING ERRCODE = 'check_violation';
+    END IF;
+    IF p_quantity IS NULL OR p_quantity NOT BETWEEN 1 AND 10 THEN
+        RAISE EXCEPTION 'la cantidad va de 1 a 10' USING ERRCODE = 'check_violation';
+    END IF;
+    IF p_ends_at IS NULL OR p_ends_at <= at_now + interval '1 hour'
+       OR p_ends_at > at_now + interval '2 years' THEN
+        RAISE EXCEPTION 'el fin tiene que estar entre una hora y dos años desde ahora'
+            USING ERRCODE = 'check_violation';
+    END IF;
+    IF p_note_code IS NOT NULL AND p_note_code !~ '^[a-z_]{1,40}$' THEN
+        RAISE EXCEPTION 'nota no válida (minúsculas y guiones bajos)' USING ERRCODE = 'check_violation';
+    END IF;
+    IF NOT EXISTS (SELECT 1 FROM public.account x WHERE x.id = p_account AND x.deleted_at IS NULL) THEN
+        RAISE EXCEPTION 'no hay ninguna cuenta activa con ese id' USING ERRCODE = 'no_data_found';
+    END IF;
+    SELECT u.username INTO who_name FROM public.admin_user u WHERE u.id = who;
+    INSERT INTO public.plan_entitlement
+        (account_id, plan, quantity, starts_at, ends_at, source, granted_by, note_code)
+    VALUES (p_account, p_plan, p_quantity, at_now, p_ends_at, p_source, who_name, p_note_code)
+    RETURNING id INTO granted;
+    PERFORM public.admin_audit_write(who, 'entitlement_granted', p_account, granted::text, ticket,
+        jsonb_build_object('plan', p_plan, 'quantity', p_quantity, 'source', p_source,
+                           'ends_at', p_ends_at, 'note_code', p_note_code));
+    RETURN granted;
+END
+$$;
+
+-- Recortar un derecho no pagado (sección 6.3; solo propietario y con TOTP): adelanta su
+-- fin, nunca lo alarga. Un derecho 'pago' no se toca aquí (lo cierra el reembolso).
+CREATE OR REPLACE FUNCTION admin_trim_entitlement(
+    p_session text, p_entitlement uuid, p_ends_at timestamptz, p_ticket_ref text)
+RETURNS void
+LANGUAGE plpgsql SECURITY DEFINER SET search_path = pg_catalog, public, pg_temp AS $$
+DECLARE
+    who uuid;
+    ticket text;
+    row_account uuid;
+    row_source text;
+    row_start timestamptz;
+    row_end timestamptz;
+    new_end timestamptz;
+BEGIN
+    SELECT a.actor_id INTO who
+    FROM public.admin_actor(p_session, ARRAY['propietario'], true) a;
+    ticket := public.admin_ticket(p_ticket_ref, 500);
+    SELECT e.account_id, e.source, e.starts_at, e.ends_at
+    INTO row_account, row_source, row_start, row_end
+    FROM public.plan_entitlement e WHERE e.id = p_entitlement FOR UPDATE;
+    IF NOT FOUND THEN
+        RAISE EXCEPTION 'no existe ese derecho' USING ERRCODE = 'no_data_found';
+    END IF;
+    IF row_source = 'pago' THEN
+        RAISE EXCEPTION 'un derecho pagado no se recorta aquí: se cierra con un reembolso'
+            USING ERRCODE = 'check_violation';
+    END IF;
+    new_end := greatest(coalesce(p_ends_at, now()), now());
+    IF new_end <= row_start THEN
+        new_end := row_start + interval '1 second';
+    END IF;
+    IF new_end >= coalesce(row_end, 'infinity'::timestamptz) THEN
+        RAISE EXCEPTION 'un derecho solo se recorta: el fin nuevo tiene que ser anterior'
+            USING ERRCODE = 'check_violation';
+    END IF;
+    UPDATE public.plan_entitlement e SET ends_at = new_end WHERE e.id = p_entitlement;
+    PERFORM public.admin_audit_write(who, 'entitlement_trimmed', row_account, p_entitlement::text,
+        ticket, jsonb_build_object('source', row_source, 'ends_at', new_end, 'was', row_end));
+END
+$$;
+
+-- Cerrar un bloqueo a mano (sección 3.6; solo propietario y con TOTP): unblocked_by =
+-- 'admin'. Devuelve la cuenta.
+CREATE OR REPLACE FUNCTION admin_close_block(p_session text, p_block bigint, p_ticket_ref text)
+RETURNS uuid
+LANGUAGE plpgsql SECURITY DEFINER SET search_path = pg_catalog, public, pg_temp AS $$
+DECLARE
+    who uuid;
+    ticket text;
+    blocked_account uuid;
+BEGIN
+    SELECT a.actor_id INTO who
+    FROM public.admin_actor(p_session, ARRAY['propietario'], true) a;
+    ticket := public.admin_ticket(p_ticket_ref, 500);
+    UPDATE public.account_billing_block b SET unblocked_at = now(), unblocked_by = 'admin'
+    WHERE b.id = p_block AND b.unblocked_at IS NULL
+    RETURNING b.account_id INTO blocked_account;
+    IF blocked_account IS NULL THEN
+        RAISE EXCEPTION 'no hay ningún bloqueo abierto con ese id' USING ERRCODE = 'no_data_found';
+    END IF;
+    PERFORM public.admin_audit_write(who, 'block_closed', blocked_account, p_block::text, ticket,
+        NULL);
+    RETURN blocked_account;
+END
+$$;
+
+-- Reembolso excepcional (P2 y sección 3.4; finanzas o propietario, con TOTP): una fila en
+-- billing_refund_request y el job billing_refund, que hace el proceso de cobro
+-- (app/billing/refunds.py). p_amount NULL: lo que queda por devolver de esa factura. Una
+-- sola petición pendiente por factura. La referencia del caso, de 3 a 80 caracteres (la
+-- columna ticket_ref de la tabla).
+CREATE OR REPLACE FUNCTION admin_request_refund(
+    p_session text, p_stripe_invoice text, p_amount integer, p_reason text, p_ticket_ref text)
+RETURNS uuid
+LANGUAGE plpgsql SECURITY DEFINER SET search_path = pg_catalog, public, pg_temp AS $$
+DECLARE
+    who uuid;
+    who_name text;
+    ticket text;
+    charge_account uuid;
+    paid integer;
+    refunded integer;
+    request uuid;
+BEGIN
+    SELECT a.actor_id INTO who
+    FROM public.admin_actor(p_session, ARRAY['finanzas', 'propietario'], true) a;
+    ticket := public.admin_ticket(p_ticket_ref, 80);
+    IF p_reason IS NULL
+       OR p_reason NOT IN ('error_cobro', 'decision_comercial', 'cambio_tercero', 'disputa') THEN
+        RAISE EXCEPTION 'motivo no permitido: error_cobro, decision_comercial, cambio_tercero o disputa'
+            USING ERRCODE = 'check_violation';
+    END IF;
+    SELECT h.account_id, h.amount_paid, h.amount_refunded INTO charge_account, paid, refunded
+    FROM public.billing_charge h WHERE h.stripe_invoice_id = p_stripe_invoice FOR UPDATE;
+    IF NOT FOUND THEN
+        RAISE EXCEPTION 'no hay ningún cobro con esa factura de Stripe' USING ERRCODE = 'no_data_found';
+    END IF;
+    IF paid - refunded <= 0 THEN
+        RAISE EXCEPTION 'esa factura no tiene nada que devolver' USING ERRCODE = 'check_violation';
+    END IF;
+    IF p_amount IS NOT NULL AND (p_amount <= 0 OR p_amount > paid - refunded) THEN
+        RAISE EXCEPTION 'el importe va de 1 a % céntimos', paid - refunded
+            USING ERRCODE = 'check_violation';
+    END IF;
+    IF EXISTS (SELECT 1 FROM public.billing_refund_request r
+               WHERE r.stripe_invoice_id = p_stripe_invoice AND r.state = 'pendiente') THEN
+        RAISE EXCEPTION 'ya hay un reembolso pendiente de esa factura' USING ERRCODE = 'check_violation';
+    END IF;
+    SELECT u.username INTO who_name FROM public.admin_user u WHERE u.id = who;
+    INSERT INTO public.billing_refund_request
+        (account_id, stripe_invoice_id, amount, reason, ticket_ref, requested_by)
+    VALUES (charge_account, p_stripe_invoice, p_amount, p_reason, ticket, who_name)
+    RETURNING id INTO request;
+    INSERT INTO public.job (kind, payload, idempotency_key, max_attempts)
+    VALUES ('billing_refund', jsonb_build_object('refund_request_id', request::text),
+            'billing_refund:' || request::text, 5);
+    PERFORM public.admin_audit_write(who, 'refund_requested', charge_account, p_stripe_invoice,
+        ticket, jsonb_build_object('amount', p_amount, 'reason', p_reason,
+                                   'refund_request_id', request));
+    RETURN request;
+END
+$$;
+
+-- Métricas (sección 6.4; finanzas y propietario), siempre en totales, del periodo
+-- [p_from, p_to). Las plazas en vigor van por precio: el proceso calcula el ARR y el MRR
+-- con los precios del dominio (app/domain/billing.py, price_cents), sin copiarlos aquí.
+-- Definiciones en docs/contrato-backoffice.md, «Métricas».
+CREATE OR REPLACE FUNCTION admin_metrics(p_session text, p_from timestamptz, p_to timestamptz)
+RETURNS jsonb
+LANGUAGE plpgsql SECURITY DEFINER SET search_path = pg_catalog, public, pg_temp AS $$
+DECLARE
+    who uuid;
+    result jsonb;
+BEGIN
+    SELECT a.actor_id INTO who
+    FROM public.admin_actor(p_session, ARRAY['finanzas', 'propietario'], false) a;
+    IF p_from IS NULL OR p_to IS NULL OR p_to <= p_from OR p_to - p_from > interval '400 days' THEN
+        RAISE EXCEPTION 'periodo no válido (como mucho 400 días)' USING ERRCODE = 'check_violation';
+    END IF;
+    PERFORM public.admin_audit_write(who, 'metrics_read', NULL, NULL, NULL,
+        jsonb_build_object('from', p_from, 'to', p_to));
+    SELECT jsonb_build_object(
+        'seats_in_force', coalesce((SELECT jsonb_agg(jsonb_build_object(
+                'plan', t.plan, 'next_price_key', t.next_price_key, 'seats', t.n)
+                ORDER BY t.plan, t.next_price_key)
+            FROM (SELECT s.plan, s.next_price_key, count(*) AS n FROM public.billing_seat s
+                  WHERE s.status = 'active' AND NOT s.cancel_at_period_end
+                  GROUP BY s.plan, s.next_price_key) t), '[]'::jsonb),
+        'signups', jsonb_build_object(
+            'accounts', (SELECT count(*) FROM public.account x
+                         WHERE x.created_at >= p_from AND x.created_at < p_to),
+            'first_seats', (SELECT count(*) FROM public.billing_seat s
+                            WHERE s.status <> 'pending' AND s.created_at >= p_from
+                              AND s.created_at < p_to
+                              AND NOT EXISTS (SELECT 1 FROM public.billing_seat o
+                                              WHERE o.account_id = s.account_id
+                                                AND o.status <> 'pending'
+                                                AND o.created_at < s.created_at)),
+            'new_seats', (SELECT count(*) FROM public.billing_seat s
+                          WHERE s.status <> 'pending' AND s.created_at >= p_from
+                            AND s.created_at < p_to)),
+        'churn', jsonb_build_object(
+            'seats_canceled', (SELECT count(*) FROM public.billing_seat s
+                               WHERE s.status = 'canceled' AND s.updated_at >= p_from
+                                 AND s.updated_at < p_to),
+            'seats_lost_unpaid', (SELECT count(*) FROM public.billing_seat s
+                                  WHERE s.status = 'canceled' AND s.updated_at >= p_from
+                                    AND s.updated_at < p_to
+                                    AND EXISTS (SELECT 1 FROM public.account_billing_block b
+                                                WHERE b.seat_id = s.id)),
+            'seats_to_cancel', (SELECT count(*) FROM public.billing_seat s
+                                WHERE s.status = 'active' AND s.cancel_at_period_end),
+            'account_leaves', (SELECT count(DISTINCT o.account_id) FROM public.offboarding o
+                               WHERE o.scope = 'cuenta' AND o.effective_at >= p_from
+                                 AND o.effective_at < p_to)),
+        'blocks', jsonb_build_object(
+            'opened', (SELECT count(*) FROM public.account_billing_block b
+                       WHERE b.blocked_at >= p_from AND b.blocked_at < p_to),
+            'closed', (SELECT count(*) FROM public.account_billing_block b
+                       WHERE b.unblocked_at >= p_from AND b.unblocked_at < p_to),
+            'open_now', (SELECT count(*) FROM public.account_billing_block b
+                         WHERE b.unblocked_at IS NULL)),
+        'conversion', jsonb_build_object(
+            'beta_accounts', (SELECT count(DISTINCT e.account_id) FROM public.plan_entitlement e
+                              WHERE e.source = 'beta'),
+            'beta_paid', (SELECT count(DISTINCT e.account_id) FROM public.plan_entitlement e
+                          WHERE e.source = 'beta'
+                            AND EXISTS (SELECT 1 FROM public.plan_entitlement p
+                                        WHERE p.account_id = e.account_id AND p.source = 'pago')),
+            'free_accounts', (SELECT count(*) FROM public.account x
+                              WHERE x.created_at >= p_from AND x.created_at < p_to
+                                AND NOT EXISTS (SELECT 1 FROM public.plan_entitlement e
+                                                WHERE e.account_id = x.id AND e.source = 'beta')),
+            'free_paid', (SELECT count(*) FROM public.account x
+                          WHERE x.created_at >= p_from AND x.created_at < p_to
+                            AND NOT EXISTS (SELECT 1 FROM public.plan_entitlement e
+                                            WHERE e.account_id = x.id AND e.source = 'beta')
+                            AND EXISTS (SELECT 1 FROM public.plan_entitlement p
+                                        WHERE p.account_id = x.id AND p.source = 'pago'))),
+        'funnel', (SELECT jsonb_object_agg(k.kind, coalesce(f.n, 0))
+                   FROM unnest(ARRAY['visit', 'diagnosis', 'signup', 'connected',
+                                     'checkout_started', 'paid']) AS k (kind)
+                   LEFT JOIN (SELECT e.kind, count(*) AS n FROM public.funnel_event e
+                              WHERE e.at >= p_from AND e.at < p_to GROUP BY e.kind) f
+                     ON f.kind = k.kind)
+    ) INTO result;
+    RETURN result;
+END
+$$;
+
+-- ---------------------------------------------------------------------------
 -- Privilegios. Primero se retira todo al rol (también lo que conceden los demás archivos
 -- de esquema, que no le conceden nada) y después se concede lo justo (sección 6.6).
 REVOKE ALL ON ALL TABLES IN SCHEMA public FROM fichaitor_admin;
@@ -1245,7 +1872,20 @@ GRANT EXECUTE ON FUNCTION
     admin_channel_links(text, uuid),
     admin_waitlist_totals(text),
     admin_users(text),
-    admin_audit_read(text, integer, bigint)
+    admin_audit_read(text, integer, bigint),
+    -- Paso 12.
+    admin_session_pending_user(text),
+    admin_session_username(text),
+    admin_account_overview(text, uuid),
+    admin_account_billing(text, uuid),
+    admin_billing_contact(text, uuid, text),
+    admin_billing_review(text),
+    admin_health_summary(text),
+    admin_grant_entitlement(text, uuid, text, integer, text, timestamptz, text, text),
+    admin_trim_entitlement(text, uuid, timestamptz, text),
+    admin_close_block(text, bigint, text),
+    admin_request_refund(text, text, integer, text, text),
+    admin_metrics(text, timestamptz, timestamptz)
 TO fichaitor_admin;
 
 -- ---------------------------------------------------------------------------

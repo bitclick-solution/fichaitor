@@ -237,11 +237,10 @@ services:
   # Manager, sin DNS y nunca en bitclick-network. admin.env no lleva nada de Stripe, Odoo,
   # SMTP ni Google (deploy.sh lo comprueba).
   # Se entra con: ssh -N -L 8090:127.0.0.1:8090 fichaitor-tunel@<vps> y http://localhost:8090.
-  # Perfil "backoffice" hasta que exista app.admin (paso 12): "up" no lo arranca todavía.
+  # El proceso, además, solo responde a Host localhost:8090 o 127.0.0.1:8090 (app/admin).
   fichaitor-admin:
     image: ${FICHAITOR_API_IMAGE:?Falta FICHAITOR_API_IMAGE. La fija deploy.sh}
     container_name: fichaitor-admin
-    profiles: ["backoffice"]
     command: ["python", "-m", "app.admin"]
     restart: unless-stopped
     env_file:
@@ -253,8 +252,13 @@ services:
         condition: service_healthy
     networks:
       - fichaitor-interna
+    # Dentro del contenedor el Host es 127.0.0.1:8090, que el proceso acepta.
     healthcheck:
-      disable: true
+      test: ["CMD", "python", "-c", "import sys,urllib.request; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8090/healthz', timeout=3).status == 200 else 1)"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 15s
     read_only: true
     tmpfs:
       - /tmp
@@ -281,6 +285,40 @@ services:
       - ${FICHAITOR_ENV_DIR:-.}/db.env
     environment:
       # Con POSTGRES_PASSWORD de db.env, el script compone la URL del propietario.
+      FICHAITOR_OWNER_DB_HOST: fichaitor-db
+      POSTGRES_USER: fichaitor
+      POSTGRES_DB: fichaitor
+    depends_on:
+      fichaitor-db:
+        condition: service_healthy
+    networks:
+      - fichaitor-interna
+    healthcheck:
+      disable: true
+    read_only: true
+    tmpfs:
+      - /tmp
+    <<: *endurecido
+    logging: *registro
+    deploy:
+      resources:
+        limits:
+          memory: 128M
+
+  # Personas del backoffice (scripts/admin_usuario.py: alta, restablecer y desactivar), en un
+  # contenedor de un solo uso con el rol propietario de la base, como fichaitor-baja. Solo
+  # entra db.env. Imprime el enlace de alta, nunca contraseñas. Solo con el perfil
+  # "herramientas":
+  #   docker compose run --rm fichaitor-admin-usuario alta --usuario ana --rol soporte
+  # Procedimiento en docs/despliegue.md, «Alta del primer usuario del backoffice».
+  fichaitor-admin-usuario:
+    image: ${FICHAITOR_API_IMAGE:?Falta FICHAITOR_API_IMAGE. La fija deploy.sh}
+    profiles: ["herramientas"]
+    entrypoint: ["python", "scripts/admin_usuario.py"]
+    restart: "no"
+    env_file:
+      - ${FICHAITOR_ENV_DIR:-.}/db.env
+    environment:
       FICHAITOR_OWNER_DB_HOST: fichaitor-db
       POSTGRES_USER: fichaitor
       POSTGRES_DB: fichaitor
