@@ -25,14 +25,14 @@ Lo que solo puedes hacer tú: cuentas, consolas, servidor, decisiones y pruebas 
 - [x] En el cliente OAuth de Fichaitor, añadir la URI de producción `https://fichaitor.es/api/v1/google/oauth/callback`, si no está.
 - [x] Volver a conectar en n8n las credenciales de Google del proyecto de Bitclick. Con la app en producción, el token nuevo ya no caduca a los 7 días; el antiguo sí.
 - [x] Decidir qué hacer con el proyecto nuevo de Google Cloud (`266363689710`), que Google rechazó por duplicado: borrarlo o dejarlo sin uso.
-- [ ] Clave de Places, cuotas por día en Google Cloud (APIs y servicios > Places API (New) > Cuotas): `SearchTextRequest per day` = 600 y `GetPlaceRequest per day` = 600; `per minute` de las dos = 30; el resto de cuotas de Places a 0 (no se usan).
-- [ ] Clave de Places, restricciones: solo «Places API (New)» y, en producción, solo la IP del VPS.
-- [ ] Alerta de presupuesto en Facturación (aviso, no tope): por ejemplo 50 € al mes.
+- [x] Clave de Places, cuotas por día en Google Cloud (APIs y servicios > Places API (New) > Cuotas): `SearchTextRequest per day` = 600 y `GetPlaceRequest per day` = 600; `per minute` de las dos = 30; el resto de cuotas de Places a 0 (no se usan).
+- [x] Clave de Places, restricciones: solo «Places API (New)» y, en producción, solo la IP del VPS.
+- [x] Alerta de presupuesto en Facturación (aviso, no tope): por ejemplo 50 € al mes.
 - [x] Revisar en GitHub que el entorno `production` solo admite la rama `main` y las etiquetas `v*`, y tiene revisores obligatorios (tú).
 
 ## Pruebas reales en local (`http://localhost:8080/app`)
 
-- [ ] Selector de negocio: cambiar entre Bitclick y PubliExpe y comprobar que cada una muestra sus reseñas, su opinión y sus festivos.
+- [x] Selector de negocio: cambiar entre Bitclick y PubliExpe y comprobar que cada una muestra sus reseñas, su opinión y sus festivos.
 - [ ] Telegram con dos negocios: los avisos llegan con el nombre del negocio. En PubliExpe, «Publicar» publica de verdad en la ficha de tu cliente.
 - [ ] Filtro por chat: vincular un segundo chat limitado a un solo negocio.
 - [ ] Baja de prueba: desconectar Google, recibir el código y el correo desde `avisos@` y restaurar con el enlace. Comprueba que, si respondes al correo, la respuesta va a `soporte@`.
@@ -55,6 +55,14 @@ Lo que solo puedes hacer tú: cuentas, consolas, servidor, decisiones y pruebas 
 
 - [ ] Gemini: seguir en AI Studio o pasar a Vertex AI en la UE (`eu`). En Vertex, `gemini-3.6-flash` se retira el 2026-11-19 y hay que usar `gemini-3.8-flash`. Pasos en `docs/despliegue.md`, «Gemini en Vertex AI».
 - [ ] Pasarela de pago para cuando acabe la beta: proveedor y fecha.
+
+## Cobro con Stripe y factura en Odoo (`docs/admin-facturacion.md`, sección 8)
+
+- [ ] Cuenta de Stripe de Bitclick: alta, verificación y modo de prueba. Pásame solo que está lista; las claves nunca por el chat.
+- [ ] Gestoría: confirmar los puntos marcados «(gestoría)» del documento, sobre todo la fecha de VERI\*FACTU y la serie de facturas de Fichaitor en Odoo.
+- [ ] Alta en el ROI (operadores intracomunitarios), para vender a la UE con NIF-IVA, y presentar el modelo 349 cuando toque.
+- [ ] Odoo de Bitclick: acceso para instalar el módulo puente `fichaitor_bridge` y el de VERI\*FACTU (`l10n_es_edi_verifactu`), primero en un entorno de pruebas.
+- [ ] Decidir si hay oferta para las cuentas de la beta al terminarla (cupón de un solo uso, porcentaje y fechas).
 
 ## Externo y legal
 

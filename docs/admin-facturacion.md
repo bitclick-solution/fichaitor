@@ -767,6 +767,21 @@ stripe trigger invoice.payment_failed
     3. Date de alta con `scripts/admin_usuario.py alta --rol propietario` y guarda tus códigos de recuperación fuera del ordenador.
 12. **Lanzamiento:** fija `launch_at` y `beta_ends_at` con 30 días de aviso como mínimo.
 
+## 9.0 Decisiones del propietario sobre las preguntas abiertas (2026-11-13)
+
+Mandan sobre las recomendaciones de la sección 9.
+
+| # | Pregunta | Decisión |
+|---|---|---|
+| 1 | Condiciones frente a P2 y P3 | Se aplica la recomendación: sin garantía de 14 días ni devoluciones (salvo excepción de Fichaitor) y el impago deja la cuenta en pausa hasta el pago. Lo redacta la sesión de interfaz |
+| 2 y 3 | Alcance y duración del bloqueo | **Toda la cuenta, incluida la ficha Gratis, y sin límite de tiempo**: queda bloqueada hasta que pague. No hay pérdida de plaza a los 30 días (se elimina `block_timeout`). Los datos se conservan mientras dure el bloqueo, con los plazos de retención de siempre si se da de baja |
+| 4 | Plaza sin ficha en la renovación | **No se cobra**: se cancela sola, avisándolo en el correo de T-30 |
+| 5 y 6 | 3DS pendiente y SEPA | **Solo tarjeta al lanzar** (con Apple Pay y Google Pay). Sin SEPA. Un 3DS sin completar cuenta como impago y bloquea |
+| 7 | Bizum | Después del lanzamiento, como plaza de pago manual, si funciona en el modo de prueba de Stripe |
+| 8 | Nombre de la ficha en la factura | **Sí**, y se dice en la política de privacidad |
+| 9 | Mercados | **España (península, Baleares, Canarias, Ceuta y Melilla) y la UE desde el inicio**, siempre con NIF o NIF-IVA. Antes de cobrar a la UE: alta en el ROI, modelo 349 y verificación en VIES |
+| 10 | Oferta para las cuentas beta | Sin decidir. Aviso de 30 días antes del fin de la beta |
+
 ## 9. Riesgos y preguntas abiertas
 
 Solo las que necesitan una decisión tuya, cada una con su recomendación.
