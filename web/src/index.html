@@ -167,13 +167,16 @@
       </h1>
       <div class="pie">
         <div class="promesa-hero" data-sube>
-          <p class="lead">Conecta tu ficha de Google Business Profile y mira en unos segundos cuántas reseñas tienes sin responder, qué festivos no tienen horario y qué ha cambiado Google sin avisarte.</p>
+          <p class="lead">Fichaitor te avisa de cada reseña nueva de tu ficha de Google con la respuesta ya escrita. La revisas y la publicas desde el chat, en un toque. Al conectar tu ficha ves en unos segundos cuántas tienes sin responder y qué festivos no tienen horario.</p>
           <p class="sec2">Fichaitor es un asistente para dueños de bares, restaurantes y otros negocios locales. No cambia nada en tu ficha sin tu confirmación.</p>
           <p class="sec2 hero-enlaces"><a href="#google">Qué hace Fichaitor con tu cuenta de Google</a> <a href="/privacidad/">Política de Privacidad</a></p>
         </div>
 <!--api-->
         <div class="entrada" id="entrada" data-sube>
-          <a class="btn grande" href="/api/v1/google/oauth/start">Conectar con Google <span class="fl" aria-hidden="true">→</span></a>
+          <form class="conectar" action="/api/v1/google/oauth/start" method="get">
+            <button class="btn grande" type="submit">Conectar con Google <span class="fl" aria-hidden="true">→</span></button>
+            <label class="optout"><input type="checkbox" name="commercial_optout" value="1"><span>No quiero recibir novedades ni ofertas de Fichaitor por correo. Los correos de servicio te llegarán igual.</span></label>
+          </form>
           <form class="captura" id="captura" novalidate>
             <label class="soltar sec" id="soltar" for="imagen">
               <input class="sr" id="imagen" name="image" type="file" accept="image/png,image/jpeg,image/webp">
@@ -313,6 +316,49 @@
   </div>
 </section>
 
+<!-- 3b. Especialista en sentimiento: solo lo que hace GET /api/v1/me/sentiment (docs/contrato-web-api.md) -->
+<section class="s oscuro senti" id="sentimiento" data-tema="oscuro">
+  <div class="in" data-sale>
+    <div class="caja dos">
+      <div>
+        <p class="antetitulo" data-sube>Agente de IA especialista en sentimiento</p>
+        <h2 class="cartel"><span class="ln"><span>Sabe qué</span></span><span class="ln"><span>dicen de</span></span><span class="ln"><span>tu negocio<span class="pt">.</span></span></span></h2>
+        <p class="lead" data-sube>Lee las reseñas de tu ficha de Google de los últimos 12 meses y te lo cuenta claro, en tu panel:</p>
+        <ul class="senti-lista" data-sube>
+          <li><b>Una nota de 0 a 100</b> y cómo cambia mes a mes.</li>
+          <li><b>Lo que más gusta y lo que más se repite como queja</b>, con cuántas reseñas lo mencionan.</li>
+          <li><b>Un resumen en una frase</b> de lo que piensan tus clientes y una mejora concreta para empezar.</li>
+          <li><b>Se pone al día solo</b> con 3 reseñas nuevas, con una de 1 o 2 estrellas o cada 30 días.</li>
+        </ul>
+        <p class="sec2 senti-limite" data-sube>Trabaja solo con las reseñas de tu ficha de Google: no adivina el futuro ni te compara con otros negocios.</p>
+      </div>
+      <div class="senti-panel" aria-hidden="true">
+        <p class="senti-cab"><b>Qué dicen de tu negocio</b><span>Bar La Esquina · Ejemplo ficticio</span></p>
+        <div class="senti-nota">
+          <p class="num">86<small>/100</small></p>
+          <p class="delta">+4 respecto al mes pasado</p>
+        </div>
+        <div class="senti-hist"><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i></div>
+        <p class="senti-resumen">A tus clientes les gusta sobre todo el trato del personal. La espera es la queja que más se repite.</p>
+        <div class="senti-temas">
+          <div>
+            <p class="t">Lo que más gusta</p>
+            <p><span>Trato del personal</span><b>7</b></p>
+            <p><span>Comida</span><b>5</b></p>
+            <p><span>Limpieza</span><b>2</b></p>
+          </div>
+          <div>
+            <p class="t">Lo que más se repite</p>
+            <p><span>Tiempo de espera</span><b>2</b></p>
+            <p><span>Precio</span><b>1</b></p>
+          </div>
+        </div>
+        <p class="senti-mejora"><b>Para empezar</b>Avisa a cada cliente del tiempo de espera previsto en cuanto llegue.</p>
+      </div>
+    </div>
+  </div>
+</section>
+
 <!-- 4. Promesa -->
 <section class="s rojo promesa" data-tema="rojo">
   <div class="pin" data-sale>
@@ -386,7 +432,7 @@
           <h3 class="rotulo">Pro</h3>
           <p class="precio">35 € <small>al año</small></p>
           <p>Web instalable, correo o Telegram</p>
-          <ul><li>Respuestas ilimitadas</li><li>Festivos y fechas clave</li></ul>
+          <ul><li>Respuestas ilimitadas: ninguna reseña sin contestar</li><li>Festivos y fechas clave</li></ul>
         </div>
         <div class="plan">
           <h3 class="rotulo">Pro+</h3>
@@ -407,7 +453,7 @@
     <div class="caja dos">
       <div>
         <h2 class="cartel"><span class="ln"><span>Entra</span></span><span class="ln"><span>el primero<span class="pt">.</span></span></span></h2>
-        <p class="lead" data-sube>Fichaitor está en pruebas y todavía no admite altas. Deja tu WhatsApp o tu correo y te avisamos el día que abra. Solo para eso.</p>
+        <p class="lead" data-sube>Ninguna reseña sin contestar, desde el primer día. Fichaitor está en pruebas y todavía no admite altas: deja tu WhatsApp o tu correo y te avisamos el día que abra. Solo para eso.</p>
       </div>
       <div data-sube>
         <form class="alta" id="alta" novalidate>
@@ -430,7 +476,7 @@
     <div class="caja dos">
       <div>
         <h2 class="cartel"><span class="ln"><span>Abrimos</span></span><span class="ln"><span>muy pronto<span class="pt">.</span></span></span></h2>
-        <p class="lead" data-sube>Fichaitor está en pruebas y todavía no admite altas. En unos días podrás apuntarte aquí para que te avisemos el día que abra.</p>
+        <p class="lead" data-sube>Ninguna reseña sin contestar, desde el primer día. Fichaitor está en pruebas y todavía no admite altas: en unos días podrás apuntarte aquí para que te avisemos el día que abra.</p>
       </div>
     </div>
 <!--/api-->
@@ -487,10 +533,13 @@
         <h3 class="rotulo">Lo que no se ve desde fuera</h3>
         <ul class="candados" id="res-candados"></ul>
         <p>Para comprobarlo, Fichaitor necesita que conectes tu ficha. Solo pide permiso para gestionar tu ficha de Google Business Profile.</p>
-        <div class="acc">
-          <a class="btn" href="/api/v1/google/oauth/start">Conectar con Google <span class="fl" aria-hidden="true">→</span></a>
-          <button class="btn sec" id="res-lista" type="button">Avísame cuando abra</button>
-        </div>
+        <form class="conectar" action="/api/v1/google/oauth/start" method="get">
+          <div class="acc">
+            <button class="btn" type="submit">Conectar con Google <span class="fl" aria-hidden="true">→</span></button>
+            <button class="btn sec" id="res-lista" type="button">Avísame cuando abra</button>
+          </div>
+          <label class="optout"><input type="checkbox" name="commercial_optout" value="1"><span>No quiero recibir novedades ni ofertas de Fichaitor por correo. Los correos de servicio te llegarán igual.</span></label>
+        </form>
         <p class="basica">La nota se calcula con reglas fijas sobre datos públicos. Es orientativa y no garantiza posiciones en Google.</p>
       </div>
     </div>
@@ -525,10 +574,13 @@
         <h3 class="rotulo">Con tu ficha conectada</h3>
         <ul class="candados" id="pr-candados"></ul>
         <p>Fichaitor te avisa de cada reseña nueva con la respuesta ya redactada. Tú la publicas con un toque.</p>
-        <div class="acc">
-          <a class="btn" href="/api/v1/google/oauth/start">Conectar con Google <span class="fl" aria-hidden="true">→</span></a>
-          <button class="btn sec" id="pr-lista" type="button">Avísame cuando abra</button>
-        </div>
+        <form class="conectar" action="/api/v1/google/oauth/start" method="get">
+          <div class="acc">
+            <button class="btn" type="submit">Conectar con Google <span class="fl" aria-hidden="true">→</span></button>
+            <button class="btn sec" id="pr-lista" type="button">Avísame cuando abra</button>
+          </div>
+          <label class="optout"><input type="checkbox" name="commercial_optout" value="1"><span>No quiero recibir novedades ni ofertas de Fichaitor por correo. Los correos de servicio te llegarán igual.</span></label>
+        </form>
       </div>
     </div>
   </div>

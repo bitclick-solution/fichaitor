@@ -102,6 +102,7 @@ BAJA = '''<section class="no-hay baja">
   </div>
   <div id="baja-hecho" hidden>
     <p class="lead" id="baja-hecho-texto" tabindex="-1">Hecho: no te enviaremos más comunicaciones comerciales. Seguirás recibiendo los correos necesarios de tu servicio.</p>
+    <p class="baja-nota">¿Te has equivocado? Puedes volver a activarlas en <a href="/app/#ajustes">Ajustes</a>, en tu panel.</p>
     <div class="acc">
       <a class="btn sec" href="/">Volver al inicio</a>
     </div>

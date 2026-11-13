@@ -490,3 +490,38 @@ footer.pie.s { min-height: 0; }
 .baja .btn { line-height: 1.15; text-align: left; max-width: 100%; }
 .baja .lead:focus { outline: none; }
 .baja-error { margin-top: 28px; max-width: 40em; color: var(--rojo-tinta); }
+
+/* ── Especialista en sentimiento (portada, sección 3b). Ejemplo fijo: solo lo que hace /me/sentiment. ── */
+.antetitulo { font-weight: 800; font-stretch: 112%; text-transform: uppercase; letter-spacing: 0.04em; font-size: 0.95rem; color: var(--rojo); margin: 0 0 18px; }
+.senti-lista { list-style: none; padding: 0; margin: 28px 0 0; border-top: 2px solid var(--papel); max-width: 36em; }
+.senti-lista li { padding: 12px 0; border-bottom: 2px solid var(--papel); color: var(--gris-claro); line-height: 1.4; }
+.senti-lista b { color: var(--papel); font-weight: 800; }
+.senti-limite { margin-top: 18px; font-size: 0.95rem; max-width: 34em; }
+.senti-panel { justify-self: center; width: min(100%, 440px); background: var(--papel); color: var(--tinta); padding: clamp(18px, 3vw, 28px); box-shadow: 14px 14px 0 var(--rojo); }
+.senti-cab { display: flex; flex-direction: column; gap: 2px; margin: 0 0 14px; }
+.senti-cab b { font-weight: 800; font-stretch: 112%; font-size: 1.15rem; }
+.senti-cab span { font-size: 0.85rem; color: var(--gris); }
+.senti-nota { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; flex-wrap: wrap; border-top: 2px solid var(--tinta); padding-top: 12px; }
+.senti-nota .num { font-weight: 900; font-stretch: 125%; font-size: clamp(3rem, 6vw, 4.5rem); line-height: 0.9; letter-spacing: -0.05em; margin: 0; }
+.senti-nota .num small { font-size: 0.32em; letter-spacing: 0; color: var(--gris); }
+.senti-nota .delta { margin: 0; font-weight: 700; font-size: 0.9rem; color: var(--rojo-tinta); }
+.senti-hist { display: flex; align-items: flex-end; gap: 6px; height: 56px; margin: 14px 0; }
+.senti-hist i { flex: 1; background: var(--tinta); height: 60%; }
+.senti-hist i:nth-child(1) { height: 52%; } .senti-hist i:nth-child(2) { height: 58%; } .senti-hist i:nth-child(3) { height: 55%; }
+.senti-hist i:nth-child(4) { height: 64%; } .senti-hist i:nth-child(5) { height: 70%; } .senti-hist i:nth-child(6) { height: 68%; }
+.senti-hist i:nth-child(7) { height: 78%; } .senti-hist i:nth-child(8) { height: 86%; background: var(--rojo); }
+.senti-resumen { margin: 0 0 14px; font-weight: 600; line-height: 1.4; }
+.senti-temas { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+.senti-temas p { display: flex; justify-content: space-between; gap: 8px; margin: 0; padding: 6px 0; border-top: 1px solid var(--hilo); font-size: 0.92rem; }
+.senti-temas p.t { border-top: 2px solid var(--tinta); font-weight: 800; font-size: 0.85rem; text-transform: uppercase; letter-spacing: 0.03em; }
+.senti-temas b { font-weight: 800; }
+.senti-mejora { margin: 16px 0 0; padding: 12px 14px; border-left: 4px solid var(--rojo); background: var(--papel-2); line-height: 1.4; }
+.senti-mejora b { display: block; font-size: 0.8rem; text-transform: uppercase; letter-spacing: 0.04em; margin-bottom: 2px; }
+@media (max-width: 420px) { .senti-temas { grid-template-columns: 1fr; } }
+
+/* Casilla de oposición a las comunicaciones comerciales junto a «Conectar con Google» (art. 21.2 LSSI). Sin marcar. */
+.conectar { display: grid; gap: 14px; }
+.conectar .btn.grande { width: 100%; }
+.optout { display: grid; grid-template-columns: 20px 1fr; gap: 10px; align-items: start; font-size: 0.9rem; line-height: 1.4; color: var(--gris); cursor: pointer; }
+.optout input { width: 20px; height: 20px; margin: 1px 0 0; accent-color: var(--rojo); border-radius: 0; }
+.oscuro .optout { color: var(--gris-claro); }

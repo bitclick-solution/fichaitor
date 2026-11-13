@@ -10,6 +10,23 @@
   const $$ = (s, r = document) => Array.from(r.querySelectorAll(s));
   const clamp = (v, a = 0, b = 1) => Math.min(b, Math.max(a, v));
 
+  /* ── Titular: rota entre los dos ganchos en cada visita, al azar y sin guardar nada ──
+     El HTML trae «Tu ficha de Google, al día.» (lo que ven los buscadores y quien no tiene JavaScript).
+     Se cambia antes de que las líneas entren en pantalla (su animación empieza a los 0,15 s). */
+  const TITULARES = [
+    ["Tu ficha", "de Google,", "al día"],
+    ["Ninguna", "reseña sin", "contestar"],
+  ];
+  const lineasH1 = $$("#h1 .ln > span");
+  if (lineasH1.length === 3) {
+    const elegido = TITULARES[Math.floor(Math.random() * TITULARES.length)];
+    lineasH1.forEach((linea, i) => {
+      // La última línea lleva el punto rojo en su propio <span class="pt">: se cambia solo el texto.
+      const texto = Array.from(linea.childNodes).find((n) => n.nodeType === Node.TEXT_NODE);
+      if (texto) texto.nodeValue = elegido[i];
+    });
+  }
+
   /* ── Scroll suave ── */
   let lenis = null;
   if (!reduce && window.Lenis) {
@@ -295,7 +312,7 @@
       document.documentElement.style.overflow = "";
       if (lenis) lenis.start();
       setTimeout(() => { panel.hidden = true; }, reduce ? 0 : 700);
-      (diag.hidden ? $("#entrada a") : entrada).focus({ preventScroll: true });
+      (diag.hidden ? $("#entrada .btn") : entrada).focus({ preventScroll: true });
     }
     $("#res-cerrar").addEventListener("click", cerrar);
     addEventListener("keydown", (e) => { if (e.key === "Escape" && !panel.hidden) cerrar(); });
