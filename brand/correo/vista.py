@@ -23,10 +23,19 @@ BLOQUES = {
 FECHA = "14 de noviembre de 2026 a las 12:16 (hora peninsular)"
 ENLACE = "https://fichaitor.es/app#restaurar=ejemplo-de-token-de-un-solo-uso"
 
+# Cobro: valores de ejemplo, ya formateados como los da el backend.
+FACTURACION = "https://fichaitor.es/app#facturacion"
+FICHA = "Bar La Parra"
+
 
 def b(nombre: str, **valores: str) -> str:
     """Un bloque con sus valores escapados."""
     return BLOQUES[nombre].substitute({k: html.escape(v, quote=True) for k, v in valores.items()})
+
+
+def datos(*filas: tuple[str, str]) -> list[str]:
+    """Una tabla de datos: una fila `dato` por par y el cierre `datos_fin`."""
+    return [b("dato", etiqueta=e, valor=v) for e, v in filas] + [BLOQUES["datos_fin"].substitute()]
 
 
 def correo(asunto: str, pre: str, titular: str, bloques: list[str], motivo: str) -> str:
@@ -134,6 +143,149 @@ CORREOS = {
             b("parrafo", texto="Gracias por haber probado Fichaitor."),
         ],
         "Te llega este correo porque se ha completado una baja que pediste.",
+    ),
+    # ── Cobro ──
+    "5-factura": correo(
+        "Tu factura de Fichaitor FCH/2027/00042",
+        f"Pro para {FICHA}, del 14/03/2027 al 13/03/2028. La factura va adjunta en PDF.",
+        "Tu factura",
+        [
+            b("parrafo", texto=f"Hemos cobrado 42,35 € por el plan Pro de {FICHA}. Te adjuntamos la factura en PDF."),
+            *datos(
+                ("Factura", "FCH/2027/00042"),
+                ("Fecha", "14 de marzo de 2027"),
+                ("Plan", "Pro"),
+                ("Ficha", FICHA),
+                ("Periodo", "Del 14/03/2027 al 13/03/2028"),
+                ("Total", "42,35 €"),
+            ),
+            b("boton", etiqueta="Ver Facturación", enlace=FACTURACION),
+            b(
+                "parrafo",
+                texto="Esta ficha se renovará sola al terminar el periodo, salvo que canceles la renovación desde Facturación. Te avisaremos 30 días antes.",
+            ),
+        ],
+        "Te llega este correo porque se ha cobrado un plan de pago de tu cuenta de Fichaitor.",
+    ),
+    "6-renovacion": correo(
+        f"Tu plan Pro de {FICHA} se renueva el 14 de marzo de 2028",
+        "Cobraremos 42,35 € con tu tarjeta. Si no quieres renovarlo, cancélalo antes.",
+        "Se renueva pronto",
+        [
+            b(
+                "parrafo",
+                texto=f"El 14 de marzo de 2028 se renueva por un año más el plan Pro de {FICHA}. Cobraremos 42,35 € con la tarjeta que tienes guardada.",
+            ),
+            *datos(("Ficha", FICHA), ("Plan", "Pro"), ("Renovación", "14 de marzo de 2028"), ("Total", "42,35 €")),
+            b(
+                "parrafo",
+                texto="Si quieres seguir, no tienes que hacer nada. Si no, cancela la renovación desde Facturación antes del 14 de marzo de 2028: "
+                "una vez cobrada, no se devuelve.",
+            ),
+            b("boton", etiqueta="Ir a Facturación", enlace=FACTURACION),
+        ],
+        "Te avisamos 30 días antes de cada renovación, como dicen las condiciones de uso.",
+    ),
+    "6-renovacion-sin-ficha": correo(
+        "Una plaza Pro no se renovará el 14 de marzo de 2028",
+        "No tiene ninguna ficha, así que no te la cobraremos.",
+        "Plaza sin ficha",
+        [
+            b(
+                "parrafo",
+                texto="Tienes una plaza del plan Pro (un año pagado) que se renueva el 14 de marzo de 2028, pero ahora no tiene ninguna ficha asignada.",
+            ),
+            b(
+                "parrafo",
+                texto="Si sigue así, no se renovará ni te la cobraremos. Si quieres conservarla, activa una ficha en ella antes del 14 de marzo de 2028: "
+                "entonces se renovará por 40,23 €.",
+            ),
+            b("boton", etiqueta="Ir a Facturación", enlace=FACTURACION),
+        ],
+        "Te avisamos 30 días antes de cada renovación, como dicen las condiciones de uso.",
+    ),
+    "7-pausa": correo(
+        "Tu cuenta de Fichaitor está en pausa",
+        "No hemos podido cobrar 42,35 €. En cuanto se pague, todo vuelve a funcionar.",
+        "Cuenta en pausa",
+        [
+            b(
+                "parrafo",
+                texto=f"No hemos podido cobrar 42,35 € del plan de {FICHA}: la tarjeta ha sido rechazada. Hasta que se pague, tu cuenta queda en pausa.",
+            ),
+            b("boton", etiqueta="Pagar ahora", enlace="https://fichaitor.es/app#pagar"),
+            b(
+                "parrafo",
+                texto="Durante la pausa, Fichaitor no lee ninguna de tus fichas, tampoco la del plan Gratis, no te envía avisos ni aplica cambios. "
+                "No se ha borrado nada y la pausa no borra nada: en cuanto se pague, todo vuelve a funcionar.",
+            ),
+            b(
+                "parrafo",
+                texto="Mientras tanto, en el panel puedes seguir usando Facturación, desactivar fichas, desvincular chats, desconectar Google o darte de baja.",
+            ),
+        ],
+        "Te llega este correo porque no se ha podido cobrar un plan de pago de tu cuenta de Fichaitor.",
+    ),
+    "8-pago-recibido": correo(
+        "Pago recibido: todo vuelve a funcionar",
+        "Fichaitor vuelve a leer tus fichas y a avisarte.",
+        "Todo en marcha",
+        [
+            b("parrafo", texto=f"Hemos recibido el pago del plan de {FICHA}. Tu cuenta ya no está en pausa."),
+            b("parrafo", texto="Fichaitor vuelve a leer tus fichas y a avisarte cuando haya algo que decidir. La factura te llega en otro correo."),
+            b("boton", etiqueta="Entrar en Fichaitor", enlace="https://fichaitor.es/app/"),
+        ],
+        "Te llega este correo porque se ha pagado un cobro pendiente de tu cuenta de Fichaitor.",
+    ),
+    "9-rectificativa": correo(
+        "Factura rectificativa de Fichaitor FCH-R/2027/00003",
+        "Rectifica la factura FCH/2027/00042. Va adjunta en PDF.",
+        "Factura rectificativa",
+        [
+            b("parrafo", texto="Hemos emitido una factura rectificativa de la factura FCH/2027/00042, por −42,35 €. Te la adjuntamos en PDF."),
+            *datos(("Rectificativa", "FCH-R/2027/00003"), ("Rectifica a", "FCH/2027/00042"), ("Total", "−42,35 €")),
+            b("parrafo", texto="Devolvemos el importe a la tarjeta con la que pagaste. Según tu banco, puede tardar unos días en verse."),
+        ],
+        "Te llega este correo porque hemos devuelto un importe cobrado en tu cuenta de Fichaitor.",
+    ),
+    "10-fin-beta": correo(
+        "La beta de Fichaitor termina el 1 de marzo de 2027",
+        "Elige el plan de cada ficha antes de esa fecha.",
+        "Fin de la beta",
+        [
+            b(
+                "parrafo",
+                texto="Gracias por probar Fichaitor durante la beta. Termina el 1 de marzo de 2027 y, desde ese día, las fichas de pago se cobran. "
+                "Elige en Facturación el plan de cada ficha.",
+            ),
+            b("boton", etiqueta="Elegir los planes", enlace=FACTURACION),
+            b(
+                "parrafo",
+                texto="Cada ficha de pago se cobra con tarjeta por años completos desde su activación y se renueva sola cada año, salvo que canceles "
+                "la renovación. Lo cobrado no se devuelve, así que elige con calma.",
+            ),
+        ],
+        "Te llega este correo porque tienes una cuenta de Fichaitor en la beta.",
+    ),
+    "10-fin-beta-oferta": correo(
+        "La beta de Fichaitor termina el 1 de marzo de 2027",
+        "Elige el plan de cada ficha antes de esa fecha.",
+        "Fin de la beta",
+        [
+            b(
+                "parrafo",
+                texto="Gracias por probar Fichaitor durante la beta. Termina el 1 de marzo de 2027 y, desde ese día, las fichas de pago se cobran. "
+                "Elige en Facturación el plan de cada ficha.",
+            ),
+            b("destacado", texto="Texto de ejemplo de la oferta para las cuentas de la beta, todavía sin decidir."),
+            b("boton", etiqueta="Elegir los planes", enlace=FACTURACION),
+            b(
+                "parrafo",
+                texto="Cada ficha de pago se cobra con tarjeta por años completos desde su activación y se renueva sola cada año, salvo que canceles "
+                "la renovación. Lo cobrado no se devuelve, así que elige con calma.",
+            ),
+        ],
+        "Te llega este correo porque tienes una cuenta de Fichaitor en la beta.",
     ),
 }
 

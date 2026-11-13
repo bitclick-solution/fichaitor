@@ -7,7 +7,7 @@ Plantillas con la marca para los correos automáticos que envía el backend. Reg
 | Archivo | Qué es |
 |---|---|
 | `base.html` | El marco: símbolo «F.», caja con borde de tinta sobre papel, titular con el punto rojo y pie legal. Variables: `${asunto}`, `${preencabezado}`, `${titular}`, `${contenido}`, `${motivo}` |
-| `bloques.html` | Las piezas del cuerpo: `parrafo` (`${texto}`), `codigo` (`${codigo}`), `boton` (`${enlace}`, `${etiqueta}`) y `aviso` (`${texto}`) |
+| `bloques.html` | Las piezas del cuerpo: `parrafo` (`${texto}`), `codigo` (`${codigo}`), `boton` (`${enlace}`, `${etiqueta}`), `aviso` (`${texto}`), `dato` (`${etiqueta}`, `${valor}`: una fila de una tabla de datos), `datos_fin` (sin variables: cierra la tabla de datos) y `destacado` (`${texto}`: un recuadro sin alarma) |
 | `vista.py` | Genera en `vista/` una página por correo con datos de ejemplo, para revisarlos en el navegador. Rellena las plantillas igual que debe hacerlo el backend |
 
 ## Cómo se usan
@@ -37,7 +37,7 @@ Plantillas con la marca para los correos automáticos que envía el backend. Reg
 - Sin imágenes, ni la del logo: muchos clientes de correo las bloquean y, servidas desde nuestro dominio, dejarían rastro de apertura en el registro. El símbolo se dibuja con una celda.
 - Sin fuentes web. «Archivo Black» se usa si está instalada; si no, Arial Black y Arial.
 - Una sola acción por correo, el código o el botón, y arriba: como mucho, detrás de un párrafo que diga qué se pidió.
-- Nada obtenido de Google en el correo: ni reseñas, ni cifras, ni el nombre del negocio.
+- Nada obtenido de Google en el correo: ni reseñas, ni cifras, ni el nombre del negocio. **Excepción:** los correos del cobro llevan el nombre de la ficha (`${ficha}`), solo para identificar qué se cobra, como la factura. Así lo dice la política de privacidad.
 - El código nunca va en el asunto ni en el preencabezado: se ven en las notificaciones del móvil.
 
 ## Los correos
@@ -175,4 +175,238 @@ Hemos retirado el acceso a tu cuenta de Google. Lo obtenido de Google se borrar�
 Si quieres volver, conecta tu ficha de nuevo en fichaitor.es.
 
 Te llega este correo porque se ha completado una baja que pediste.
+```
+
+## Correos del cobro
+
+Los envía el worker al cliente, desde `avisos@` y con `Reply-To` a `soporte@`, como los de la baja. Decisiones del propietario en `docs/admin-facturacion.md` (1.1, 9.0 y 9.0.1): cada ficha de pago se cobra por años completos desde su activación y se renueva sola en su fecha; solo con tarjeta; sin devoluciones salvo excepción; una plaza sin ficha no se renueva ni se cobra; si un cobro falla, toda la cuenta queda en pausa hasta el pago, sin plazo de gracia, y la pausa no borra nada.
+
+Todas las variables llegan **ya formateadas** y se escapan como las demás:
+
+| Variable | Ejemplo |
+|---|---|
+| `${numero}`, `${numero_original}` | `FCH/2027/00042` (número de Odoo) |
+| `${fecha}`, `${fecha_renovacion}`, `${fecha_fin}` | `14 de marzo de 2027` (sin hora) |
+| `${importe}` | `42,35 €` (total con IVA; en Canarias, Ceuta y Melilla, sin IVA) |
+| `${plan}` | `Pro` o `Pro WhatsApp` |
+| `${ficha}` | `Bar La Parra` |
+| `${periodo}` | `del 14/03/2027 al 13/03/2028` |
+| `${motivo}` | `la tarjeta ha sido rechazada` o `falta confirmar el pago con tu banco` (en minúscula, sin punto final) |
+| `${oferta}` | Una o dos frases, con su punto final |
+| `${enlace}` | URL absoluta de la configuración, como en la baja: Facturación (`https://fichaitor.es/app#facturacion`), el pago pendiente o el panel |
+
+Las tablas de datos son filas `dato` seguidas de un `datos_fin`. En texto plano, cada fila es `Etiqueta: valor`.
+
+### 5. Factura emitida (`invoice_issued`)
+
+Tras cada cobro, con la factura de Odoo **adjunta en PDF**.
+
+| Campo | Valor |
+|---|---|
+| Asunto | Tu factura de Fichaitor ${numero} |
+| Preencabezado | ${plan} para ${ficha}, ${periodo}. La factura va adjunta en PDF. |
+| Titular | Tu factura |
+| Cuerpo | `parrafo`: «Hemos cobrado ${importe} por el plan ${plan} de ${ficha}. Te adjuntamos la factura en PDF.» · `dato` «Factura» / ${numero} · `dato` «Fecha» / ${fecha} · `dato` «Plan» / ${plan} · `dato` «Ficha» / ${ficha} · `dato` «Periodo» / ${periodo} (con la primera letra en mayúscula: «Del 14/03/2027 al 13/03/2028») · `dato` «Total» / ${importe} · `datos_fin` · `boton`: «Ver Facturación», ${enlace} · `parrafo`: «Esta ficha se renovará sola al terminar el periodo, salvo que canceles la renovación desde Facturación. Te avisaremos 30 días antes.» |
+| Motivo (pie) | Te llega este correo porque se ha cobrado un plan de pago de tu cuenta de Fichaitor. |
+
+En `dato` «Periodo», el valor empieza en mayúscula. Si `${periodo}` llega en minúscula, pon en mayúscula solo su primera letra al rellenar la fila; en el párrafo y en el preencabezado va tal cual.
+
+Texto plano:
+
+```text
+TU FACTURA
+
+Hemos cobrado ${importe} por el plan ${plan} de ${ficha}. Te adjuntamos la factura en PDF.
+
+Factura: ${numero}
+Fecha: ${fecha}
+Plan: ${plan}
+Ficha: ${ficha}
+Periodo: ${periodo}
+Total: ${importe}
+
+Ver Facturación: ${enlace}
+
+Esta ficha se renovará sola al terminar el periodo, salvo que canceles la renovación desde Facturación. Te avisaremos 30 días antes.
+
+Te llega este correo porque se ha cobrado un plan de pago de tu cuenta de Fichaitor.
+```
+
+### 6. Aviso de renovación (`renewal_notice` y `renewal_notice_unassigned`)
+
+30 días antes de la renovación de cada plaza. `${importe}` es el precio congelado en ese aviso, con IVA. La variante `renewal_notice_unassigned` es para una plaza sin ficha asignada: no se renovará ni se cobrará.
+
+| Campo | Con ficha | Sin ficha |
+|---|---|---|
+| Asunto | Tu plan ${plan} de ${ficha} se renueva el ${fecha_renovacion} | Una plaza ${plan} no se renovará el ${fecha_renovacion} |
+| Preencabezado | Cobraremos ${importe} con tu tarjeta. Si no quieres renovarlo, cancélalo antes. | No tiene ninguna ficha, así que no te la cobraremos. |
+| Titular | Se renueva pronto | Plaza sin ficha |
+| Motivo (pie) | Te avisamos 30 días antes de cada renovación, como dicen las condiciones de uso. | Igual |
+
+Cuerpo con ficha, en este orden:
+
+1. `parrafo`: «El ${fecha_renovacion} se renueva por un año más el plan ${plan} de ${ficha}. Cobraremos ${importe} con la tarjeta que tienes guardada.»
+2. `dato` «Ficha» / ${ficha} · `dato` «Plan» / ${plan} · `dato` «Renovación» / ${fecha_renovacion} · `dato` «Total» / ${importe} · `datos_fin`
+3. `parrafo`: «Si quieres seguir, no tienes que hacer nada. Si no, cancela la renovación desde Facturación antes del ${fecha_renovacion}: una vez cobrada, no se devuelve.»
+4. `boton`: «Ir a Facturación», ${enlace}
+
+Cuerpo sin ficha, en este orden:
+
+1. `parrafo`: «Tienes una plaza del plan ${plan} (un año pagado) que se renueva el ${fecha_renovacion}, pero ahora no tiene ninguna ficha asignada.»
+2. `parrafo`: «Si sigue así, no se renovará ni te la cobraremos. Si quieres conservarla, activa una ficha en ella antes del ${fecha_renovacion}: entonces se renovará por ${importe}.»
+3. `boton`: «Ir a Facturación», ${enlace}
+
+Texto plano (con ficha):
+
+```text
+SE RENUEVA PRONTO
+
+El ${fecha_renovacion} se renueva por un año más el plan ${plan} de ${ficha}. Cobraremos ${importe} con la tarjeta que tienes guardada.
+
+Ficha: ${ficha}
+Plan: ${plan}
+Renovación: ${fecha_renovacion}
+Total: ${importe}
+
+Si quieres seguir, no tienes que hacer nada. Si no, cancela la renovación desde Facturación antes del ${fecha_renovacion}: una vez cobrada, no se devuelve.
+
+Ir a Facturación: ${enlace}
+
+Te avisamos 30 días antes de cada renovación, como dicen las condiciones de uso.
+```
+
+Texto plano (sin ficha):
+
+```text
+PLAZA SIN FICHA
+
+Tienes una plaza del plan ${plan} (un año pagado) que se renueva el ${fecha_renovacion}, pero ahora no tiene ninguna ficha asignada.
+
+Si sigue así, no se renovará ni te la cobraremos. Si quieres conservarla, activa una ficha en ella antes del ${fecha_renovacion}: entonces se renovará por ${importe}.
+
+Ir a Facturación: ${enlace}
+
+Te avisamos 30 días antes de cada renovación, como dicen las condiciones de uso.
+```
+
+### 7. Cuenta en pausa (`billing_blocked`)
+
+Cuando un cobro falla o no se completa. Sin alarma: dice qué ha pasado, cómo se arregla y qué sigue disponible.
+
+| Campo | Valor |
+|---|---|
+| Asunto | Tu cuenta de Fichaitor está en pausa |
+| Preencabezado | No hemos podido cobrar ${importe}. En cuanto se pague, todo vuelve a funcionar. |
+| Titular | Cuenta en pausa |
+| Motivo (pie) | Te llega este correo porque no se ha podido cobrar un plan de pago de tu cuenta de Fichaitor. |
+
+Cuerpo, en este orden:
+
+1. `parrafo`: «No hemos podido cobrar ${importe} del plan de ${ficha}: ${motivo}. Hasta que se pague, tu cuenta queda en pausa.»
+2. `boton`: «Pagar ahora», ${enlace}
+3. `parrafo`: «Durante la pausa, Fichaitor no lee ninguna de tus fichas, tampoco la del plan Gratis, no te envía avisos ni aplica cambios. No se ha borrado nada y la pausa no borra nada: en cuanto se pague, todo vuelve a funcionar.»
+4. `parrafo`: «Mientras tanto, en el panel puedes seguir usando Facturación, desactivar fichas, desvincular chats, desconectar Google o darte de baja.»
+
+Texto plano:
+
+```text
+CUENTA EN PAUSA
+
+No hemos podido cobrar ${importe} del plan de ${ficha}: ${motivo}. Hasta que se pague, tu cuenta queda en pausa.
+
+Pagar ahora: ${enlace}
+
+Durante la pausa, Fichaitor no lee ninguna de tus fichas, tampoco la del plan Gratis, no te envía avisos ni aplica cambios. No se ha borrado nada y la pausa no borra nada: en cuanto se pague, todo vuelve a funcionar.
+
+Mientras tanto, en el panel puedes seguir usando Facturación, desactivar fichas, desvincular chats, desconectar Google o darte de baja.
+
+Te llega este correo porque no se ha podido cobrar un plan de pago de tu cuenta de Fichaitor.
+```
+
+### 8. Pago recibido (`billing_unblocked`)
+
+Cuando se paga lo pendiente y la pausa termina. La factura de ese cobro llega aparte (`invoice_issued`).
+
+| Campo | Valor |
+|---|---|
+| Asunto | Pago recibido: todo vuelve a funcionar |
+| Preencabezado | Fichaitor vuelve a leer tus fichas y a avisarte. |
+| Titular | Todo en marcha |
+| Cuerpo | `parrafo`: «Hemos recibido el pago del plan de ${ficha}. Tu cuenta ya no está en pausa.» · `parrafo`: «Fichaitor vuelve a leer tus fichas y a avisarte cuando haya algo que decidir. La factura te llega en otro correo.» · `boton`: «Entrar en Fichaitor», ${enlace} |
+| Motivo (pie) | Te llega este correo porque se ha pagado un cobro pendiente de tu cuenta de Fichaitor. |
+
+Texto plano:
+
+```text
+TODO EN MARCHA
+
+Hemos recibido el pago del plan de ${ficha}. Tu cuenta ya no está en pausa.
+
+Fichaitor vuelve a leer tus fichas y a avisarte cuando haya algo que decidir. La factura te llega en otro correo.
+
+Entrar en Fichaitor: ${enlace}
+
+Te llega este correo porque se ha pagado un cobro pendiente de tu cuenta de Fichaitor.
+```
+
+### 9. Factura rectificativa (`credit_note_issued`)
+
+Solo en el caso excepcional de un reembolso, con la rectificativa de Odoo **adjunta en PDF**. Sin botón.
+
+| Campo | Valor |
+|---|---|
+| Asunto | Factura rectificativa de Fichaitor ${numero} |
+| Preencabezado | Rectifica la factura ${numero_original}. Va adjunta en PDF. |
+| Titular | Factura rectificativa |
+| Cuerpo | `parrafo`: «Hemos emitido una factura rectificativa de la factura ${numero_original}, por ${importe}. Te la adjuntamos en PDF.» · `dato` «Rectificativa» / ${numero} · `dato` «Rectifica a» / ${numero_original} · `dato` «Total» / ${importe} · `datos_fin` · `parrafo`: «Devolvemos el importe a la tarjeta con la que pagaste. Según tu banco, puede tardar unos días en verse.» |
+| Motivo (pie) | Te llega este correo porque hemos devuelto un importe cobrado en tu cuenta de Fichaitor. |
+
+Texto plano:
+
+```text
+FACTURA RECTIFICATIVA
+
+Hemos emitido una factura rectificativa de la factura ${numero_original}, por ${importe}. Te la adjuntamos en PDF.
+
+Rectificativa: ${numero}
+Rectifica a: ${numero_original}
+Total: ${importe}
+
+Devolvemos el importe a la tarjeta con la que pagaste. Según tu banco, puede tardar unos días en verse.
+
+Te llega este correo porque hemos devuelto un importe cobrado en tu cuenta de Fichaitor.
+```
+
+### 10. Fin de la beta (`beta_ending`)
+
+30 días antes de que termine la beta. `${oferta}` es **opcional**: si hay oferta para las cuentas beta, se añade el bloque `destacado` entre el primer párrafo y el botón; si no, no se añade nada.
+
+| Campo | Valor |
+|---|---|
+| Asunto | La beta de Fichaitor termina el ${fecha_fin} |
+| Preencabezado | Elige el plan de cada ficha antes de esa fecha. |
+| Titular | Fin de la beta |
+| Motivo (pie) | Te llega este correo porque tienes una cuenta de Fichaitor en la beta. |
+
+Cuerpo, en este orden:
+
+1. `parrafo`: «Gracias por probar Fichaitor durante la beta. Termina el ${fecha_fin} y, desde ese día, las fichas de pago se cobran. Elige en Facturación el plan de cada ficha.»
+2. `destacado`: «${oferta}» (solo si hay oferta)
+3. `boton`: «Elegir los planes», ${enlace}
+4. `parrafo`: «Cada ficha de pago se cobra con tarjeta por años completos desde su activación y se renueva sola cada año, salvo que canceles la renovación. Lo cobrado no se devuelve, así que elige con calma.»
+
+Texto plano (la línea de la oferta y la línea en blanco que la sigue solo van si hay oferta):
+
+```text
+FIN DE LA BETA
+
+Gracias por probar Fichaitor durante la beta. Termina el ${fecha_fin} y, desde ese día, las fichas de pago se cobran. Elige en Facturación el plan de cada ficha.
+
+${oferta}
+
+Elegir los planes: ${enlace}
+
+Cada ficha de pago se cobra con tarjeta por años completos desde su activación y se renueva sola cada año, salvo que canceles la renovación. Lo cobrado no se devuelve, así que elige con calma.
+
+Te llega este correo porque tienes una cuenta de Fichaitor en la beta.
 ```
