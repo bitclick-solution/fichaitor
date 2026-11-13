@@ -881,3 +881,20 @@ Todas consultadas el 2026-11-13. Las del BOE y la AEAT no se pudieron abrir con 
 - `D:\PROYECTOS\BITCLICK\agente-gbp\app\adapters\worker_store\postgres.py` y `D:\PROYECTOS\BITCLICK\agente-gbp\app\adapters\conversation_store\postgres.py` (el bloqueo en el worker y en la conversación)
 - `D:\PROYECTOS\BITCLICK\agente-gbp\scripts\baja_manual.py` (la transacción que pasa a `fichaitor_email_offboarding`)
 - `D:\PROYECTOS\BITCLICK\agente-gbp\deploy\docker-compose.prod.yml` y `D:\PROYECTOS\BITCLICK\agente-gbp\deploy\init-roles.sh` (los procesos nuevos, el puerto del túnel y los usuarios de la base)
+
+## Anexo: integración pendiente del paso 5 (esquema del backoffice, 2026-11-13)
+
+`db/schema_admin.sql` está hecho y probado (78 pruebas en una base propia), pero aún no se aplica en ningún sitio. Lo integra el paso 2 o el 11:
+
+1. `db/schema.sql`: añadir `fichaitor_admin` y `fichaitor_billing` a las dos listas del bloque `REVOKE TEMPORARY` (M6).
+2. `db/dev-init.sql`: `fichaitor_admin NOLOGIN` y `fichaitor_admin_dev LOGIN PASSWORD 'dev' IN ROLE fichaitor_admin` (bloque comentado al final de `schema_admin.sql`).
+3. `scripts/preparar_bd_pruebas.sh`: aplicar `db/schema_admin.sql` el último, después de `schema_billing.sql`; variable opcional `FICHAITOR_TEST_ADMIN_URL`.
+4. `tests/conftest.py`: añadir `FICHAITOR_TEST_ADMIN_URL` a la guardia `_test`; después, el fixture de `tests/test_admin_schema_postgres.py` deja de aplicar el esquema él mismo.
+5. `docker-compose.yml`: montar `db/schema_admin.sql` en `initdb` como último archivo.
+6. `deploy/init-roles.sh`: usuario `fichaitor_admin_prod IN ROLE fichaitor_admin`, sin `TEMPORARY`; volver a aplicar `schema_admin.sql` después.
+7. `deploy/deploy.sh`: aplicar `schema_admin.sql` el último (concede las tablas de cobro que encuentre; si se aplica antes, basta con reaplicarlo).
+8. Paso 2 o 12, cuando existan las tablas de cobro: `admin_grant_entitlement`, `admin_request_refund`, cerrar un bloqueo (rol propietario), las funciones de finanzas con dirección e `invoice_email`, y métricas y embudo. Mismo patrón: `admin_actor`, fila en `admin_audit_write` y `GRANT EXECUTE`.
+9. Paso 13: purga de `admin_audit_log` a los 2 años (el disparador ya lo permite; falta quién la hace).
+10. Paso 13: `scripts/baja_manual.py` pasa a llamar a `fichaitor_email_offboarding(NULL, …)`, con `p_immediate = true` para `--inmediata`.
+
+Límite asumido: la contraseña y el TOTP se comprueban en el proceso `fichaitor-admin` (que tiene la pimienta y la clave del TOTP). Si ese proceso se compromete, puede suplantar a cualquier persona del backoffice; la base sigue impidiendo ver tokens, correos y la lista de espera, crear personas o cambiar roles, reutilizar un paso TOTP y borrar o leer el registro de auditoría.
