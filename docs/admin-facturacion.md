@@ -911,3 +911,19 @@ Todas consultadas el 2026-11-13. Las del BOE y la AEAT no se pudieron abrir con 
 10. Paso 13: `scripts/baja_manual.py` pasa a llamar a `fichaitor_email_offboarding(NULL, …)`, con `p_immediate = true` para `--inmediata`.
 
 Límite asumido: la contraseña y el TOTP se comprueban en el proceso `fichaitor-admin` (que tiene la pimienta y la clave del TOTP). Si ese proceso se compromete, puede suplantar a cualquier persona del backoffice; la base sigue impidiendo ver tokens, correos y la lista de espera, crear personas o cambiar roles, reutilizar un paso TOTP y borrar o leer el registro de auditoría.
+
+## Anexo: precios, descuentos y ofertas desde el backoffice (petición del propietario, 2026-11-13)
+
+**Decidido, a construir después del backoffice básico:**
+
+1. **Precios y descuento por volumen editables** desde el backoffice (rol propietario, con TOTP repetido y auditoría): precio de la primera ficha y de las siguientes de cada plan, o el porcentaje por volumen. Hoy están fijos en `app/domain/plans.py` y en los precios de Stripe (`lookup_key`).
+   - Un cambio crea **precios nuevos** en Stripe (los precios de Stripe no se editan) y mueve los `lookup_key` a los nuevos; el catálogo antiguo queda archivado.
+   - Las plazas ya contratadas no cambian hasta su renovación, y su precio nuevo se comunica en el aviso de T-30 (cláusula 7 de las condiciones).
+   - La web no guarda cifras: todo sale de `pricing`, que leerá la tabla de precios vigente.
+2. **Ofertas con inicio y fin** (`starts_at`, `ends_at`): descuento sobre un plan (porcentaje o precio fijo), para altas nuevas, con un nombre visible. Mientras está vigente, `pricing` devuelve el precio con la oferta y la web lo muestra (precio tachado y nombre de la oferta). Al terminar, vuelve el precio normal sin desplegar nada.
+   - En Stripe: cupón o precio específico aplicado en el Checkout; se decide en su diseño.
+   - Reglas por decidir en el diseño: si la oferta dura solo el primer año o también las renovaciones, si se acumula con el 5 % por volumen y si aplica a las cuentas beta en su ventana.
+
+**Idea por madurar (no decidida): avisos dentro del panel** (`/app`), creados desde el backoffice, por ejemplo para invitar a una newsletter o anunciar una novedad.
+- Opinión del PM: útil para anunciar novedades y pedir opiniones durante la beta. Con condiciones: que se pueda cerrar y no vuelva a salir, con un tope de frecuencia, nunca bloqueante, y sin datos personales en el texto. Si se usa para una newsletter, el alta tiene que ser un consentimiento expreso aparte (casilla sin marcar, con su base y su texto en la política), nunca implícito al cerrar el aviso.
+- Alternativa más sencilla: un banner discreto en lugar de un modal.

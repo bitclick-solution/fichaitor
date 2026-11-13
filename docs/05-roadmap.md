@@ -112,6 +112,12 @@ Orden propuesto, a confirmar con lo que pidan los clientes:
 7. Carta del restaurante a partir de una foto.
 8. Varias fichas por cuenta. **Hecho** (2026-11-12): pasos 1 a 9 de [multinegocio.md](multinegocio.md).
 
+## Backoffice: precios y ofertas (decidido 2026-11-13)
+
+- Precios y descuento por volumen editables desde el backoffice.
+- Ofertas con inicio y fin que cambian el precio que ve la web mientras están vigentes.
+- Por madurar: avisos dentro del panel creados desde el backoffice (ver `docs/admin-facturacion.md`, anexo de precios y ofertas).
+
 ## Ideas para después del MVP
 
 ### Programa "trae 3 y el tuyo es gratis"
