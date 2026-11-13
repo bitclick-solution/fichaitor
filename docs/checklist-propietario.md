@@ -54,7 +54,7 @@ Lo que solo puedes hacer tú: cuentas, consolas, servidor, decisiones y pruebas 
 
 ## Beta y lanzamiento (decidido 2026-11-13)
 
-- [x] Beta gratis hasta la v1; desde la v1, 30 días de prueba (una sola por ficha).
+- [x] Beta gratis hasta la v1. Al lanzar la v1, solo las cuentas beta existentes tienen 30 días más para elegir plan; las cuentas nuevas pagan desde el primer día, sin prueba.
 - [ ] Dos bares entran en la beta: preparar su alta cuando esté el despliegue completo.
 - [ ] Despliegue completo cuando todo esté probado en local.
 
