@@ -135,7 +135,7 @@ def test_me_has_the_shape_of_the_multinegocio_contract():
     world = World()
     client = world.owner("ana", [profile(1, "A"), profile(2, "B")])
     bar, shop = world.ids(client)
-    assert activate(client, bar).status_code == 200
+    assert activate(client, bar, "gratis").status_code == 200
     world.store.put_summary("ana", "locations/1", summary(unanswered_count=3))
     world.key_date("ana", bar, (NOW + timedelta(days=5)).date().isoformat())
     world.key_date("ana", bar, (NOW - timedelta(days=5)).date().isoformat())  # past
@@ -149,6 +149,7 @@ def test_me_has_the_shape_of_the_multinegocio_contract():
         "pending_deletion",
         "plans",
         "pricing",
+        "billing",
     }
     active, inactive = body["locations"]
     assert set(active) == {
@@ -165,7 +166,7 @@ def test_me_has_the_shape_of_the_multinegocio_contract():
         "features",
     }
     assert (active["id"], active["active"], active["plan"]) == (bar, True, "gratis")
-    assert active["usage"] == {"ai_replies": {"used": 0, "limit": 25}}
+    assert active["usage"] == {"ai_replies": {"used": 0, "limit": 25, "lifetime": True}}
     assert active["features"] == {"key_dates": False, "whatsapp": False}
     assert active["status"] == "ok" and active["active_since"].endswith("Z")
     assert active["pending"] == {"reviews": 3, "key_dates": 1}
@@ -200,6 +201,12 @@ def test_me_has_the_shape_of_the_multinegocio_contract():
         "if_activate": {"pro": 3500, "pro_whatsapp": 5900},
         "if_deactivate": {bar: 0},
     }
+    assert body["billing"] == {
+        "profile_complete": False,
+        "blocked": None,
+        "seats": [],
+        "new_seat_price": {"pro": 3500, "pro_whatsapp": 5900},
+    }
 
 
 def test_an_active_profile_without_a_summary_is_pending_and_counts_nothing():
@@ -228,7 +235,9 @@ def test_a_new_account_has_the_beta_room_and_nothing_to_pay():
 # --- activation -------------------------------------------------------------
 
 
-def test_activation_without_a_plan_takes_free_then_pro_and_asks_for_a_sync():
+def test_activation_without_a_plan_takes_pro_in_the_beta_and_asks_for_a_sync():
+    # Paywall (2026-11-13): while nothing is charged, an activation without a plan takes
+    # Pro while the beta entitlement has room, then Gratis (test_paywall.py).
     world = World()
     client = world.owner("ana", [profile(n) for n in range(1, 4)])
     first, second, _ = world.ids(client)
@@ -236,15 +245,15 @@ def test_activation_without_a_plan_takes_free_then_pro_and_asks_for_a_sync():
     r = client.post(activation(first), headers=HEADER)  # no body at all
     assert r.status_code == 200
     assert r.json() == client.get(ME).json()
-    assert by_id(r.json())[first]["plan"] == "gratis"
+    assert by_id(r.json())[first]["plan"] == "pro"
     assert world.synced() == ["locations/1"]
 
     body = activate(client, second).json()
     assert by_id(body)[second]["plan"] == "pro"
-    assert body["pricing"]["total"] == 3500
-    assert body["pricing"]["if_activate"] == {"pro": 6825, "pro_whatsapp": 9225}
-    assert body["pricing"]["if_deactivate"] == {first: 3500, second: 0}
-    assert body["plans"]["available"] == {"pro": 2, "pro_whatsapp": 0}
+    assert body["pricing"]["total"] == 6825
+    assert body["pricing"]["if_activate"] == {"pro": 10150, "pro_whatsapp": 12550}
+    assert body["pricing"]["if_deactivate"] == {first: 3500, second: 3500}
+    assert body["plans"]["available"] == {"pro": 1, "pro_whatsapp": 0}
     assert world.synced() == ["locations/1", "locations/2"]
 
 
@@ -252,7 +261,7 @@ def test_activating_an_active_profile_with_another_plan_changes_its_plan():
     world = World()
     client = world.owner("ana", [profile(1)])
     (bar,) = world.ids(client)
-    since = by_id(activate(client, bar).json())[bar]["active_since"]
+    since = by_id(activate(client, bar, "gratis").json())[bar]["active_since"]
     body = activate(client, bar, "pro").json()
     assert by_id(body)[bar]["plan"] == "pro"
     assert by_id(body)[bar]["active_since"] == since
@@ -270,8 +279,11 @@ def test_past_the_limit_is_402_and_nothing_changes():
     before = client.get(ME).json()
     r = activate(client, ids[4])
     assert r.status_code == 402
-    assert isinstance(r.json()["detail"], str) and "code" not in r.json()
-    r = activate(client, ids[0], "pro")  # the 3 Pro of the beta are taken
+    # The paywall: no_seat, with the seat to buy (nothing to buy during the beta).
+    assert r.json()["code"] == "no_seat" and r.json()["charging"] is False
+    # No paid seat yet (the beta ones are not): a new one would be the first, 35,00.
+    assert r.json()["offer"] == {"plan": "pro", "price": 3500}
+    r = activate(client, ids[3], "pro")  # the 3 Pro of the beta are taken
     assert r.status_code == 402
     assert activate(client, ids[0], "pro_whatsapp").status_code == 402
     assert client.get(ME).json() == before
@@ -282,7 +294,7 @@ def test_the_free_plan_of_a_google_profile_is_taken_once_across_accounts():
     ana = world.owner("ana", [profile(1)])
     luis = world.owner("luis", [profile(1)])  # the same Google profile
     (ana_bar,), (luis_bar,) = world.ids(ana), world.ids(luis)
-    assert by_id(activate(ana, ana_bar).json())[ana_bar]["plan"] == "gratis"
+    assert by_id(activate(ana, ana_bar, "gratis").json())[ana_bar]["plan"] == "gratis"
     r = activate(luis, luis_bar, "gratis")
     assert r.status_code == 409
     assert r.json() == {
@@ -552,7 +564,7 @@ def test_choosing_an_active_profile_only_moves_the_preference():
     assert body["selected_location_id"] == bar
     body = client.post(SELECT, json={"location_id": shop}, headers=HEADER).json()
     assert body["selected_location_id"] == shop
-    assert (by_id(body)[bar]["plan"], by_id(body)[shop]["plan"]) == ("gratis", "pro")
+    assert (by_id(body)[bar]["plan"], by_id(body)[shop]["plan"]) == ("pro", "pro")
     assert body["plans"]["active"] == 2
     # Once deactivated, it cannot be the preference any more.
     client.delete(activation(bar), headers=HEADER)

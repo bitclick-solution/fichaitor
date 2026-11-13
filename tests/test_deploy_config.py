@@ -235,3 +235,116 @@ def test_the_email_leave_tool_runs_in_a_one_off_container_with_only_db_env():
     assert "FICHAITOR_OWNER_DB_HOST: fichaitor-db" in block
     assert "read_only: true" in block and "no-new-privileges" in COMPOSE
     assert "FICHAITOR_OWNER_DATABASE_URL" not in _service("fichaitor-worker")
+
+
+# --- paywall (2026-11-13) --------------------------------------------------------------
+
+
+def test_the_api_is_stopped_with_the_conversation_before_the_schema_and_restarted_on_failure():
+    # The old API does not know the new schema: it is stopped while the schema is applied
+    # and started again, with the old version, if the schema fails.
+    body = _functions("do_deploy")
+    stop = body.index('compose stop "${API_CONTAINER}" fichaitor-conversation')
+    apply = body.index("if ! aplicar_esquema; then")
+    restart = body.index('compose start "${API_CONTAINER}" fichaitor-conversation')
+    assert stop < apply < restart
+    assert 'API_CONTAINER="fichaitor-api"' in DEPLOY_SH
+
+
+def test_the_schema_includes_billing_and_the_backoffice_in_one_transaction_in_order():
+    assert (
+        "ESQUEMAS=(schema.sql schema_worker.sql schema_channels.sql schema_billing.sql "
+        "schema_admin.sql)" in DEPLOY_SH
+    )
+    assert "--single-transaction" in _functions("aplicar_esquema")
+
+
+@needs_bash
+@pytest.mark.parametrize(
+    ("api", "conversation", "ok"),
+    [
+        (f"FICHAITOR_ALLOWANCE_PEPPER={PEPPER}\n", f"FICHAITOR_ALLOWANCE_PEPPER={PEPPER}\n", True),
+        ("FICHAITOR_ALLOWANCE_PEPPER=\n", "FICHAITOR_ALLOWANCE_PEPPER=\n", False),
+        (
+            f"FICHAITOR_ALLOWANCE_PEPPER={PEPPER[:31]}\n",
+            f"FICHAITOR_ALLOWANCE_PEPPER={PEPPER[:31]}\n",
+            False,
+        ),
+        (
+            f"FICHAITOR_ALLOWANCE_PEPPER={PEPPER}\n",
+            f"FICHAITOR_ALLOWANCE_PEPPER={'c' * 32}\n",
+            False,
+        ),
+        (f"FICHAITOR_ALLOWANCE_PEPPER={PEPPER}\n", "", False),
+    ],
+)
+def test_deploy_requires_the_same_long_allowance_pepper(tmp_path, api, conversation, ok):
+    result = _check(
+        tmp_path,
+        "comprobar_pimienta_gratis",
+        {"api.env": api, "conversation.env": conversation, "worker.env": ""},
+    )
+    assert (result.returncode == 0) is ok, result.stderr
+    assert PEPPER not in result.stderr
+
+
+@needs_bash
+@pytest.mark.parametrize(
+    ("api", "billing", "ok"),
+    [
+        ("", None, True),
+        ("FICHAITOR_STRIPE_WEBHOOK_SECRET=whsec_" + "a" * 32 + "\n", None, True),
+        ("FICHAITOR_STRIPE_WEBHOOK_SECRET=secreto\n", None, False),
+        ("FICHAITOR_STRIPE_SECRET_KEY=rk_test_x\n", None, False),
+        ("", "FICHAITOR_STRIPE_SECRET_KEY=rk_test_abc\n", True),
+        ("", "FICHAITOR_STRIPE_SECRET_KEY=rk_live_abc\n", False),
+        ("", "FICHAITOR_STRIPE_SECRET_KEY=rk_live_abc\nFICHAITOR_STRIPE_LIVEMODE=true\n", True),
+        ("", "FICHAITOR_STRIPE_SECRET_KEY=rk_test_abc\nFICHAITOR_STRIPE_LIVEMODE=true\n", False),
+    ],
+)
+def test_deploy_keeps_the_stripe_key_out_of_the_api_and_live_keys_explicit(
+    tmp_path, api, billing, ok
+):
+    files = {"api.env": api, "conversation.env": "", "worker.env": ""}
+    if billing is not None:
+        files["billing.env"] = billing
+    for name, text in files.items():
+        (tmp_path / name).write_text(text, encoding="utf-8")
+    script = "\n".join(
+        [
+            "set -euo pipefail",
+            _functions("log", "err", "die", "valor_env", "comprobar_cobro"),
+            "API_ENV=api.env WORKER_ENV=worker.env CONVERSATION_ENV=conversation.env",
+            "BILLING_ENV=billing.env",
+            "comprobar_cobro",
+        ]
+    )
+    (tmp_path / "check.sh").write_text(script, encoding="utf-8", newline="\n")
+    result = subprocess.run(  # noqa: S603 - a fixed script of this repository
+        [USABLE_BASH, "check.sh"],
+        cwd=tmp_path,
+        capture_output=True,
+        text=True,
+        timeout=30,
+        check=False,
+    )
+    assert (result.returncode == 0) is ok, result.stderr
+    assert "rk_live_abc" not in result.stderr and "rk_test_abc" not in result.stderr
+
+
+def test_init_roles_creates_the_billing_and_backoffice_users_only_with_their_env_files():
+    init = (ROOT / "deploy" / "init-roles.sh").read_text(encoding="utf-8")
+    assert 'if [[ -f "${DEPLOY_DIR}/billing.env" ]]; then' in init
+    assert "preparar_usuario fichaitor_billing_prod fichaitor_billing" in init
+    assert 'if [[ -f "${DEPLOY_DIR}/admin.env" ]]; then' in init
+    assert "preparar_usuario fichaitor_admin_prod fichaitor_admin" in init
+
+
+def test_the_env_examples_carry_the_allowance_pepper_where_it_is_used():
+    for name in ("env.api.example", "env.conversation.example"):
+        assert "FICHAITOR_ALLOWANCE_PEPPER=" in (ROOT / "deploy" / name).read_text(encoding="utf-8")
+    worker = (ROOT / "deploy" / "env.worker.example").read_text(encoding="utf-8")
+    assert "FICHAITOR_ALLOWANCE_PEPPER" not in worker
+    assert "FICHAITOR_STRIPE_SECRET_KEY" not in (ROOT / "deploy" / "env.api.example").read_text(
+        encoding="utf-8"
+    )

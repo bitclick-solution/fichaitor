@@ -1303,7 +1303,9 @@ Activa una ficha de la cuenta o cambia el plan de una ya activa. Lleva `X-Reques
 { "plan": "pro" }
 ```
 
-- El cuerpo es opcional: sin cuerpo, `{}` o `{"plan": null}`, una ficha inactiva recibe Gratis si queda libre y, si no, el primer plan de pago con hueco; una activa se queda con su plan.
+- El cuerpo es opcional: sin cuerpo, `{}` o `{"plan": null}`, una ficha activa se queda con su plan, y una inactiva recibe:
+  - **durante la beta** (`pricing.charging: false`, cambio del 2026-11-13): **Pro** si quedan fichas Pro del derecho beta; si no, Gratis si queda libre; si no, Pro WhatsApp si hay hueco;
+  - **desde que se cobra:** Gratis si queda libre y, si no, el primer plan de pago con hueco.
 - Con `plan`, la ficha pasa a ese plan si cabe. Activar una ficha ya activa con otro plan le cambia el plan.
 - Respuesta 200: el cuerpo de `GET /api/v1/me`, ya actualizado. La API pide además la sincronización de la ficha, para que el panel tenga sus datos cuanto antes.
 - La API no cambia `selected_location_id` al activar. Para ver la ficha, envía `?location=` o guárdala como preferida.
@@ -1325,7 +1327,8 @@ Todos llevan `detail` en español listo para mostrar. Los 409 llevan además `co
 | Código | `code` | Cuándo | `detail` |
 |---|---|---|---|
 | 401 | — | Sin sesión | "No has iniciado sesión." |
-| 402 | — | No queda hueco en el plan pedido (o en ninguno, sin `plan`). Solo en `POST`. Enseña la oferta de planes y, con `charging: false`, «Escríbenos para activar más fichas» | "No te quedan fichas libres en tu plan. Escríbenos para activar más fichas." |
+| 402 | `no_seat` | No queda hueco en el plan pedido (o en ninguno, sin `plan`). Solo en `POST`. Trae `offer` y `charging`: el paywall de [Cobro y paywall](#cobro-y-paywall-2026-11-13) | Con `charging: true`: "Esta ficha necesita una plaza Pro: 33,25 € + IVA por un año. Se renueva sola salvo que la canceles. Pásate a Pro o a Pro+ para activarla." |
+| 402 | `account_blocked` | La cuenta está bloqueada por un pago pendiente. Solo en `POST`: desactivar sí se puede | "Tu cuenta está en pausa por un pago pendiente. …" |
 | 403 | — | Falta la cabecera `X-Requested-With` | "Petición no permitida." |
 | 404 | — | La ficha no es de la cuenta, no existe o el `id` no tiene la forma `loc_…`. La misma respuesta en todos los casos | "Esa ficha no está en tu cuenta." |
 | 409 | `free_taken` | Se pidió `gratis` y esa ficha de Google ya está en Gratis en otra cuenta. Sin `plan`, la API pasa sola al primer plan de pago con hueco | "Esta ficha ya está activa en el plan Gratis en otra cuenta. Actívala con un plan de pago o pide a esa cuenta que la desactive." |
@@ -1342,12 +1345,13 @@ Cada ficha activa tiene su plan, y el plan decide qué puede hacer la ficha. La 
 | Panel, resumen, diagnóstico y análisis de opinión | Sí | Sí |
 | Avisos de reseñas por el panel y por Telegram | Sí | Sí |
 | Escribir y publicar respuestas propias | Sin límite | Sin límite |
-| Respuestas redactadas con IA | **25 al mes por ficha** | Sin límite |
+| Respuestas redactadas con IA | **25 por ficha, una sola vez** | Sin límite |
 | Festivos y fechas clave | **No** | Sí |
 | WhatsApp | No | Solo Pro WhatsApp |
 
 - **Qué cuenta como respuesta con IA:** cada borrador que se pide al modelo, desde el panel (`POST /api/v1/me/reviews/{id}/draft`) o desde el bot. Un borrador ya guardado (`cached: true`) no cuenta: el modelo no se vuelve a llamar.
-- **El mes** es el mes natural en hora de Madrid: el contador vuelve a 0 el día 1 a las 00:00.
+- **Una sola vez y para siempre** (cambio del 2026-11-13): las 25 no se recargan cada mes ni se acumulan. Van con la ficha de Google, no con la cuenta: borrar la cuenta, retirar el acceso o conectar la misma ficha desde otra cuenta de Google no las devuelve. Gastadas las 25, el borrador responde 402 y la web enseña el paywall.
+- En Pro y Pro+ los borradores no gastan nada de esas 25.
 - **Gratis no tiene festivos ni fechas clave:** no se crean propuestas para fichas Gratis, y `answer` y `dismiss` responden 402. `GET /api/v1/me/key-dates` sigue respondiendo; en una ficha Gratis la lista sale vacía, salvo propuestas de cuando la ficha tenía otro plan.
 
 #### `usage` y `features` en `GET /api/v1/me`
@@ -1358,24 +1362,25 @@ Cada ficha **activa** trae:
 {
   "id": "loc_3f2a",
   "plan": "gratis",
-  "usage": { "ai_replies": { "used": 7, "limit": 25 } },
+  "usage": { "ai_replies": { "used": 7, "limit": 25, "lifetime": true } },
   "features": { "key_dates": false, "whatsapp": false }
 }
 ```
 
-- `usage.ai_replies.used`: respuestas redactadas con IA este mes. Se cuentan en todos los planes.
-- `usage.ai_replies.limit`: `25` en Gratis; `null` sin límite.
+- `usage.ai_replies.used`: respuestas con IA gastadas de las 25 gratuitas de esa ficha de Google, desde siempre.
+- `usage.ai_replies.limit`: `25` en Gratis; `null` sin límite (Pro y Pro+).
+- `usage.ai_replies.lifetime`: siempre `true`: el límite no es mensual.
 - `features.key_dates` y `features.whatsapp`: si el plan incluye esa función.
 - En una ficha inactiva, `usage` y `features` valen `null`.
 - La web no guarda cifras de límites: salen de aquí.
 
 #### El 402 `plan_required`
 
-Al llegar al tope del mes, o al pedir una función que el plan de la ficha no incluye, la API responde **402**:
+Al gastar las 25 respuestas con IA, o al pedir una función que el plan de la ficha no incluye, la API responde **402**:
 
 ```json
 {
-  "detail": "Has usado las 25 respuestas con IA de este mes. Pásate a Pro para tenerlas ilimitadas. Puedes seguir escribiendo tus respuestas.",
+  "detail": "Has usado tus 25 respuestas con IA gratuitas. Pásate a Pro para tenerlas ilimitadas. Puedes seguir escribiendo tus respuestas.",
   "code": "plan_required",
   "feature": "ai_replies"
 }
@@ -1383,18 +1388,19 @@ Al llegar al tope del mes, o al pedir una función que el plan de la ficha no in
 
 | Ruta | `feature` | `detail` |
 |---|---|---|
-| `POST /api/v1/me/reviews/{id}/draft` | `ai_replies` | "Has usado las 25 respuestas con IA de este mes. Pásate a Pro para tenerlas ilimitadas. Puedes seguir escribiendo tus respuestas." |
+| `POST /api/v1/me/reviews/{id}/draft` | `ai_replies` | "Has usado tus 25 respuestas con IA gratuitas. Pásate a Pro para tenerlas ilimitadas. Puedes seguir escribiendo tus respuestas." |
 | `POST /api/v1/me/key-dates/{id}/answer` y `…/dismiss` | `key_dates` | "Los festivos y las fechas clave están en Pro. Pásate a Pro para que te preguntemos por ellos y cambiemos el horario en Google." |
 
 - `detail` está listo para mostrar tal cual.
-- Distingue este 402 del de la activación (sin hueco en el plan) por `code`: la activación no lo lleva.
+- Distingue este 402 de los de la activación por `code`: `plan_required` aquí, `no_seat` o `account_blocked` allí.
 - Con `feature: "ai_replies"`, deja escribir la respuesta a mano: `POST …/reply` no tiene límite.
-- Con `pricing.charging: false` (beta) no hay cobro: ofrece «Escríbenos para pasarte a Pro».
+- El botón es el paywall: «Pásate a Pro o a Pro+». Con `pricing.charging: false` (beta), pasa la ficha a Pro con `POST …/activation` y `{"plan": "pro"}` (usa una ficha Pro del derecho beta); desde que se cobra, compra la plaza con `POST /api/v1/me/billing/seats`. Ya no se remite a soporte.
 
 #### En el bot
 
-- Una ficha Gratis que ya ha usado sus 25 respuestas con IA del mes sigue recibiendo el aviso de cada reseña nueva, sin respuesta propuesta. El mensaje lo explica y trae los botones «Escribir respuesta» y «No responder». El dueño escribe la respuesta, el bot se la enseña y la envía solo cuando él la confirma.
+- Una ficha Gratis que ya ha usado sus 25 respuestas con IA sigue recibiendo el aviso de cada reseña nueva, sin respuesta propuesta. El mensaje lo explica y trae los botones «Escribir respuesta» y «No responder». El dueño escribe la respuesta, el bot se la enseña y la envía solo cuando él la confirma.
 - Las fichas Gratis no reciben preguntas de festivos ni de fechas clave.
+- Si una ficha pasa a Gratis con una fecha clave ya preguntada, esa propuesta no se puede confirmar por el chat (cambio del 2026-11-13): al pulsar o contestar, el bot la cancela (`outcome_reason: "plan_required"`), no toca Google y responde «Esta ficha ahora está en el plan Gratis, que no incluye las fechas clave. No he cambiado nada en Google. Si quieres que te las siga preguntando, pásate a Pro desde el panel: <enlace>».
 
 ### Lo que la web NO debe hacer con el multinegocio
 
@@ -1403,7 +1409,182 @@ Al llegar al tope del mes, o al pedir una función que el plan de la ficha no in
 - Llamar a `POST /api/v1/me/location` con una ficha inactiva: responde 409 `location_inactive` y no la activa. Activa antes con `POST …/activation`.
 - Reintentar una activación tras un 402 o un 409: no cambiará hasta que cambie la cuenta.
 - Calcular los límites del plan o el uso del mes: salen de `usage` y `features`.
-- Reintentar un borrador tras un 402 `plan_required`: no cambiará hasta el mes siguiente o hasta pasar la ficha a Pro.
+- Reintentar un borrador tras un 402 `plan_required`: no cambiará hasta pasar la ficha a Pro o a Pro+.
+
+## Cobro y paywall (2026-11-13)
+
+El paywall sustituye a los «escríbenos a soporte»: cuando una ficha necesita Pro o Pro+, la web ofrece «Pásate a Pro o a Pro+». **Pro+** es el nombre visible del plan `pro_whatsapp`. El diseño está en [admin-facturacion.md](admin-facturacion.md) (sección 4.7); lo de aquí es lo que la API hace de verdad, con los detalles acordados con la web.
+
+Reglas de fondo, que la web cuenta al usuario:
+
+- Solo tarjeta (con Apple Pay y Google Pay).
+- Cada plaza es **un año entero desde su alta** y se renueva sola en su fecha. Sin prorrateo y sin devoluciones.
+- Desde la segunda plaza de pago, un 5 % menos. La API da el precio exacto: la web no lo calcula.
+- Un impago **bloquea toda la cuenta** hasta que se pague, sin límite de tiempo. No se borra nada.
+- Una plaza que llega a su renovación sin ficha no se cobra: se cancela sola.
+- España (península, Baleares, Canarias, Ceuta y Melilla) y la UE, siempre con NIF o NIF-IVA.
+
+### Cómo funciona
+
+La API no habla con Stripe. Cada acción de cobro crea una **petición** y responde `202 {"request_id": "…"}`. El proceso de cobro la atiende en segundos, y la web consulta `GET /api/v1/me/billing/requests/{id}` cada 2 segundos hasta que deja de estar `pendiente`:
+
+| `state` | Trae | Qué hace la web |
+|---|---|---|
+| `pendiente` | — | Sigue consultando |
+| `lista` | `url` (salvo en cancelar y reanudar) | Abre `url`: siempre una dirección `https:` de Stripe (`*.stripe.com`: Checkout, portal o factura alojada). La web no abre ninguna otra |
+| `fallida` | `code` y `detail` | Enseña `detail` tal cual |
+
+Durante la **beta** (`pricing.charging: false`) no se cobra: `POST /api/v1/me/billing/seats` responde 409 `beta_no_charge`. La web activa con `POST /api/v1/me/locations/{id}/activation` y `{"plan": "pro"}`, que usa una de las fichas Pro del derecho beta, también para pasar a Pro una ficha que ya está activa en Gratis.
+
+### Rutas
+
+Todas llevan sesión y funcionan **también con la cuenta bloqueada**: pagar es la salida del bloqueo. Las que cambian algo (`PUT` y `POST`) llevan `X-Requested-With: fichaitor` y cuentan para un tope de 30 por cuenta y hora (429 `rate_limited`). Las `GET` no llevan la cabecera, como el resto de lecturas del contrato (cambio frente a la tabla del diseño, que la pedía en todas: la web solo la envía en las escrituras).
+
+| Ruta | Cuerpo | Respuesta |
+|---|---|---|
+| `GET /api/v1/me/billing/profile` | — | 200 con el perfil fiscal; sin perfil, 200 con los campos a `null` y `complete: false` (nunca 404) |
+| `PUT /api/v1/me/billing/profile` | `{legal_name, tax_id, address, invoice_email}` | 200 con el perfil guardado, o 422 con `code` |
+| `POST /api/v1/me/billing/seats` | `{"plan": "pro" o "pro_whatsapp", "location_id": "loc_…"}` | 202 `{request_id}`. Al pagarse, la ficha se activa sola en ese plan |
+| `POST /api/v1/me/billing/seats/{id}/cancel` | — | 202 `{request_id}`. La plaza deja de renovarse; la ficha sigue hasta el final del año pagado |
+| `POST /api/v1/me/billing/seats/{id}/resume` | — | 202 `{request_id}`. Deshace la cancelación antes de la fecha de renovación |
+| `POST /api/v1/me/billing/pay` | — | 202 `{request_id}`. El resultado es la factura pendiente alojada en Stripe, para desbloquear |
+| `POST /api/v1/me/billing/portal` | — | 202 `{request_id}`. El portal de Stripe, solo para cambiar la tarjeta |
+| `GET /api/v1/me/billing/requests/{id}` | — | `{state, url, code, detail}`. 404 si es de otra cuenta o no existe |
+| `GET /api/v1/me/billing/invoices` | — | `{"invoices": [{id, kind, number, amount_total, issued_at}]}`. Las facturas legales de Odoo: **lista vacía** hasta el paso 9 |
+| `GET /api/v1/me/billing/invoices/{id}/pdf` | — | El PDF (`application/pdf`), o 404 |
+| `POST /api/v1/webhooks/stripe` | — | Sin sesión: lo verifica la firma de Stripe. No es para la web |
+
+La ruta de asignar una plaza libre a otra ficha (`…/seats/{id}/assign`) queda para un paso siguiente.
+
+#### Perfil fiscal
+
+```json
+{
+  "legal_name": "Bar La Parra S.L.",
+  "tax_id": "B12345674",
+  "address": {
+    "line1": "Calle Mayor 1",
+    "line2": null,
+    "postal_code": "18001",
+    "city": "Granada",
+    "province": "Granada",
+    "country": "ES"
+  },
+  "invoice_email": "facturas@laparra.es"
+}
+```
+
+- `address`: `{line1, line2?, postal_code, city, province?, country}`, con `country` en ISO 3166-1 alfa-2 (`ES`, `FR`…).
+- La respuesta trae además `tax_treatment` (`iva_21`; `no_sujeto` en Canarias, Ceuta y Melilla; `isp_ue` en otro país de la UE) y `complete`. `tax_id` vuelve normalizado: mayúsculas, sin espacios ni guiones.
+- El 422 lleva `code` y un `detail` listo para mostrar:
+
+| `code` | Cuándo |
+|---|---|
+| `tax_id_invalid` | El NIF, NIE, CIF o NIF-IVA no es válido (la letra o el dígito de control) |
+| `postal_code_invalid` | El código postal español no existe |
+| `country_not_supported` | El país no es España ni de la UE |
+
+Un 422 sin `code` (con `detail` en lista) es un cuerpo mal formado: un campo que falta o sobra.
+
+#### Errores de `POST /api/v1/me/billing/seats`
+
+Todos con `detail` listo para mostrar:
+
+| Código | `code` | Cuándo |
+|---|---|---|
+| 404 | — | La ficha no es de la cuenta o no existe |
+| 409 | `beta_no_charge` | Durante la beta: activa con la ruta de activación |
+| 409 | `profile_incomplete` | Falta el perfil fiscal: pídelo antes |
+| 409 | `seat_pending` | Ya hay un pago en marcha para esa ficha: una petición pendiente, un Checkout abierto sin caducar (31 minutos) o una plaza ya cobrada que aún no ha activado la ficha. Trae `request_id` del existente: la web sigue ese en vez de crear otro |
+| 409 | `already_active` | La ficha ya está activa en ese plan |
+| 409 | `account_blocked` | La cuenta está bloqueada: primero hay que pagar |
+| 409 | `offboarding_pending` | La cuenta tiene una baja programada |
+| 422 | — | `plan` que no es `pro` ni `pro_whatsapp`, o un campo de más |
+| 429 | `rate_limited` | Demasiadas operaciones de cobro seguidas |
+
+Dos pestañas a la vez reciben la misma respuesta: la base lo resuelve de forma atómica. Si aun así llegasen dos pagos para la misma ficha, solo una plaza activa la ficha; la otra queda libre en la cuenta (`location_id: null`) y se revisa en el backoffice. No se devuelve nada automáticamente.
+
+#### Códigos de una petición `fallida`
+
+| `code` | `detail` |
+|---|---|
+| `beta_no_charge` | "Durante la beta no se cobra: activa la ficha en Pro desde «Tus negocios»." |
+| `profile_incomplete` | "Antes de pagar, completa tus datos de facturación." |
+| `location_not_found` | "Esa ficha ya no está en tu cuenta." |
+| `seat_not_found` | "Esa plaza ya no se puede cambiar." |
+| `nothing_to_pay` | "No tienes ninguna factura pendiente." |
+| `no_customer` | "Todavía no tienes ningún pago con nosotros." |
+| `stripe_rejected` | "Stripe no ha aceptado la operación. Revisa tus datos de facturación." |
+| `unavailable` | "No hemos podido hablar con Stripe. Prueba otra vez en unos minutos." |
+| `bad_url` | "No hemos podido preparar el pago. Prueba otra vez en unos minutos." |
+
+#### Vuelta de Stripe Checkout
+
+Las URL de vuelta las monta el backend con `FICHAITOR_PUBLIC_BASE_URL`, solo con estos dos parámetros:
+
+- pago hecho: `<base>/app?pago=ok&ficha=<location_id>`;
+- pago cancelado: `<base>/app?pago=cancelado&ficha=<location_id>`.
+
+`pago=ok` no garantiza que ya esté cobrado: la ficha se activa cuando llega el aviso de Stripe, normalmente en segundos. La web vuelve a leer `GET /api/v1/me` hasta ver la ficha activa (o la plaza en `billing.seats`).
+
+### El bloque `billing` de `GET /api/v1/me`
+
+```json
+"billing": {
+  "profile_complete": true,
+  "blocked": { "since": "2027-03-14T09:00:05Z", "reason": "payment_failed" },
+  "seats": [
+    { "id": "seat_9a1f00c2d3e4f5a6b7c8d9e0", "plan": "pro", "location_id": "loc_3f2a",
+      "status": "active", "renews_at": "2028-03-14", "cancel_at_period_end": false,
+      "next_price": 3500, "payment_method": "card", "collection": "auto" }
+  ],
+  "new_seat_price": { "pro": 3325, "pro_whatsapp": 5900 }
+}
+```
+
+- `blocked`: `null` si la cuenta no está bloqueada. `reason`: `payment_failed`, `action_required` (3DS sin completar), `dispute` o `manual_unpaid`.
+- `seats`: las plazas pagadas (no salen los Checkout sin pagar). `status`: `active`, `payment_failed`, `action_required`, `disputed` o `canceled` (una cancelada sale hasta el final de su año). `location_id: null`: una plaza pagada sin ficha. `renews_at`: el día que se cobra el año siguiente (o en que acaba, si está cancelada). `next_price`: céntimos sin IVA del año siguiente; `null` si no se va a renovar.
+- `new_seat_price`: lo que cuesta hoy una plaza nueva de cada plan, en céntimos, sin IVA y por un año entero. Sale de la regla del 5 %.
+- El bloque `pricing` no cambia de forma; `pricing.charging` sale de `billing_setting.launch_at` (vacío: beta).
+
+### El paywall en la activación: 402 `no_seat`
+
+Sin hueco en el plan, `POST /api/v1/me/locations/{id}/activation` responde:
+
+```json
+{
+  "detail": "Esta ficha necesita una plaza Pro+: 59,00 € + IVA por un año. Se renueva sola salvo que la canceles. Pásate a Pro o a Pro+ para activarla.",
+  "code": "no_seat",
+  "offer": { "plan": "pro_whatsapp", "price": 5900 },
+  "charging": true
+}
+```
+
+- `offer.plan`: el plan pedido (Pro si no se pidió ninguno). `offer.price`: lo que cuesta hoy esa plaza, en céntimos sin IVA.
+- Con `charging: false` (beta) no hay nada que comprar: el `detail` dice que ya se usan todas las fichas Pro de la beta.
+
+### Cuenta bloqueada: 402 `account_blocked`
+
+Con la cuenta bloqueada, las rutas de datos responden:
+
+```json
+{ "detail": "Tu cuenta está en pausa por un pago pendiente. Paga la factura pendiente o cambia la tarjeta en Ajustes > Facturación para seguir usando Fichaitor.", "code": "account_blocked" }
+```
+
+| Siguen respondiendo | 402 `account_blocked` |
+|---|---|
+| `GET /api/v1/me` (con `billing.blocked`), todas las de `/api/v1/me/billing/*`, la baja (`/api/v1/me/offboarding/*`), cerrar sesión, `GET /api/v1/me/channels`, desvincular un chat (`DELETE …/channels/{id}`) y desactivar una ficha (`DELETE …/activation`) | Resumen, diagnóstico, sentimiento, reseñas y respuestas, acciones, fechas clave, elegir ficha (`POST /api/v1/me/location`), activar una ficha, crear un código de Telegram y cambiar el filtro de un chat |
+
+La web enseña una pantalla única con el motivo, «Pagar ahora» (`POST …/billing/pay`), «Cambiar tarjeta» (`POST …/billing/portal`), «Darse de baja» y «Cerrar sesión». Al pagar, Stripe avisa y la cuenta se desbloquea sola: la web vuelve a leer `GET /api/v1/me`.
+
+### Lo que la web NO debe hacer con el cobro
+
+- Calcular precios, IVA o el 5 %: salen de `new_seat_price`, `next_price` y `offer`.
+- Abrir una `url` que no sea `https://…stripe.com/…`.
+- Crear otra plaza tras un 409 `seat_pending`: sigue el `request_id` que trae.
+- Guardar el NIF o la dirección en el navegador.
+- Dar por activada una ficha por volver con `pago=ok`: espera a verla activa en `GET /api/v1/me`.
+- Remitir a soporte para pasar a Pro: el paywall lo resuelve.
 
 ## Pantallas mínimas para tener algo visible
 

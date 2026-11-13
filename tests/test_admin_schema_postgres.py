@@ -8,9 +8,9 @@ it or deletes it. The leave asked for by email is a SECURITY DEFINER function th
 the same transaction as scripts/baja_manual.py.
 
 Skipped unless the test URLs are set. They must point to the TEST database (its name
-ends in `_test`; tests/conftest.py stops the run otherwise). The fixture applies
-db/schema_admin.sql with the owner URL (twice: it is idempotent) and creates the test
-user fichaitor_admin_dev (password 'dev') if it is missing:
+ends in `_test`; tests/conftest.py stops the run otherwise). scripts/preparar_bd_pruebas.sh
+applies db/schema_admin.sql and db/dev-init.sql creates the test user fichaitor_admin_dev
+(password 'dev'); the fixture checks both and applies the schema once more (idempotent):
 
     FICHAITOR_TEST_DB=fichaitor_adm_test bash scripts/preparar_bd_pruebas.sh
     B=127.0.0.1:5433/fichaitor_adm_test
@@ -110,33 +110,27 @@ DENIED = "InsufficientPrivilegeError"
 # --- the schema, applied by the fixture ---------------------------------------------
 
 
-async def _apply_schema() -> None:
-    sql = SCHEMA.read_text(encoding="utf-8")
+async def _check_schema() -> None:
+    """scripts/preparar_bd_pruebas.sh applies db/schema_admin.sql (the last one, after
+    db/schema_billing.sql) and db/dev-init.sql creates fichaitor_admin_dev. Applied once
+    more here: it must be idempotent, with the test user already a member (the M6 revoke
+    of TEMPORARY reaches the members of the role too)."""
     conn = await asyncpg.connect(OWNER_URL)
     try:
-        await conn.execute(sql)
-        await conn.execute(
-            f"""
-            DO $$
-            BEGIN
-                IF NOT EXISTS (SELECT FROM pg_roles WHERE rolname = '{ADMIN_USER}') THEN
-                    CREATE ROLE {ADMIN_USER} LOGIN PASSWORD '{ADMIN_PASSWORD}'
-                        IN ROLE fichaitor_admin;
-                END IF;
-            END
-            $$;
-            """
+        present = await conn.fetchval(
+            "SELECT to_regclass('public.admin_user') IS NOT NULL"
+            " AND EXISTS (SELECT FROM pg_roles WHERE rolname = $1)",
+            ADMIN_USER,
         )
-        # Again, with the test user already a member: idempotent, and the M6 revoke of
-        # TEMPORARY reaches the members of the role too.
-        await conn.execute(sql)
+        assert present, "falta db/schema_admin.sql: ejecuta scripts/preparar_bd_pruebas.sh"
+        await conn.execute(SCHEMA.read_text(encoding="utf-8"))
     finally:
         await conn.close()
 
 
 @pytest.fixture(scope="module", autouse=True)
 def schema():
-    run(_apply_schema())
+    run(_check_schema())
 
 
 async def cleanup() -> None:

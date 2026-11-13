@@ -13,6 +13,9 @@ services:
       - ./db/schema_worker.sql:/docker-entrypoint-initdb.d/15-schema-worker.sql:ro
       - ./db/schema_channels.sql:/docker-entrypoint-initdb.d/17-schema-channels.sql:ro
       - ./db/dev-init.sql:/docker-entrypoint-initdb.d/20-dev-init.sql:ro
+      # Después de dev-init.sql: los roles de cobro y del backoffice ya existen.
+      - ./db/schema_billing.sql:/docker-entrypoint-initdb.d/30-schema-billing.sql:ro
+      - ./db/schema_admin.sql:/docker-entrypoint-initdb.d/40-schema-admin.sql:ro
     ports:
       - "127.0.0.1:5433:5432"
     healthcheck:

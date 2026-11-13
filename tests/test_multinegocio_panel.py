@@ -76,20 +76,20 @@ def key_date(account_id: str, location_id: str, day: str, state=ProposalState.SE
 # --- activation -------------------------------------------------------------
 
 
-def test_activation_without_a_plan_takes_free_then_pro_until_the_limit():
+def test_activation_without_a_plan_takes_pro_in_the_beta_then_free_until_the_limit():
     async def go():
         store = MemoryStore()
         account, ids = await account_with(store, "ana", [profile(n) for n in range(1, 7)])
         plans = [await store.activate(account, i) for i in ids[:4]]
-        assert plans == [Plan.GRATIS, Plan.PRO, Plan.PRO, Plan.PRO]  # beta: 3 Pro
+        assert plans == [Plan.PRO, Plan.PRO, Plan.PRO, Plan.GRATIS]  # beta: 3 Pro first
         with pytest.raises(LocationLimit):
             await store.activate(account, ids[4])
         with pytest.raises(LocationLimit):  # no entitlement of WhatsApp
             await store.activate(account, ids[4], Plan.PRO_WHATSAPP)
         # Already active: nothing changes without a plan; a full plan is refused.
-        assert await store.activate(account, ids[0]) is Plan.GRATIS
+        assert await store.activate(account, ids[3]) is Plan.GRATIS
         with pytest.raises(LocationLimit):
-            await store.activate(account, ids[0], Plan.PRO)
+            await store.activate(account, ids[3], Plan.PRO)
         overview = await store.locations_overview(account, NOW.date())
         assert overview.active_by_plan() == {Plan.GRATIS: 1, Plan.PRO: 3}
         assert len(overview.active()) == 4
@@ -271,7 +271,7 @@ def test_the_overview_counts_what_waits_in_each_active_profile():
     async def go():
         store = MemoryStore()
         ana, (bar, shop) = await account_with(store, "ana", [profile(1, "A"), profile(2, "B")])
-        await store.activate(ana, bar)
+        await store.activate(ana, bar, Plan.GRATIS)
         for p in (
             key_date(ana, bar, "2026-12-08"),
             key_date(ana, bar, "2026-11-01"),  # past

@@ -32,12 +32,14 @@ BEGIN
     EXECUTE format('REVOKE TEMPORARY ON DATABASE %I FROM PUBLIC', current_database());
     FOR who IN
         SELECT r.rolname FROM pg_catalog.pg_roles r
-        WHERE r.rolname IN ('fichaitor_api', 'fichaitor_worker', 'fichaitor_conversation')
+        WHERE r.rolname IN ('fichaitor_api', 'fichaitor_worker', 'fichaitor_conversation',
+                            'fichaitor_billing', 'fichaitor_admin')
         UNION
         SELECT m.rolname FROM pg_catalog.pg_auth_members am
         JOIN pg_catalog.pg_roles g ON g.oid = am.roleid
         JOIN pg_catalog.pg_roles m ON m.oid = am.member
-        WHERE g.rolname IN ('fichaitor_api', 'fichaitor_worker', 'fichaitor_conversation')
+        WHERE g.rolname IN ('fichaitor_api', 'fichaitor_worker', 'fichaitor_conversation',
+                            'fichaitor_billing', 'fichaitor_admin')
           AND NOT m.rolsuper
     LOOP
         EXECUTE format('REVOKE TEMPORARY ON DATABASE %I FROM %I', current_database(), who);
@@ -298,6 +300,76 @@ CREATE TRIGGER usage_counter_guard BEFORE INSERT OR UPDATE ON usage_counter
     FOR EACH ROW EXECUTE FUNCTION usage_counter_guard();
 
 -- ---------------------------------------------------------------------------
+-- Respuestas con IA del plan Gratis (decisión del propietario, 2026-11-13): 25 por ficha de
+-- Google, una sola vez y para siempre. No se recargan cada mes ni vuelven al borrar la
+-- cuenta o retirar el acceso y conectar otra vez, aunque sea con otra cuenta de Google que
+-- administre la misma ficha. Por eso la clave sobrevive a la baja:
+-- - key: HMAC-SHA256 de gbp_location ("locations/<id>") con FICHAITOR_ALLOWANCE_PEPPER (un
+--   secreto del servidor), en hexadecimal. Sin el secreto no se puede volver a la ficha
+--   probando identificadores. Nunca se guarda el id en claro, la cuenta ni un correo.
+-- - used: cuántas se han gastado. first_used_at y last_used_at: la primera y la última.
+--   last_used_at hace falta para el plazo (3 años desde el último uso).
+-- Ni la baja, ni la retención de 30 días ni la purga por revocación la tocan. La borra la
+-- retención del worker 3 años después del último uso (docs/retencion.md: interés legítimo
+-- en prevenir el abuso del plan gratuito); el disparador lo impone antes de ese plazo.
+-- Sustituye a la ventana mensual de usage_counter ("ai_replies:loc_..."), que se borra.
+CREATE TABLE IF NOT EXISTS free_allowance (
+    key           text PRIMARY KEY CHECK (key ~ '^[0-9a-f]{64}$'),
+    used          integer NOT NULL CHECK (used >= 0),
+    first_used_at timestamptz NOT NULL DEFAULT now(),
+    last_used_at  timestamptz NOT NULL DEFAULT now()
+);
+
+CREATE INDEX IF NOT EXISTS free_allowance_last_used ON free_allowance (last_used_at);
+
+-- Igual que usage_counter (B11): fuera del propietario, una fila nueva empieza en 1 y cada
+-- cambio suma exactamente 1, sin tocar la clave ni la primera fecha. Las fechas las pone la
+-- base. Borrar, solo pasados 3 años del último uso.
+CREATE OR REPLACE FUNCTION free_allowance_guard() RETURNS trigger
+LANGUAGE plpgsql SET search_path = pg_catalog, public, pg_temp AS $$
+BEGIN
+    IF fichaitor_is_owner(TG_RELID) THEN
+        RETURN CASE WHEN TG_OP = 'DELETE' THEN OLD ELSE NEW END;
+    END IF;
+    IF TG_OP = 'DELETE' THEN
+        IF OLD.last_used_at > now() - interval '3 years' THEN
+            RAISE EXCEPTION 'free_allowance: solo se borra a los 3 años del último uso'
+                USING ERRCODE = 'insufficient_privilege';
+        END IF;
+        RETURN OLD;
+    END IF;
+    IF TG_OP = 'INSERT' THEN
+        IF NEW.used <> 1 THEN
+            RAISE EXCEPTION 'un contador nuevo empieza en 1' USING ERRCODE = 'check_violation';
+        END IF;
+        NEW.first_used_at := now();
+        NEW.last_used_at := now();
+        RETURN NEW;
+    END IF;
+    IF NEW.used <> OLD.used + 1 OR NEW.key IS DISTINCT FROM OLD.key
+       OR NEW.first_used_at IS DISTINCT FROM OLD.first_used_at THEN
+        RAISE EXCEPTION 'un contador solo suma 1' USING ERRCODE = 'check_violation';
+    END IF;
+    NEW.last_used_at := now();
+    RETURN NEW;
+END
+$$;
+
+DROP TRIGGER IF EXISTS free_allowance_guard ON free_allowance;
+CREATE TRIGGER free_allowance_guard BEFORE INSERT OR UPDATE OR DELETE ON free_allowance
+    FOR EACH ROW EXECUTE FUNCTION free_allowance_guard();
+
+-- La API cuenta (INSERT ... ON CONFLICT DO UPDATE en una sentencia) y lee lo gastado. La
+-- conversación, lo mismo (schema_channels.sql); el worker, solo borrar (schema_worker.sql).
+REVOKE ALL ON free_allowance FROM PUBLIC, fichaitor_api;
+GRANT SELECT (key, used) ON free_allowance TO fichaitor_api;
+GRANT INSERT (key, used) ON free_allowance TO fichaitor_api;
+GRANT UPDATE (used) ON free_allowance TO fichaitor_api;
+
+-- La ventana mensual anterior ya no se usa. Repetirlo no cambia nada.
+DELETE FROM usage_counter WHERE scope LIKE 'ai\_replies:%';
+
+-- ---------------------------------------------------------------------------
 -- Multinegocio (2026-11-12): varias fichas activas por cuenta. Consulta
 -- docs/multinegocio.md, secciones 3 y 4, y su sección 15 (decisiones del propietario).
 
@@ -516,6 +588,15 @@ BEGIN
           AND (r.rolsuper OR c.relowner = r.oid)) THEN
         why := 'untrusted';
     END IF;
+    -- El proceso de cobro (fichaitor_billing, db/schema_billing.sql) activa la ficha de una
+    -- plaza recién pagada: reason = 'billing' (docs/admin-facturacion.md, 4.6). Por nombre y
+    -- sin superusuarios, que son «miembros» de todo.
+    IF why IS NULL AND NEW.removed_at IS NULL AND EXISTS (
+        SELECT 1 FROM pg_catalog.pg_roles g, pg_catalog.pg_roles s
+        WHERE g.rolname = 'fichaitor_billing' AND s.rolname = session_user AND NOT s.rolsuper
+          AND pg_catalog.pg_has_role(s.oid, g.oid, 'MEMBER')) THEN
+        why := 'billing';
+    END IF;
     IF why IS NULL OR why !~ '^[a-z_]{1,40}$' THEN
         why := CASE WHEN NEW.removed_at IS NOT NULL THEN 'removed' ELSE 'owner' END;
     END IF;
@@ -542,12 +623,24 @@ CREATE TRIGGER location_activation_audit AFTER INSERT OR UPDATE ON location
 -- Derecho beta (decisión 4 del propietario): 3 fichas Pro por cuenta hasta el
 -- lanzamiento, ampliable a mano con otro derecho ('manual'). Cada cuenta nueva lo recibe
 -- al crearse; las existentes, con el relleno de abajo.
--- Al lanzar: quitar este disparador y poner ends_at a los derechos 'beta'.
+-- Cobro (docs/admin-facturacion.md, 4.6): solo antes del lanzamiento y hasta el fin de la
+-- beta, si están fijados en billing_setting (db/schema_billing.sql). Sin esa tabla, como
+-- siempre. Aquí y no en schema_billing.sql: volver a aplicar este archivo solo no debe
+-- devolver el derecho beta después del lanzamiento.
 CREATE OR REPLACE FUNCTION account_beta_entitlement() RETURNS trigger
 LANGUAGE plpgsql SECURITY DEFINER SET search_path = pg_catalog, public, pg_temp AS $$
+DECLARE
+    launch timestamptz;
+    beta_end timestamptz;
 BEGIN
-    INSERT INTO public.plan_entitlement (account_id, plan, quantity, starts_at, source)
-    VALUES (NEW.id, 'pro', 3, now(), 'beta');
+    IF pg_catalog.to_regclass('public.billing_setting') IS NOT NULL THEN
+        EXECUTE 'SELECT launch_at, beta_ends_at FROM public.billing_setting LIMIT 1'
+            INTO launch, beta_end;
+    END IF;
+    IF (launch IS NULL OR now() < launch) AND (beta_end IS NULL OR beta_end > now()) THEN
+        INSERT INTO public.plan_entitlement (account_id, plan, quantity, starts_at, ends_at, source)
+        VALUES (NEW.id, 'pro', 3, now(), beta_end, 'beta');
+    END IF;
     RETURN NULL;
 END
 $$;

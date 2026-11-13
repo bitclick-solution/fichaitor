@@ -13,9 +13,10 @@
 #   1. Comprueba los archivos de entorno (nombres de variables, nunca valores).
 #   2. Descarga las dos imágenes. Si falla, no se ha tocado nada.
 #   3. Arranca la base de datos y hace una copia de seguridad.
-#   4. Aplica db/schema.sql, db/schema_worker.sql y db/schema_channels.sql en una
-#      sola transacción.
-#      Si falla, no se aplica nada y la versión anterior sigue en marcha.
+#   4. Para la API y la conversación (el código anterior no conoce el esquema nuevo) y
+#      aplica db/schema.sql, db/schema_worker.sql, db/schema_channels.sql,
+#      db/schema_billing.sql y db/schema_admin.sql en una sola transacción.
+#      Si falla, no se aplica nada y las vuelve a arrancar con la versión anterior.
 #   5. Crea los usuarios de base de datos que falten (init-roles.sh).
 #   6. Recrea la API, el worker, la conversación y la web con la etiqueta nueva.
 #   7. Comprueba la salud. Si falla, vuelve a la etiqueta anterior y termina con error.
@@ -60,6 +61,8 @@ API_ENV="${DEPLOY_DIR}/api.env"
 WORKER_ENV="${DEPLOY_DIR}/worker.env"
 CONVERSATION_ENV="${DEPLOY_DIR}/conversation.env"
 DB_ENV="${DEPLOY_DIR}/db.env"
+# Opcional hasta que existan los procesos de cobro y del backoffice (paso 11).
+BILLING_ENV="${DEPLOY_DIR}/billing.env"
 API_IMAGE_BASE="${REGISTRY}/${OWNER}/fichaitor-api"
 WEB_IMAGE_BASE="${REGISTRY}/${OWNER}/fichaitor-web"
 
@@ -138,6 +141,44 @@ comprobar_secretos_telegram() {
         die "FICHAITOR_TELEGRAM_WEBHOOK_SECRET falta o tiene menos de 32 caracteres en api.env (openssl rand -hex 32)."
 }
 
+# Las respuestas con IA del plan Gratis se cuentan por ficha de Google con una huella
+# (HMAC) que sobrevive a la baja (free_allowance): el secreto que la firma tiene que ser
+# largo y el mismo en la API y en la conversación, que cuentan las dos. Si cambia, cada
+# ficha vuelve a tener sus 25. Solo se mide: el valor nunca se imprime.
+comprobar_pimienta_gratis() {
+    local pimienta
+    pimienta="$(valor_env "${API_ENV}" FICHAITOR_ALLOWANCE_PEPPER)"
+    ((${#pimienta} >= 32)) ||
+        die "FICHAITOR_ALLOWANCE_PEPPER falta o tiene menos de 32 caracteres en api.env (openssl rand -hex 32)."
+    [[ "${pimienta}" == "$(valor_env "${CONVERSATION_ENV}" FICHAITOR_ALLOWANCE_PEPPER)" ]] ||
+        die "FICHAITOR_ALLOWANCE_PEPPER no coincide entre api.env y conversation.env."
+}
+
+# Cobro (docs/admin-facturacion.md). La API solo tiene el secreto de firma del webhook de
+# Stripe; si está, tiene que ser uno de verdad (whsec_...). La clave de Stripe vive solo en
+# billing.env: nunca en api.env ni en los demás. Una clave live exige
+# FICHAITOR_STRIPE_LIVEMODE=true, y al revés.
+comprobar_cobro() {
+    local secreto clave modo archivo
+    secreto="$(valor_env "${API_ENV}" FICHAITOR_STRIPE_WEBHOOK_SECRET)"
+    if [[ -n "${secreto}" && ! "${secreto}" =~ ^whsec_[A-Za-z0-9]{16,}$ ]]; then
+        die "FICHAITOR_STRIPE_WEBHOOK_SECRET de api.env no es un secreto de firma de Stripe (whsec_...)."
+    fi
+    for archivo in "${API_ENV}" "${WORKER_ENV}" "${CONVERSATION_ENV}"; do
+        [[ -z "$(valor_env "${archivo}" FICHAITOR_STRIPE_SECRET_KEY)" ]] ||
+            die "$(basename "${archivo}") contiene FICHAITOR_STRIPE_SECRET_KEY. Solo va en billing.env."
+    done
+    [[ -f "${BILLING_ENV}" ]] || return 0
+    clave="$(valor_env "${BILLING_ENV}" FICHAITOR_STRIPE_SECRET_KEY)"
+    modo="$(valor_env "${BILLING_ENV}" FICHAITOR_STRIPE_LIVEMODE)"
+    if [[ "${clave}" == *_live_* && "${modo,,}" != "true" ]]; then
+        die "billing.env tiene una clave live sin FICHAITOR_STRIPE_LIVEMODE=true."
+    fi
+    if [[ -n "${clave}" && "${clave}" != *_live_* && "${modo,,}" == "true" ]]; then
+        die "billing.env pide FICHAITOR_STRIPE_LIVEMODE=true con una clave de prueba."
+    fi
+}
+
 exigir_privado() {
     local archivo="$1" modo
     [[ -f "${archivo}" ]] || die "No existe ${archivo}. Créalo a partir del ejemplo (docs/despliegue.md)."
@@ -182,6 +223,8 @@ comprobar_entorno() {
     # Los códigos de vinculación los crea la API y los comprueba la conversación: el
     # secreto de su huella tiene que ser el mismo en los dos, y largo.
     comprobar_secretos_telegram
+    comprobar_pimienta_gratis
+    comprobar_cobro
     [[ "$(valor_env "${API_ENV}" FICHAITOR_TOKEN_PUBLIC_KEY)" != "$(valor_env "${WORKER_ENV}" FICHAITOR_TOKEN_PRIVATE_KEY)" ]] ||
         die "La clave pública de api.env y la privada de worker.env son el mismo valor."
     [[ "$(valor_env "${API_ENV}" FICHAITOR_GOOGLE_CLIENT_ID)" == "$(valor_env "${WORKER_ENV}" FICHAITOR_GOOGLE_CLIENT_ID)" ]] ||
@@ -261,24 +304,25 @@ arrancar_db() {
     esperar_salud "${DB_CONTAINER}" 90 || die "La base de datos no arranca. Revisa: docker logs ${DB_CONTAINER}"
 }
 
+# Los archivos de esquema, en el orden en que se aplican: schema_channels.sql necesita las
+# tablas de los dos primeros, schema_billing.sql las de los tres y schema_admin.sql, el
+# último, concede al backoffice la lectura de las tablas de cobro.
+ESQUEMAS=(schema.sql schema_worker.sql schema_channels.sql schema_billing.sql schema_admin.sql)
+
 aplicar_esquema() {
-    local archivo
-    for archivo in "${DEPLOY_DIR}/db/schema.sql" "${DEPLOY_DIR}/db/schema_worker.sql" \
-        "${DEPLOY_DIR}/db/schema_channels.sql"; do
-        [[ -s "${archivo}" ]] || die "Falta ${archivo}."
+    local archivo rutas=()
+    for archivo in "${ESQUEMAS[@]}"; do
+        [[ -s "${DEPLOY_DIR}/db/${archivo}" ]] || die "Falta ${DEPLOY_DIR}/db/${archivo}."
+        rutas+=("${DEPLOY_DIR}/db/${archivo}")
     done
-    log "Esquema: db/schema.sql, db/schema_worker.sql y db/schema_channels.sql, en una transacción ..."
-    # Los tres archivos entran juntos por la entrada estándar: o se aplican
-    # todos o ninguno. schema_channels.sql necesita las tablas de los otros dos.
+    log "Esquema: ${ESQUEMAS[*]}, en una transacción ..."
+    # Todos entran juntos por la entrada estándar: o se aplican todos o ninguno.
     # Con el usuario propietario, por el socket local del contenedor: no hace
     # falta su contraseña ni un puerto abierto.
     # lock_timeout: si la versión en marcha retiene un bloqueo, el despliegue
     # falla a los 30 s en vez de quedarse colgado.
-    cat "${DEPLOY_DIR}/db/schema.sql" "${DEPLOY_DIR}/db/schema_worker.sql" \
-        "${DEPLOY_DIR}/db/schema_channels.sql" |
-        docker exec -i -e PGOPTIONS="-c lock_timeout=30s -c client_min_messages=warning" "${DB_CONTAINER}" \
-            psql -U "${DB_USER}" -d "${DB_NAME}" \
-            --no-psqlrc --quiet --single-transaction --set ON_ERROR_STOP=1 ||
+    cat "${rutas[@]}" |
+        docker exec -i -e PGOPTIONS="-c lock_timeout=30s -c client_min_messages=warning" "${DB_CONTAINER}"             psql -U "${DB_USER}" -d "${DB_NAME}"             --no-psqlrc --quiet --single-transaction --set ON_ERROR_STOP=1 ||
         return 1
     log "Esquema aplicado."
 }
@@ -439,14 +483,17 @@ do_deploy() {
     # La copia va ANTES del esquema. Si no se puede copiar, no se despliega.
     "${DEPLOY_DIR}/backup.sh" "pre-${TAG:0:12}" || die "La copia de seguridad ha fallado: no se aplica el esquema."
 
-    # La conversación se para antes del esquema: schema_channels.sql mueve la propuesta
-    # abierta de cada hilo a su carril, y el código anterior podría volver a escribir en
-    # el hilo después del relleno. Se arranca con la versión nueva más abajo (o con la
-    # anterior si hay vuelta atrás).
-    compose stop fichaitor-conversation >/dev/null 2>&1 || true
+    # La conversación y la API se paran antes del esquema. La conversación, porque
+    # schema_channels.sql mueve la propuesta abierta de cada hilo a su carril, y el código
+    # anterior podría volver a escribir en el hilo después del relleno. La API, porque el
+    # código anterior no conoce el esquema nuevo (una columna o una tabla que ya no son
+    # como esperaba) y daría errores mientras se aplica. Se arrancan con la versión nueva
+    # más abajo (o con la anterior si hay vuelta atrás). Durante el esquema la web
+    # responde 502 en /api/: unos segundos.
+    compose stop "${API_CONTAINER}" fichaitor-conversation >/dev/null 2>&1 || true
 
     if ! aplicar_esquema; then
-        compose start fichaitor-conversation >/dev/null 2>&1 || true
+        compose start "${API_CONTAINER}" fichaitor-conversation >/dev/null 2>&1 || true
         die "El esquema no se ha aplicado (la transacción se ha deshecho). La versión anterior sigue en marcha."
     fi
 

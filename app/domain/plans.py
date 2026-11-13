@@ -48,24 +48,26 @@ LAUNCH_AT: datetime | None = None
 class Features:
     whatsapp: bool  # decision 3: WhatsApp only tells of pro_whatsapp profiles
     key_dates: bool
-    monthly_ai_replies: int | None  # None = without a cap
+    # Replies drafted by the model, once per Google profile and for ever (not a month):
+    # app/domain/quota.py, `allowance_key`. None = without a cap.
+    lifetime_ai_replies: int | None
 
 
 # docs/fase0/precios.md. Enforced per profile (`location.plan`) at the moment of each
 # action (decision of the owner, 2026-11-13):
 # - Free: the panel, the summary, the diagnosis, the sentiment analysis and the notices of
 #   reviews (panel and Telegram); replies written by the owner without a cap; 25 replies
-#   drafted by the model per month and profile (`monthly_ai_replies`: every draft asked to
-#   the model, in the panel and in the bot); no key dates (no proposals, no answer, no
-#   dismiss).
+#   drafted by the model per Google profile, once and for ever (`lifetime_ai_replies`:
+#   every draft asked to the model, in the panel and in the bot; owner, 2026-11-13); no
+#   key dates (no proposals, no answer, no dismiss).
 # - Pro and Pro WhatsApp: without those limits.
-FREE_MONTHLY_AI_REPLIES = 25
+FREE_LIFETIME_AI_REPLIES = 25
 FEATURES: Mapping[Plan, Features] = {
     Plan.GRATIS: Features(
-        whatsapp=False, key_dates=False, monthly_ai_replies=FREE_MONTHLY_AI_REPLIES
+        whatsapp=False, key_dates=False, lifetime_ai_replies=FREE_LIFETIME_AI_REPLIES
     ),
-    Plan.PRO: Features(whatsapp=False, key_dates=True, monthly_ai_replies=None),
-    Plan.PRO_WHATSAPP: Features(whatsapp=True, key_dates=True, monthly_ai_replies=None),
+    Plan.PRO: Features(whatsapp=False, key_dates=True, lifetime_ai_replies=None),
+    Plan.PRO_WHATSAPP: Features(whatsapp=True, key_dates=True, lifetime_ai_replies=None),
 }
 
 # What a plan may lack, as the API names it in a 402 (`feature`).
@@ -74,8 +76,8 @@ FEATURE_KEY_DATES = "key_dates"
 
 
 class PlanRequired(Exception):
-    """The plan of that profile does not include `feature`, or its monthly cap of it is
-    used up. The API answers 402 with `code: plan_required` and this `feature`."""
+    """The plan of that profile does not include `feature`, or its cap of it (for ever)
+    is used up. The API answers 402 with `code: plan_required` and this `feature`."""
 
     def __init__(self, feature: str, limit: int | None = None) -> None:
         super().__init__(feature)
@@ -143,16 +145,35 @@ def activation_allowed(
     return active_by_plan.get(plan, 0) + 1 <= _limit(plan, entitlements, now)
 
 
-def default_plan(
-    active_by_plan: Mapping[Plan, int], entitlements: Iterable[Entitlement], now: datetime
-) -> Plan | None:
-    """The plan of an activation that names none: free while it is left, then the
-    first paid plan with room. None if nothing fits."""
+def default_plan_order(
+    active_by_plan: Mapping[Plan, int],
+    entitlements: Iterable[Entitlement],
+    now: datetime,
+    launch_at: datetime | None = LAUNCH_AT,
+) -> list[Plan]:
+    """The plans an activation that names none tries, in order, among those with room.
+
+    - While nothing is charged (the beta: `launch_at` empty or still ahead), Pro first,
+      with the room of the beta entitlement; then Free; then Pro WhatsApp.
+    - Once charging: Free while it is left, then the first paid plan with room.
+    """
     granted = list(entitlements)
-    for plan in (Plan.GRATIS, *PAID_PLANS):
-        if activation_allowed(active_by_plan, granted, plan, now):
-            return plan
-    return None
+    order = (Plan.GRATIS, *PAID_PLANS)
+    if not charging(now, launch_at):
+        order = (Plan.PRO, Plan.GRATIS, Plan.PRO_WHATSAPP)
+    return [plan for plan in order if activation_allowed(active_by_plan, granted, plan, now)]
+
+
+def default_plan(
+    active_by_plan: Mapping[Plan, int],
+    entitlements: Iterable[Entitlement],
+    now: datetime,
+    launch_at: datetime | None = LAUNCH_AT,
+) -> Plan | None:
+    """The plan of an activation that names none (`default_plan_order`, first one).
+    None if nothing fits."""
+    order = default_plan_order(active_by_plan, entitlements, now, launch_at)
+    return order[0] if order else None
 
 
 def usage(

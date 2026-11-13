@@ -33,7 +33,10 @@ if [ "$exists" != "1" ]; then
 fi
 
 # Los roles son del clúster: dev-init.sql crea los de desarrollo si faltan.
-for file in db/dev-init.sql db/schema.sql db/schema_worker.sql db/schema_channels.sql; do
+# schema_billing.sql después de los tres primeros y schema_admin.sql el último: concede al
+# backoffice la lectura de las tablas de cobro que encuentre.
+for file in db/dev-init.sql db/schema.sql db/schema_worker.sql db/schema_channels.sql \
+    db/schema_billing.sql db/schema_admin.sql; do
   $PSQL -d "$DB" -q -v ON_ERROR_STOP=1 < "$file"
 done
 
@@ -42,3 +45,5 @@ echo "  FICHAITOR_TEST_OWNER_URL=postgresql://$OWNER:<clave>@127.0.0.1:5433/$DB"
 echo "  FICHAITOR_TEST_DATABASE_URL=postgresql://fichaitor_api_dev:dev@127.0.0.1:5433/$DB"
 echo "  FICHAITOR_TEST_WORKER_URL=postgresql://fichaitor_worker_dev:dev@127.0.0.1:5433/$DB"
 echo "  FICHAITOR_TEST_CONVERSATION_URL=postgresql://fichaitor_conversation_dev:dev@127.0.0.1:5433/$DB"
+echo "  FICHAITOR_TEST_BILLING_URL=postgresql://fichaitor_billing_dev:dev@127.0.0.1:5433/$DB   (opcional)"
+echo "  FICHAITOR_TEST_ADMIN_URL=postgresql://fichaitor_admin_dev:dev@127.0.0.1:5433/$DB   (opcional)"

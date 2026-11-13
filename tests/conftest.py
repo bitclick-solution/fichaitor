@@ -2,7 +2,7 @@
 
 The integration tests create and delete rows and try statements that must be denied.
 Run against a database with real data, one mistake deletes it (it happened on
-2026-11-12: see docs/retencion.md, "Pruebas"). So the three URLs must point to a
+2026-11-12: see docs/retencion.md, "Pruebas"). So every URL must point to a
 database whose name ends in `_test`; otherwise the whole run stops before any test.
 
 Create the test database with scripts/preparar_bd_pruebas.sh.
@@ -19,6 +19,10 @@ TEST_URL_VARIABLES = (
     "FICHAITOR_TEST_OWNER_URL",
     "FICHAITOR_TEST_WORKER_URL",
     "FICHAITOR_TEST_CONVERSATION_URL",
+    # Optional: the billing process and the backoffice (db/schema_billing.sql and
+    # db/schema_admin.sql). Guarded the same way whenever they are set.
+    "FICHAITOR_TEST_BILLING_URL",
+    "FICHAITOR_TEST_ADMIN_URL",
 )
 REQUIRED_SUFFIX = "_test"
 

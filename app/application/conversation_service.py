@@ -29,10 +29,12 @@ from app.domain import link_codes
 from app.domain.calendar import format_date_es
 from app.domain.channel_messages import InboundEvent, InboundKind, MessageKind, OutboundMessage
 from app.domain.conversation import ChannelIdentity, HoursAnswer, HoursKind, Reply
+from app.domain.plans import FEATURES
 from app.domain.proposals import (
     CANCELLED_BY_DEACTIVATION,
     OUTCOME_LOCATION_INACTIVE,
     OUTCOME_OFFBOARDING,
+    OUTCOME_PLAN_REQUIRED,
     Proposal,
     ProposalEvent,
     ProposalState,
@@ -531,6 +533,8 @@ class ConversationService:
         identity: ChannelIdentity,
         now: datetime,
     ) -> None:
+        if await self._key_dates_lost(proposal, None, identity):
+            return
         step = STEPS[proposal.step]
         is_review = proposal.type is ProposalType.REVIEW_REPLY
         if proposal.step == REVIEW_EDIT_WAIT:
@@ -645,6 +649,8 @@ class ConversationService:
         now: datetime,
     ) -> None:
         """The owner chose `option` of the current step, by button or by an exact word."""
+        if await self._key_dates_lost(proposal, option, identity):
+            return
         is_review = proposal.type is ProposalType.REVIEW_REPLY
 
         async def confirm(payload: Mapping[str, Any], confirmed: Mapping[str, Any] | None) -> None:
@@ -702,6 +708,33 @@ class ConversationService:
             await self._dismiss(proposal, option, identity, "generic.cancelled", "cancelled")
         else:
             log.warning("opción sin tratamiento en el paso %s", proposal.step)
+
+    async def _key_dates_lost(
+        self, proposal: Proposal, option: str | None, identity: ChannelIdentity
+    ) -> bool:
+        """A key date whose profile is now in a plan without key dates (it moved to the
+        free plan after it was proposed) cannot be confirmed from the chat, as the panel
+        cannot (402 `plan_required`). It is cancelled with `plan_required`, Google is
+        not touched and the owner is sent to the panel to upgrade. True if it was."""
+        if proposal.type is not ProposalType.KEY_DATE:
+            return False
+        plan = await self._store.location_plan(proposal.account_id, _lane_of(proposal))
+        if plan is None or FEATURES[plan].key_dates:
+            return False  # inactive is handled apart; None also in fakes without plans
+        await self._clear_buttons(proposal, option)
+        await self._store.save_proposal(
+            replace(
+                proposal,
+                state=S.CANCELLED,
+                outcome_reason=OUTCOME_PLAN_REQUIRED,
+                parked_at=None,
+                message_refs={},
+            )
+        )
+        await self._release(proposal)
+        await self._reply(identity, "keydate.plan_required", about=proposal, **self._links())
+        log.info("fecha clave cancelada: la ficha ya no tiene fechas clave en su plan")
+        return True
 
     async def _ask(
         self,

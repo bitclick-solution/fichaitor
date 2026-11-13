@@ -8,6 +8,12 @@
 #                                                                    en worker.env
 #   fichaitor_conversation_prod  hereda de fichaitor_conversation -> FICHAITOR_CONVERSATION_DATABASE_URL
 #                                                                    en conversation.env
+#   fichaitor_billing_prod       hereda de fichaitor_billing      -> FICHAITOR_BILLING_DATABASE_URL
+#                                                                    en billing.env (solo si existe)
+#   fichaitor_admin_prod         hereda de fichaitor_admin        -> FICHAITOR_ADMIN_DATABASE_URL
+#                                                                    en admin.env (solo si existe)
+# Los dos últimos, sin TEMPORARY (M6): PUBLIC ya no lo da, y db/schema_billing.sql y
+# db/schema_admin.sql se lo quitan también a los miembros de sus roles.
 #
 # Cada contraseña se genera aquí, en el servidor, y va directa de openssl a
 # PostgreSQL y al archivo de entorno: no se muestra, no pasa por GitHub y no
@@ -126,6 +132,16 @@ preparar_usuario fichaitor_api_prod fichaitor_api "${DEPLOY_DIR}/api.env" FICHAI
 preparar_usuario fichaitor_worker_prod fichaitor_worker "${DEPLOY_DIR}/worker.env" FICHAITOR_WORKER_DATABASE_URL
 preparar_usuario fichaitor_conversation_prod fichaitor_conversation "${DEPLOY_DIR}/conversation.env" \
     FICHAITOR_CONVERSATION_DATABASE_URL
+# Cobro y backoffice: hasta que sus procesos existan en el servidor (paso 11 de
+# docs/admin-facturacion.md), sin su archivo de entorno no se crea nada.
+if [[ -f "${DEPLOY_DIR}/billing.env" ]]; then
+    preparar_usuario fichaitor_billing_prod fichaitor_billing "${DEPLOY_DIR}/billing.env" \
+        FICHAITOR_BILLING_DATABASE_URL
+fi
+if [[ -f "${DEPLOY_DIR}/admin.env" ]]; then
+    preparar_usuario fichaitor_admin_prod fichaitor_admin "${DEPLOY_DIR}/admin.env" \
+        FICHAITOR_ADMIN_DATABASE_URL
+fi
 
 if [[ "${CAMBIOS}" == "1" && "${ROTAR}" == "1" ]]; then
     log "Contraseñas rotadas. Recrea la API, el worker y la conversación para que las lean:"

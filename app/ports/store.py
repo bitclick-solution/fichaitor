@@ -32,6 +32,15 @@ class GoogleConnection:
 
 
 @dataclass(frozen=True)
+class BillingBlock:
+    """An open block of the account for a payment not made (docs/admin-facturacion.md,
+    3.6): the whole account, with no time limit, until it pays."""
+
+    since: datetime
+    reason: str  # payment_failed, action_required, dispute or manual_unpaid
+
+
+@dataclass(frozen=True)
 class Account:
     id: str
     email: str
@@ -42,6 +51,9 @@ class Account:
     pending_deletion: PendingDeletion | None = None
     # False after a leave of the profile, until the owner connects with Google again.
     connected: bool = True
+    # A payment not made: only GET /me, billing, leaving, logout, unlinking chats and
+    # deactivating profiles answer (402 account_blocked elsewhere).
+    blocked: BillingBlock | None = None
 
 
 @dataclass(frozen=True)
@@ -353,6 +365,18 @@ class Store(Protocol):
 
     async def quota_used(self, scope: str, start: datetime) -> int:
         """app/ports/quota.py: the store is also the quota store of the API."""
+        ...
+
+    async def take_ai_reply(self, account_id: str, location_id: str, limit: int) -> bool | None:
+        """Count one reply drafted by the model against the free allowance of the Google
+        profile of that active profile of the account (app/domain/quota.py,
+        `allowance_key`), unless `limit` were counted already. True if counted, False at
+        the cap, None if it is not an active profile of the account. Atomic."""
+        ...
+
+    async def ai_replies_used(self, account_id: str, location_id: str) -> int:
+        """How many replies drafted by the model the free allowance of the Google
+        profile of that profile of the account has counted, for ever. 0 if none."""
         ...
 
     async def location_plan(self, account_id: str, location_id: str) -> Plan | None:

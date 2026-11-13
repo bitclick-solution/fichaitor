@@ -1,12 +1,12 @@
-"""The limits of the free plan (decision of the owner, 2026-11-13; app/domain/plans.py):
-25 replies drafted by the model per month and profile, and no key dates. Pro and Pro
-WhatsApp, without those limits. The plan is read per profile at the moment of each
-action. No database: MemoryStore. The counter in PostgreSQL is in
+"""The limits of the free plan (decisions of the owner, 2026-11-13; app/domain/plans.py):
+25 replies drafted by the model per Google profile, once and for ever, and no key dates.
+Pro and Pro WhatsApp, without those limits. The plan is read per profile at the moment
+of each action. No database: MemoryStore. The counter in PostgreSQL is in
 test_plan_limits_postgres.py.
 """
 
 import asyncio
-from datetime import UTC, datetime, timedelta
+from datetime import timedelta
 
 import pytest
 
@@ -24,7 +24,7 @@ from app.domain.plans import (
     check_key_dates,
 )
 from app.domain.proposals import ProposalType
-from app.domain.quota import ai_replies_scope, month_window
+from app.domain.quota import allowance_key
 from app.ports.conversation_store import KeyDateProfile, ReviewTarget
 from app.worker.plan_key_dates import PlanKeyDates
 from app.worker.propose_review import ProposeReview
@@ -42,25 +42,18 @@ def run(coro):
 # --- the domain ---------------------------------------------------------------------
 
 
-def test_the_month_is_the_calendar_month_in_madrid():
-    # 30 November, 23:30 UTC is already 1 December in Madrid.
-    start, end = month_window(datetime(2026, 11, 30, 23, 30, tzinfo=UTC))
-    assert (start, end) == (
-        datetime(2026, 11, 30, 23, 0, tzinfo=UTC),
-        datetime(2026, 12, 31, 23, 0, tzinfo=UTC),
-    )
-    start, end = month_window(datetime(2026, 3, 15, 12, 0, tzinfo=UTC))
-    # Summer time starts on 29 March: the month ends at 22:00 UTC.
-    assert (start, end) == (
-        datetime(2026, 2, 28, 23, 0, tzinfo=UTC),
-        datetime(2026, 3, 31, 22, 0, tzinfo=UTC),
-    )
+def test_the_key_of_the_allowance_is_an_hmac_of_the_google_profile():
+    key = allowance_key("pimienta", "locations/123")
+    assert len(key) == 64 and all(c in "0123456789abcdef" for c in key)
+    assert key == allowance_key("pimienta", "locations/123")  # the same profile, any account
+    assert key != allowance_key("otra", "locations/123")  # without the pepper, not traceable
+    assert key != allowance_key("pimienta", "locations/124")
 
 
 def test_what_each_plan_includes():
-    assert FEATURES[Plan.GRATIS].monthly_ai_replies == 25
+    assert FEATURES[Plan.GRATIS].lifetime_ai_replies == 25
     assert not FEATURES[Plan.GRATIS].key_dates and not FEATURES[Plan.GRATIS].whatsapp
-    assert FEATURES[Plan.PRO].monthly_ai_replies is None and FEATURES[Plan.PRO].key_dates
+    assert FEATURES[Plan.PRO].lifetime_ai_replies is None and FEATURES[Plan.PRO].key_dates
     assert FEATURES[Plan.PRO_WHATSAPP].whatsapp
     with pytest.raises(PlanRequired) as caught:
         check_key_dates(Plan.GRATIS)
@@ -69,31 +62,25 @@ def test_what_each_plan_includes():
     check_key_dates(None)  # not active: answered apart
 
 
-def test_the_scope_of_the_counter_fits_usage_counter():
-    from app.domain.quota import SCOPE
-
-    assert SCOPE.fullmatch(ai_replies_scope("loc_3f2a9b1c0d4e"))
-
-
 # --- replies drafted by the model --------------------------------------------------
 
 
 def _use_up(world: World, location_id: str, n: int) -> None:
-    start, end = month_window(NOW)
+    account_id = next(r.account_id for r in world.store.locations if r.id == location_id)
     for _ in range(n):
-        assert run(world.store.take_quota_in(ai_replies_scope(location_id), 25, start, end))
+        assert run(world.store.take_ai_reply(account_id, location_id, 25))
 
 
 def _location(client) -> dict:
     return client.get("/api/v1/me").json()["locations"][0]
 
 
-def test_a_free_profile_drafts_25_replies_a_month_and_then_gets_a_402():
+def test_a_free_profile_drafts_25_replies_for_ever_and_then_gets_a_402():
     world = World()
     client = world.owner()
     location = _location(client)
     assert location["plan"] == "gratis"
-    assert location["usage"] == {"ai_replies": {"used": 0, "limit": 25}}
+    assert location["usage"] == {"ai_replies": {"used": 0, "limit": 25, "lifetime": True}}
     assert location["features"] == {"key_dates": False, "whatsapp": False}
 
     low = world.review_id("g-low")
@@ -106,14 +93,14 @@ def test_a_free_profile_drafts_25_replies_a_month_and_then_gets_a_402():
     assert r.status_code == 402
     assert r.json() == {
         "detail": (
-            "Has usado las 25 respuestas con IA de este mes. Pásate a Pro para tenerlas "
+            "Has usado tus 25 respuestas con IA gratuitas. Pásate a Pro para tenerlas "
             "ilimitadas. Puedes seguir escribiendo tus respuestas."
         ),
         "code": "plan_required",
         "feature": FEATURE_AI_REPLIES,
     }
     assert len(world.writer.reply_calls) == calls  # the model was not asked
-    assert _location(client)["usage"]["ai_replies"] == {"used": 25, "limit": 25}
+    assert _location(client)["usage"]["ai_replies"] == {"used": 25, "limit": 25, "lifetime": True}
     # A draft already stored is served: the model is not asked again.
     again = client.post(draft_url(low), headers=HEADER)
     assert again.status_code == 200 and again.json()["cached"] is True
@@ -124,18 +111,40 @@ def test_a_free_profile_drafts_25_replies_a_month_and_then_gets_a_402():
     assert published.status_code == 202
 
 
-def test_the_cap_starts_again_next_month():
+def test_the_cap_does_not_come_back_next_month_nor_years_later():
     world = World()
     client = world.owner()
     location = _location(client)
     _use_up(world, location["id"], 25)
     rid = world.review_id("g-low")
     assert client.post(draft_url(rid), headers=HEADER).status_code == 402
-    world.clock.now = month_window(NOW)[1].timestamp() + 60
-    assert client.post(draft_url(rid), headers=HEADER).status_code == 200
+    world.clock.now = NOW.timestamp() + 20 * 86400  # next month (the session still holds)
+    assert client.post(draft_url(rid), headers=HEADER).status_code == 402
 
 
-def test_a_pro_profile_has_no_cap_and_its_drafts_are_still_counted():
+def test_the_cap_survives_another_account_with_the_same_google_profile():
+    # Deleting the account (or withdrawing the access) and connecting again, even with
+    # another Google account that manages the same profile, does not give the 25 back:
+    # the counter is keyed by the Google profile, not by the account.
+    world = World()
+    client = world.owner()
+    location = _location(client)
+    _use_up(world, location["id"], 25)
+    assert client.delete(ACTIVATION.format(location["id"]), headers=HEADER).status_code == 200
+    other = world.connect_as(sub="otra-identidad", email="socia@example.com")
+    mine = _location(other)
+    assert mine["id"] != location["id"]
+    activated = other.post(ACTIVATION.format(mine["id"]), json={"plan": "gratis"}, headers=HEADER)
+    assert activated.status_code == 200
+    assert _location(other)["usage"]["ai_replies"] == {"used": 25, "limit": 25, "lifetime": True}
+    account_id = next(r.account_id for r in world.store.locations if r.id == mine["id"])
+    assert run(world.store.take_ai_reply(account_id, mine["id"], 25)) is False
+    # Nothing in the counter names the profile, the account or an email.
+    assert all(len(k) == 64 for k in world.store.free_allowance)
+    assert not any("locations/" in k for k in world.store.free_allowance)
+
+
+def test_a_pro_profile_has_no_cap_and_spends_nothing_of_the_free_allowance():
     world = World()
     client = world.connect_as()
     location = _location(client)
@@ -146,7 +155,8 @@ def test_a_pro_profile_has_no_cap_and_its_drafts_are_still_counted():
     r = client.post(draft_url(world.review_id("g-low")), headers=HEADER)
     assert r.status_code == 200
     shown = _location(client)
-    assert shown["usage"] == {"ai_replies": {"used": 26, "limit": None}}
+    # The draft in Pro was not counted: the 25 of the free plan stay as they were.
+    assert shown["usage"] == {"ai_replies": {"used": 25, "limit": None, "lifetime": True}}
     assert shown["features"] == {"key_dates": True, "whatsapp": False}
 
 

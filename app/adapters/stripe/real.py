@@ -31,6 +31,7 @@ import stripe
 
 from app.domain.billing import PAYMENT_METHOD_TYPES, PriceKey, TaxTreatment
 from app.ports.payments import (
+    CheckoutInfo,
     CheckoutSession,
     CustomerDetails,
     DisputeInfo,
@@ -51,6 +52,9 @@ STRIPE_API_VERSION = "2026-10-28.endive"
 TIMEOUT = 30.0
 NETWORK_RETRIES = 2
 PRICES_TTL = 600.0  # seconds a price list is kept before it is read again
+# An open Checkout blocks a second purchase of its profile (seat_pending) until it
+# expires: 31 minutes, because Stripe refuses less than 30 when the request arrives.
+CHECKOUT_TTL_SECONDS = 1860
 TAX_RATE_METADATA = "fichaitor_tax"  # set by scripts/stripe_bootstrap.py
 _KEY_PREFIXES = ("sk_test_", "rk_test_", "sk_live_", "rk_live_")
 
@@ -424,6 +428,9 @@ class StripePayments:
             "subscription_data": {"metadata": metadata},
             "metadata": metadata,
             "locale": "es",
+            # An open Checkout blocks a second purchase of the same profile (seat_pending)
+            # until it expires: the shortest Stripe allows.
+            "expires_at": int(time.time()) + CHECKOUT_TTL_SECONDS,
             "success_url": success_url,
             "cancel_url": cancel_url,
         }
@@ -436,6 +443,22 @@ class StripePayments:
             ),
         )
         return CheckoutSession(id=str(session.id), url=str(session.url))
+
+    async def checkout_session(self, session_id: str) -> CheckoutInfo:
+        session = await self._do(
+            "checkout.sessions.retrieve",
+            lambda: self._client.v1.checkout.sessions.retrieve_async(session_id),
+        )
+        data = session.to_dict()
+        metadata = data.get("metadata") or {}
+        return CheckoutInfo(
+            id=str(data["id"]),
+            status=data.get("status"),
+            subscription_id=_id(data.get("subscription")),
+            customer_id=_id(data.get("customer")),
+            account_id=metadata.get("account_id"),
+            seat_id=metadata.get("seat_id"),
+        )
 
     async def create_subscription(
         self,

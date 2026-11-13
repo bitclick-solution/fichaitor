@@ -58,10 +58,9 @@ from app.domain.offboarding import (
     same_hash,
 )
 from app.domain.plans import (
-    PAID_PLANS,
     Entitlement,
     Plan,
-    activation_allowed,
+    default_plan_order,
     parse_plan,
 )
 from app.domain.profile_summary import ProfileFacts, facts_from_json
@@ -74,7 +73,7 @@ from app.domain.proposals import (
     ProposalType,
     advance,
 )
-from app.domain.quota import window
+from app.domain.quota import allowance_key, window
 from app.domain.sentiment import Analysis, Figures, TopicCount, first_history_month
 from app.domain.special_hours import JOB_MAX_ATTEMPTS as HOURS_MAX_ATTEMPTS
 from app.domain.special_hours import SpecialHoursChange, describe
@@ -85,6 +84,7 @@ from app.ports.quota import QuotaUnavailable
 from app.ports.store import (
     Account,
     ActiveProfile,
+    BillingBlock,
     FreeTaken,
     GoogleConnection,
     Location,
@@ -192,6 +192,12 @@ def _activation_error(exc: asyncpg.PostgresError) -> Exception | None:
     return None
 
 
+async def launch_at(conn: asyncpg.Connection | asyncpg.Pool) -> datetime | None:
+    """`billing_setting.launch_at` (db/schema_billing.sql): from when Fichaitor charges.
+    Empty (or no row) is the beta, as `plans.LAUNCH_AT`."""
+    return await conn.fetchval("SELECT launch_at FROM billing_setting LIMIT 1")
+
+
 class PostgresStore:
     def __init__(
         self,
@@ -200,8 +206,12 @@ class PostgresStore:
         mail_job_kind: str = SEND_MAIL_KIND,
         apply_job_kind: str = APPLY_KIND,
         hours_job_kind: str = SET_SPECIAL_HOURS,
+        allowance_pepper: str = "",
     ) -> None:
         self._dsn = dsn
+        # FICHAITOR_ALLOWANCE_PEPPER: keys the free allowance of each Google profile.
+        # The same in the API and in the conversation (deploy.sh checks it).
+        self._allowance_pepper = allowance_pepper
         self._pool: asyncpg.Pool | None = None
         # Kinds of the jobs that carry out a confirmed reply, send an email and make a
         # leave effective. Tests use their own, so that no worker running on the same
@@ -406,10 +416,16 @@ class PostgresStore:
         row = await self._require_pool().fetchrow(
             """
             SELECT a.id::text AS id, a.email, a.selected_location_id, s.id::text AS session_id,
-                   o.scope, o.delete_at, a.disconnected_at IS NULL AS connected
+                   o.scope, o.delete_at, a.disconnected_at IS NULL AS connected,
+                   b.blocked_at, b.reason AS blocked_reason
             FROM session s JOIN account a ON a.id = s.account_id
             LEFT JOIN offboarding o
               ON o.account_id = a.id AND o.restored_at IS NULL AND o.effective_at IS NULL
+            LEFT JOIN LATERAL (
+                SELECT k.blocked_at, k.reason FROM account_billing_block k
+                WHERE k.account_id = a.id AND k.unblocked_at IS NULL
+                ORDER BY k.blocked_at LIMIT 1
+            ) b ON true
             WHERE s.token_hash = $1 AND s.revoked_at IS NULL AND s.expires_at > $2
               AND a.deleted_at IS NULL
             """,
@@ -419,6 +435,9 @@ class PostgresStore:
         if row is None:
             return None
         pending = PendingDeletion(row["scope"], row["delete_at"]) if row["scope"] else None
+        blocked = (
+            BillingBlock(row["blocked_at"], row["blocked_reason"]) if row["blocked_at"] else None
+        )
         return Account(
             row["id"],
             row["email"],
@@ -426,6 +445,7 @@ class PostgresStore:
             row["session_id"],
             pending,
             row["connected"],
+            blocked,
         )
 
     async def revoke_session(self, token_hash: str, now: datetime) -> None:
@@ -491,7 +511,8 @@ class PostgresStore:
         conn: asyncpg.Connection, account_id: str, location_id: str, now: datetime
     ) -> list[Plan]:
         """The plans an activation without a plan tries, in order: those with room in
-        the account now, leaving that profile out (app/domain/plans.py)."""
+        the account now, leaving that profile out (app/domain/plans.py,
+        `default_plan_order`: Pro first while nothing is charged)."""
         counts = await conn.fetch(
             """
             SELECT plan, count(*) AS n FROM location
@@ -503,11 +524,7 @@ class PostgresStore:
         )
         granted = await _entitlements(conn, account_id)
         active = {Plan(r["plan"]): r["n"] for r in counts}
-        return [
-            plan
-            for plan in (Plan.GRATIS, *PAID_PLANS)
-            if activation_allowed(active, granted, plan, now)
-        ]
+        return default_plan_order(active, granted, now, await launch_at(conn))
 
     async def _activate(
         self,
@@ -687,6 +704,52 @@ class PostgresStore:
                 )
             )
         return LocationsOverview(tuple(locations), tuple(granted))
+
+    async def _allowance_key(self, account_id: str, location_id: str) -> str | None:
+        gbp_location = await self._require_pool().fetchval(
+            f"SELECT l.gbp_location {_active('$2')} WHERE a.id = $1::uuid",  # noqa: S608
+            account_id,
+            location_id,
+        )
+        if gbp_location is None:
+            return None
+        return allowance_key(self._allowance_pepper, gbp_location)
+
+    async def take_ai_reply(self, account_id: str, location_id: str, limit: int) -> bool | None:
+        key = await self._allowance_key(account_id, location_id)
+        if key is None:
+            return None
+        if limit <= 0:
+            return False
+        try:
+            # One statement, as usage_counter: the first use creates the row with 1, the
+            # next ones add one while below the cap (free_allowance_guard: only +1).
+            used = await self._require_pool().fetchval(
+                """
+                INSERT INTO free_allowance AS f (key, used) VALUES ($1, 1)
+                ON CONFLICT (key) DO UPDATE SET used = f.used + 1 WHERE f.used < $2
+                RETURNING used
+                """,
+                key,
+                limit,
+            )
+        except Exception as exc:
+            raise QuotaUnavailable(type(exc).__name__) from None
+        return used is not None
+
+    async def ai_replies_used(self, account_id: str, location_id: str) -> int:
+        gbp_location = await self._require_pool().fetchval(
+            "SELECT gbp_location FROM location WHERE id = $2 AND account_id = $1::uuid",
+            account_id,
+            location_id,
+        )
+        if gbp_location is None:
+            return 0
+        key = allowance_key(self._allowance_pepper, gbp_location)
+        used = await self._require_pool().fetchval(
+            "SELECT used FROM free_allowance WHERE key = $1", key
+        )
+        return used or 0
 
     async def location_plan(self, account_id: str, location_id: str) -> Plan | None:
         # The same join as every read: an id from outside only picks among the active

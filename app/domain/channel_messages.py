@@ -404,6 +404,13 @@ TEXTS: dict[str, str] = {
     ),
     # NEW: the profile of the key date is no longer active in Fichaitor, or a leave is
     # scheduled: nothing can be changed from the chat.
+    # NEW (paywall, 2026-11-13): a key date of a profile that is now in the free plan. It
+    # is cancelled without touching Google, and the owner is sent to the panel to upgrade.
+    "keydate.plan_required": (
+        "Esta ficha ahora está en el plan Gratis, que no incluye las fechas clave. No he "
+        "cambiado nada en Google. Si quieres que te las siga preguntando, pásate a Pro "
+        "desde el panel: {enlace_panel}"
+    ),
     "keydate.gone": (
         "Ese día era de una ficha que ya no está activa en Fichaitor. No he cambiado nada."
     ),

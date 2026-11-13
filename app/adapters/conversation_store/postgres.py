@@ -45,7 +45,7 @@ from app.domain.link_codes import (
     SenderState,
     failure_window,
 )
-from app.domain.plans import parse_plan
+from app.domain.plans import Plan, parse_plan
 from app.domain.profile_summary import facts_from_json
 from app.domain.proposals import Proposal, ProposalState, ProposalType
 from app.ports.conversation_store import (
@@ -594,6 +594,20 @@ class PostgresConversationStore:
                 account_id,
                 location_id,
             )
+
+    async def location_plan(self, account_id: str, location_id: str) -> Plan | None:
+        async with self._conn() as conn:
+            value = await conn.fetchval(
+                """
+                SELECT l.plan FROM location l
+                JOIN account a ON a.id = l.account_id AND a.deleted_at IS NULL
+                WHERE l.account_id = $1::uuid AND l.id = $2
+                  AND l.active_since IS NOT NULL AND l.removed_at IS NULL
+                """,
+                account_id,
+                location_id,
+            )
+        return parse_plan(value)
 
     # --- conversations ------------------------------------------------------------------
 

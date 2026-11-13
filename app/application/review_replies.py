@@ -21,7 +21,7 @@ from datetime import UTC, datetime
 
 from app.adapters.quota.memory import MemoryQuota
 from app.domain.plans import FEATURE_AI_REPLIES, FEATURES, PlanRequired
-from app.domain.quota import ai_replies_scope, draft_scope, month_window
+from app.domain.quota import draft_scope
 from app.domain.review_reply import (
     DRAFT_REVIEW_MAX_LENGTH,
     check_owner_reply,
@@ -34,11 +34,6 @@ from app.ports.reply_writer import ReplyWriter, ReplyWriterUnavailable
 from app.ports.store import Store
 
 log = logging.getLogger("fichaitor.reviews")
-
-
-# Without a cap, the replies drafted by the model are still counted, against a ceiling
-# no profile reaches in a month.
-UNCAPPED = 1_000_000
 
 
 class ReviewNotFound(Exception):
@@ -128,7 +123,7 @@ class ReviewReplies:
             raise DraftUnavailable from None
         if not taken:
             raise DraftRateLimited
-        await self._take_monthly(account_id, review.location_id)
+        await self._take_allowance(account_id, review.location_id)
         try:
             async with asyncio.timeout(self._timeout):
                 raw = await self._writer.write_reply(review.rating, text)
@@ -150,11 +145,12 @@ class ReviewReplies:
             log.warning("borrador de respuesta no guardado: %s", type(exc).__name__)
         return Draft(review.id, reply, cached=False)
 
-    async def _take_monthly(self, account_id: str, location_id: str | None) -> None:
+    async def _take_allowance(self, account_id: str, location_id: str | None) -> None:
         """Count one reply drafted by the model against the plan of that profile, read
-        now. Every plan counts them (GET /me shows how many); only the free plan has a
-        cap. Atomic in the quota store (usage_counter in PostgreSQL): two drafts at once
-        never go over the cap."""
+        now. Only a plan with a cap counts (the free one: 25 per Google profile, once and
+        for ever, app/domain/plans.py); Pro and Pro WhatsApp have none and spend nothing.
+        Atomic in the store (free_allowance in PostgreSQL): two drafts at once never go
+        over the cap."""
         if location_id is None:
             return
         try:
@@ -164,16 +160,17 @@ class ReviewReplies:
             raise DraftUnavailable from None
         if plan is None:
             raise ReviewNotFound  # no longer an active profile of the account
-        limit = FEATURES[plan].monthly_ai_replies
-        start, end = month_window(self._now())
+        limit = FEATURES[plan].lifetime_ai_replies
+        if limit is None:
+            return
         try:
-            taken = await self._quota.take_quota_in(
-                ai_replies_scope(location_id), limit if limit is not None else UNCAPPED, start, end
-            )
+            taken = await self._store.take_ai_reply(account_id, location_id, limit)
         except Exception as exc:  # no paid call without a working cap
-            log.warning("tope mensual de respuestas con IA no disponible: %s", type(exc).__name__)
+            log.warning("tope de respuestas con IA no disponible: %s", type(exc).__name__)
             raise DraftUnavailable from None
-        if not taken and limit is not None:
+        if taken is None:
+            raise ReviewNotFound
+        if not taken:
             raise PlanRequired(FEATURE_AI_REPLIES, limit)
 
     async def confirm(self, account_id: str, review_id: str, text: object) -> str:

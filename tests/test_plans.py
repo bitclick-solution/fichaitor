@@ -144,14 +144,28 @@ def test_entitlements_add_up_and_only_count_while_in_force():
     assert plans.allowance([ended, future], NOW) == {Plan.PRO: 0, Plan.PRO_WHATSAPP: 0}
 
 
-def test_default_plan_is_free_while_free_is_left_then_the_first_with_room():
-    assert plans.default_plan({}, [beta()], NOW) is Plan.GRATIS
-    assert plans.default_plan({Plan.GRATIS: 1}, [beta()], NOW) is Plan.PRO
+def test_default_plan_once_charging_is_free_while_free_is_left_then_the_first_with_room():
+    launched = NOW - DAY
+    assert plans.default_plan({}, [beta()], NOW, launched) is Plan.GRATIS
+    assert plans.default_plan({Plan.GRATIS: 1}, [beta()], NOW, launched) is Plan.PRO
     whatsapp = Entitlement(Plan.PRO_WHATSAPP, 1, starts_at=NOW - DAY, ends_at=None)
-    assert plans.default_plan({Plan.GRATIS: 1, Plan.PRO: 3}, [beta(), whatsapp], NOW) is (
+    assert plans.default_plan({Plan.GRATIS: 1, Plan.PRO: 3}, [beta(), whatsapp], NOW, launched) is (
         Plan.PRO_WHATSAPP
     )
-    assert plans.default_plan({Plan.GRATIS: 1, Plan.PRO: 3}, [beta()], NOW) is None
+    assert plans.default_plan({Plan.GRATIS: 1, Plan.PRO: 3}, [beta()], NOW, launched) is None
+
+
+def test_default_plan_in_the_beta_is_pro_while_the_beta_has_room_then_free():
+    # Paywall (owner, 2026-11-13): while nothing is charged (launch_at empty or ahead).
+    for launch_at in (None, NOW + DAY):
+        assert plans.default_plan({}, [beta()], NOW, launch_at) is Plan.PRO
+        assert plans.default_plan({Plan.PRO: 2}, [beta()], NOW, launch_at) is Plan.PRO
+        assert plans.default_plan({Plan.PRO: 3}, [beta()], NOW, launch_at) is Plan.GRATIS
+        assert plans.default_plan({Plan.PRO: 3, Plan.GRATIS: 1}, [beta()], NOW, launch_at) is None
+        assert plans.default_plan_order({}, [beta()], NOW, launch_at) == [Plan.PRO, Plan.GRATIS]
+    # Without any beta room left (an expired entitlement), the free plan.
+    expired = Entitlement(Plan.PRO, 3, starts_at=NOW - 2 * DAY, ends_at=NOW - DAY)
+    assert plans.default_plan({}, [expired], NOW) is Plan.GRATIS
 
 
 def test_usage_for_the_panel():

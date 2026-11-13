@@ -5,6 +5,7 @@ import asyncio
 import inspect
 import json
 import logging
+import time
 from collections.abc import Callable
 from datetime import UTC, datetime
 from typing import Any
@@ -606,3 +607,73 @@ def test_the_sdk_errors_are_the_ones_mapped() -> None:
     for name in ("APIConnectionError", "RateLimitError", "IdempotencyError", "CardError"):
         assert issubclass(getattr(stripe, name), stripe.StripeError)
     assert json.dumps(INVOICE)  # the sample stays plain JSON
+
+
+# --- paywall (steps 6 and 8): the Checkout session read back, and its expiry ----------
+
+
+def test_a_checkout_expires_in_31_minutes_so_a_second_purchase_waits_little() -> None:
+    server = FakeStripeServer()
+    before = int(time.time())
+    run(
+        adapter(server).create_checkout(
+            "cus_1",
+            PriceKey.PRO_FIRST,
+            TaxTreatment.IVA_21,
+            "acc_1",
+            "seat_2",
+            "https://fichaitor.es/app?pago=ok&ficha=loc_1234",
+            "https://fichaitor.es/app?pago=cancelado&ficha=loc_1234",
+            idempotency_key="billing_request:r1:checkout",
+        )
+    )
+    expires = int(server.form()["expires_at"][0])
+    assert before + 1860 <= expires <= int(time.time()) + 1860
+    assert server.requests[-1].headers["idempotency-key"] == "billing_request:r1:checkout"
+
+
+def test_a_checkout_session_gives_its_subscription_and_metadata() -> None:
+    session = {
+        "id": "cs_1",
+        "object": "checkout.session",
+        "status": "complete",
+        "subscription": "sub_1",
+        "customer": "cus_1",
+        "metadata": {"account_id": "acc_1", "seat_id": "seat_1"},
+    }
+    server = FakeStripeServer(
+        {("GET", "/v1/checkout/sessions/cs_1"): lambda: httpx.Response(200, json=session)}
+    )
+    info = run(adapter(server).checkout_session("cs_1"))
+    assert (info.subscription_id, info.customer_id, info.account_id, info.seat_id) == (
+        "sub_1",
+        "cus_1",
+        "acc_1",
+        "seat_1",
+    )
+    with pytest.raises(PaymentsNotFound):
+        run(adapter(FakeStripeServer()).checkout_session("cs_nope"))
+
+
+def test_the_fake_hands_out_https_urls_of_stripe_only() -> None:
+    from app.billing.requests import is_stripe_url
+
+    fake = FakePayments()
+    customer = run(fake.create_customer("acc_1", DETAILS, idempotency_key="c"))
+    session = run(
+        fake.create_checkout(
+            customer,
+            PriceKey.PRO_FIRST,
+            TaxTreatment.IVA_21,
+            "acc_1",
+            "seat_1",
+            "a",
+            "b",
+            idempotency_key="k",
+        )
+    )
+    sub = fake.complete_checkout(session.id)
+    assert is_stripe_url(session.url) and is_stripe_url(sub.hosted_invoice_url)
+    assert is_stripe_url(run(fake.portal_url(customer, "https://fichaitor.es/app")))
+    info = run(fake.checkout_session(session.id))
+    assert (info.status, info.subscription_id, info.seat_id) == ("complete", sub.id, "seat_1")

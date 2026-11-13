@@ -618,6 +618,11 @@ GRANT DELETE ON waitlist_entry TO fichaitor_worker;
 REVOKE ALL ON usage_counter FROM fichaitor_worker;
 GRANT SELECT (expires_at) ON usage_counter TO fichaitor_worker;
 GRANT DELETE ON usage_counter TO fichaitor_worker;
+-- Respuestas con IA del plan Gratis (free_allowance, schema.sql): borrar a los 3 años del
+-- último uso. El disparador free_allowance_guard impide borrar antes.
+REVOKE ALL ON free_allowance FROM fichaitor_worker;
+GRANT SELECT (last_used_at) ON free_allowance TO fichaitor_worker;
+GRANT DELETE ON free_allowance TO fichaitor_worker;
 
 -- Registro de auditoría: el worker puede borrar, y solo, las filas de una cuenta que
 -- lleva más de 12 meses sin conexión con Google (baja de la ficha o de la cuenta).

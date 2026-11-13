@@ -185,7 +185,9 @@ async def state(location_id):
 def test_activation_takes_free_then_pro_and_the_database_refuses_beyond():
     async def scenario(s):
         account, _, ids = await s.account("ana", [profile(f"a{n}") for n in range(6)])
-        plans = [await s.api.activate(account, i) for i in ids[:4]]
+        # The free one by name: during the beta, no plan means Pro first (test_paywall.py).
+        plans = [await s.api.activate(account, ids[0], Plan.GRATIS)]
+        plans += [await s.api.activate(account, i) for i in ids[1:4]]
         assert plans == [Plan.GRATIS, Plan.PRO, Plan.PRO, Plan.PRO]
         with pytest.raises(LocationLimit):
             await s.api.activate(account, ids[4])
@@ -289,7 +291,7 @@ def test_activation_refuses_another_account_a_removed_profile_and_a_scheduled_le
             sub,
         )
         with pytest.raises(OffboardingPending):
-            await s.api.activate(ana, bar)
+            await s.api.activate(ana, bar, Plan.GRATIS)
 
     scene(scenario)
 
@@ -303,7 +305,7 @@ def test_a_profile_of_another_account_or_inactive_is_never_served():
         eva, eva_sub, (eva_bar,) = await s.account("eva", [profile("i3")])
         with pytest.raises(NoLocationChosen):
             await s.api.resolve_location(ana, None)
-        await s.api.activate(ana, bar)
+        await s.api.activate(ana, bar, Plan.GRATIS)
         await s.api.activate(eva, eva_bar)
         for sub, gbp in ((ana_sub, profile("i1").location), (eva_sub, profile("i3").location)):
             await s.summary(sub, gbp)
@@ -363,7 +365,7 @@ def test_a_profile_of_another_account_or_inactive_is_never_served():
 def test_a_retired_preference_still_says_it_lost_access():
     async def scenario(s):
         ana, _, (bar, shop) = await s.account("ana", [profile("l1"), profile("l2")])
-        await s.api.activate(ana, bar)
+        await s.api.activate(ana, bar, Plan.GRATIS)
         assert await s.api.select_location(ana, bar)
         await owner(
             "UPDATE location SET removed_at = now() WHERE id = $1", bar
@@ -388,7 +390,7 @@ def test_deactivation_cancels_open_proposals_and_frees_their_lane_together():
     async def scenario(s):
         ana, _, (bar, shop) = await s.account("ana", [profile("d1"), profile("d2")])
         eva, _, (eva_bar,) = await s.account("eva", [profile("d3")])
-        await s.api.activate(ana, bar)
+        await s.api.activate(ana, bar, Plan.GRATIS)
         await s.api.activate(ana, shop)
         await s.api.activate(eva, eva_bar)
         assert await s.api.select_location(ana, shop)
@@ -466,7 +468,7 @@ def test_deactivation_cancels_open_proposals_and_frees_their_lane_together():
 def test_deactivation_is_all_or_nothing():
     async def scenario(s):
         ana, _, (bar,) = await s.account("ana", [profile("t1")])
-        await s.api.activate(ana, bar)
+        await s.api.activate(ana, bar, Plan.GRATIS)
         pid = await s.proposal(ana, bar)
         # The last statement (releasing the lane) is made to fail with a trigger of this
         # test, only for this account: the profile and its proposals stay as they were.
@@ -508,7 +510,7 @@ def test_choosing_an_inactive_profile_activates_nothing_and_says_so():
         with pytest.raises(LocationInactive):
             await s.api.select_location(ana, bar)
         assert (await state(bar))["plan"] is None
-        await s.api.activate(ana, bar)
+        await s.api.activate(ana, bar, Plan.GRATIS)
         assert await s.api.select_location(ana, bar)
         with pytest.raises(LocationInactive):
             await s.api.select_location(ana, shop)
@@ -534,7 +536,7 @@ def test_choosing_an_inactive_profile_activates_nothing_and_says_so():
 def test_the_overview_counts_what_waits_in_each_active_profile():
     async def scenario(s):
         ana, sub, (bar, shop) = await s.account("ana", [profile("o1", "A"), profile("o2", "B")])
-        await s.api.activate(ana, bar)
+        await s.api.activate(ana, bar, Plan.GRATIS)
         await s.summary(sub, profile("o1").location, unanswered=4, status="needs_reconnect")
         await s.summary(sub, profile("o2").location, unanswered=9)
         await s.proposal(ana, bar)
@@ -559,7 +561,7 @@ def test_the_overview_counts_what_waits_in_each_active_profile():
 def test_a_reply_goes_to_any_active_profile_and_its_cap_is_per_profile():
     async def scenario(s):
         ana, sub, (bar, shop) = await s.account("ana", [profile("p1"), profile("p2")])
-        await s.api.activate(ana, bar)
+        await s.api.activate(ana, bar, Plan.GRATIS)
         review = await s.review(sub, profile("p2").location)
         assert await s.api.create_reply_action(ana, review, "Gracias", NOW) is None
         await s.api.activate(ana, shop)

@@ -292,6 +292,12 @@ GRANT SELECT, INSERT, UPDATE ON review_draft TO fichaitor_conversation;
 GRANT SELECT (scope, window_start, hits) ON usage_counter TO fichaitor_conversation;
 GRANT INSERT (scope, window_start, expires_at, hits) ON usage_counter TO fichaitor_conversation;
 GRANT UPDATE (hits) ON usage_counter TO fichaitor_conversation;
+-- Respuestas con IA del plan Gratis (free_allowance, schema.sql): las cuenta también la
+-- conversación, al pedir el borrador de una reseña que propone por el chat.
+REVOKE ALL ON free_allowance FROM fichaitor_conversation;
+GRANT SELECT (key, used) ON free_allowance TO fichaitor_conversation;
+GRANT INSERT (key, used) ON free_allowance TO fichaitor_conversation;
+GRANT UPDATE (used) ON free_allowance TO fichaitor_conversation;
 -- Acciones: las crea como la API (sin estado ni resultado) y las lee. No puede
 -- cambiarlas. Solo el ejecutor del worker escribe en Google, y antes comprueba que la
 -- cuenta, su usuario de Google, la ficha y la reseña casan (claim_action, M1).
@@ -339,8 +345,9 @@ REVOKE SELECT (title) ON location FROM fichaitor_worker;
 -- a los tres roles.
 -- - El worker: todo (es quien ejecuta, planifica y borra).
 -- - La API: solo encola, y solo los tipos que encola su código: la respuesta y el horario
---   confirmados, el correo y la baja, la sincronización de la ficha y lo que llega por el
---   webhook. No lee la cola.
+--   confirmados, el correo y la baja, la sincronización de la ficha, lo que llega por el
+--   webhook de Telegram y, del cobro (schema_billing.sql), el evento de Stripe y la petición
+--   de la web al proceso de cobro. No lee la cola.
 -- - La conversación: ve, toma y cierra solo sus tipos (app/domain/channel_jobs.py:KINDS),
 --   así que nunca lee la carga de un send_mail (el correo del dueño, el código de baja y el
 --   token de restauración). Encola solo lo que encola su código.
@@ -365,7 +372,7 @@ CREATE POLICY job_worker ON job FOR ALL TO fichaitor_worker USING (true) WITH CH
 DROP POLICY IF EXISTS job_api_insert ON job;
 CREATE POLICY job_api_insert ON job FOR INSERT TO fichaitor_api
     WITH CHECK (kind IN ('reply_review', 'set_special_hours', 'send_mail', 'apply_offboarding',
-                         'sync_profile', 'channel_inbound')
+                         'sync_profile', 'channel_inbound', 'stripe_event', 'billing_request')
                 AND job_key_fits(kind, idempotency_key));
 DROP POLICY IF EXISTS job_conversation_read ON job;
 CREATE POLICY job_conversation_read ON job FOR SELECT TO fichaitor_conversation

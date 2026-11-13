@@ -45,6 +45,14 @@ class Settings(BaseSettings):
     review_draft_rate_limit: int = 30
     review_draft_rate_window_seconds: int = 86400
     review_draft_timeout_seconds: float = 20.0
+    # Keys the free allowance of replies drafted by the model of each Google profile
+    # (free_allowance, app/domain/quota.py). The same in the API and the conversation;
+    # deploy.sh requires 32 characters or more. Empty only in local development.
+    allowance_pepper: str = ""
+    # Stripe (docs/admin-facturacion.md, 4.1): the API only has the signing secret of the
+    # webhook (whsec_...). Empty: the route is not mounted. The mode of the events taken.
+    stripe_webhook_secret: str = ""
+    stripe_livemode: bool = False
 
     # Leaving (docs/contrato-web-api.md, "Baja"). A leave is confirmed with a code
     # sent by email. The secret keys the fingerprint of the codes; empty: the one of

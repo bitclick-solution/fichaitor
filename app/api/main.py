@@ -6,8 +6,11 @@ from dataclasses import replace
 from datetime import UTC, datetime
 
 from fastapi import FastAPI, HTTPException, Request
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 
+from app.adapters.billing_store.memory import MemoryBillingStore
+from app.adapters.billing_store.postgres import PostgresBillingStore
 from app.adapters.calendar.loader import CalendarDataError, load_calendar
 from app.adapters.google_oauth.fake import FakeGoogleOAuth
 from app.adapters.google_oauth.real import RealGoogleOAuth
@@ -23,6 +26,7 @@ from app.adapters.sentiment_model.build import build_sentiment_model
 from app.adapters.store.memory import MemoryStore
 from app.adapters.store.postgres import PostgresStore
 from app.adapters.worker_store.memory import MemoryWorkerStore
+from app.api.billing import build_router as build_billing_router
 from app.api.channels import build_router as build_channels_router
 from app.api.diagnosis_out import DiagnosisResponse, to_response
 from app.api.google_oauth import build_router as build_google_router
@@ -33,7 +37,9 @@ from app.api.offboarding import build_router as build_offboarding_router
 from app.api.reviews import build_router as build_reviews_router
 from app.api.screenshot import build_reader as build_reply_writer
 from app.api.screenshot import build_router_from_settings as build_screenshot_router
+from app.api.session import AccountBlocked, account_blocked_response
 from app.api.waitlist import SOURCE_PATTERN, build_router
+from app.api.webhooks_stripe import build_router as build_stripe_webhook_router
 from app.application.diagnosis_service import DailyLimitReached, DiagnosisService, RateLimited
 from app.application.key_dates import KeyDates
 from app.application.offboarding import Offboarding
@@ -46,6 +52,7 @@ from app.domain.calendar import NATIONAL, Holiday
 from app.domain.jobs import Job
 from app.domain.offboarding import SEND_MAIL_KIND
 from app.mail_config import MailSettings
+from app.ports.billing_store import BillingStore
 from app.ports.google_oauth import GoogleOAuth
 from app.ports.job_queue import JobEnqueuer
 from app.ports.places import PlacesGateway, PlacesUnavailable
@@ -166,6 +173,7 @@ def create_app(
     sentiment_settings: SentimentSettings | None = None,
     mail_settings: MailSettings | None = None,
     channels_settings: ChannelsSettings | None = None,
+    billing: BillingStore | None = None,
 ) -> FastAPI:
     settings = settings or Settings()
     screenshot_settings = screenshot_settings or ScreenshotSettings()
@@ -203,9 +211,10 @@ def create_app(
             )
     if store is None:
         if settings.database_url:
-            store = PostgresStore(settings.database_url)
+            store = PostgresStore(settings.database_url, allowance_pepper=settings.allowance_pepper)
         elif settings.fake_places:
             store = MemoryStore()
+            store.allowance_pepper = settings.allowance_pepper
         else:
             raise RuntimeError("Falta FICHAITOR_DATABASE_URL")
     if jobs is None:
@@ -233,6 +242,13 @@ def create_app(
         store.jobs = (
             InlineMail(jobs, mail_settings.public_base_url) if mail_settings.fake_mail else jobs
         )
+    if billing is None:
+        # The paywall (docs/admin-facturacion.md): on the same database pool, or in memory
+        # next to the in-memory store (tests and the demo).
+        if isinstance(store, PostgresStore):
+            billing = PostgresBillingStore(store)
+        elif isinstance(store, MemoryStore):
+            billing = MemoryBillingStore(store)
     sync = ProfileSync(
         store,
         jobs,
@@ -272,6 +288,10 @@ def create_app(
             await store.close()
 
     app = FastAPI(title="Fichaitor API", version="0.1.0", lifespan=lifespan)
+
+    @app.exception_handler(AccountBlocked)
+    async def account_blocked(_: Request, __: AccountBlocked) -> JSONResponse:
+        return account_blocked_response()
 
     def client_ip(request: Request) -> str:
         return _client_ip(request, settings.trust_proxy_headers)
@@ -331,14 +351,39 @@ def create_app(
             cookie_secure=settings.cookie_secure,
             clock=clock,
             sentiment_policy=sentiment_policy,
+            billing=billing,
         )
     )
     # Multinegocio (docs/multinegocio.md, 5.3): activate and deactivate a profile.
     app.include_router(
         build_locations_router(
-            store=store, sync=sync, clock=clock, cookie_secure=settings.cookie_secure
+            store=store,
+            sync=sync,
+            clock=clock,
+            cookie_secure=settings.cookie_secure,
+            billing=billing,
         )
     )
+    # The paywall: fiscal profile, seats and the requests to the billing process, and the
+    # webhook of Stripe (only with its signing secret).
+    if billing is not None:
+        app.include_router(
+            build_billing_router(
+                store=store,
+                billing=billing,
+                quota=quota,
+                clock=clock,
+                cookie_secure=settings.cookie_secure,
+            )
+        )
+        if settings.stripe_webhook_secret:
+            app.include_router(
+                build_stripe_webhook_router(
+                    billing=billing,
+                    secret=settings.stripe_webhook_secret,
+                    livemode=settings.stripe_livemode,
+                )
+            )
 
     # Reviews of the connected profile and their replies. The writer of drafts is the
     # one of the screenshot demo (Gemini, or the fake one with FICHAITOR_FAKE_SCREENSHOT).

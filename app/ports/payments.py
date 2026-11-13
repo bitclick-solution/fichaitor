@@ -99,6 +99,19 @@ class CheckoutSession:
 
 
 @dataclass(frozen=True)
+class CheckoutInfo:
+    """A Checkout session read again from Stripe (`checkout.session.completed`): its
+    subscription, once paid, and our metadata."""
+
+    id: str
+    status: str | None  # open, complete or expired
+    subscription_id: str | None
+    customer_id: str | None
+    account_id: str | None  # metadata
+    seat_id: str | None
+
+
+@dataclass(frozen=True)
 class SubscriptionInfo:
     """A subscription of a seat, as read from Stripe now."""
 
@@ -221,6 +234,10 @@ class Payments(Protocol):
     ) -> CheckoutSession:
         """A hosted Checkout in `subscription` mode, card only, for a seat of a customer
         without a saved card."""
+        ...
+
+    async def checkout_session(self, session_id: str) -> CheckoutInfo:
+        """A Checkout session, to find the subscription it created."""
         ...
 
     async def create_subscription(

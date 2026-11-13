@@ -157,7 +157,7 @@ def test_activation_counts_in_the_database_up_to_the_limit(api):
     api.connect("ana", [place(n) for n in names])
     ids = api.ids("ana")
 
-    body = api.activate("ana", ids[0]).json()
+    body = api.activate("ana", ids[0], "gratis").json()  # during the beta no plan is Pro
     assert by_id(body)[ids[0]]["plan"] == "gratis"
     assert by_id(body)[ids[0]]["status"] == "pendiente"
     assert by_id(body)[ids[0]]["pending"] == {"reviews": 0, "key_dates": 0}

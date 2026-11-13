@@ -42,6 +42,7 @@ from app.domain.profile_summary import (
     Review,
     facts_to_json,
 )
+from app.domain.quota import ALLOWANCE_RETENTION_YEARS
 from app.domain.reviews import storable_reviews, storable_text
 from app.domain.sentiment import (
     STATUS_ERROR as SENTIMENT_ERROR,
@@ -1164,6 +1165,32 @@ class PostgresWorkerStore:
             # Counters of the caps on paid calls whose window has ended.
             counts["usage_counter"] = _deleted(
                 await conn.execute("DELETE FROM usage_counter WHERE expires_at <= $1", now)
+            )
+            # The free allowance of replies drafted by the model of each Google profile,
+            # 3 years after its last use (docs/retencion.md). The database refuses sooner.
+            counts["free_allowance"] = _deleted(
+                await conn.execute(
+                    "DELETE FROM free_allowance"
+                    " WHERE last_used_at <= $1::timestamptz - make_interval(years => $2)",
+                    now,
+                    ALLOWANCE_RETENTION_YEARS,
+                )
+            )
+            # Billing (docs/admin-facturacion.md, 4.8): what the web asked of the billing
+            # process, after 30 days; the ids of the Stripe events processed, after 90.
+            counts["billing_request"] = _deleted(
+                await conn.execute(
+                    "DELETE FROM billing_request"
+                    " WHERE created_at <= $1::timestamptz - interval '30 days'",
+                    now,
+                )
+            )
+            counts["stripe_event"] = _deleted(
+                await conn.execute(
+                    "DELETE FROM stripe_event WHERE processed_at IS NOT NULL"
+                    " AND received_at <= $1::timestamptz - interval '90 days'",
+                    now,
+                )
             )
             # Finished jobs (I12): their payload may name the Google user and the
             # profile. Kept: the job that carried out an action, while the action is

@@ -221,6 +221,7 @@ def test_me_has_the_shape_of_the_contract():
         "pending_deletion",
         "plans",
         "pricing",
+        "billing",
     }
     assert body["connected"] is True and body["pending_deletion"] is None
     assert body["email"] == "dueno@example.com"

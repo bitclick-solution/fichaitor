@@ -18,6 +18,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 
+from app.api.billing import BillingOut, billing_body
 from app.api.diagnosis_out import (
     UNAVAILABLE_STATUS_CODE,
     DiagnosisUnavailable,
@@ -43,9 +44,9 @@ from app.domain import plans
 from app.domain.calendar import Holiday
 from app.domain.conversation import DEFAULT_TIMEZONE, timezone_for
 from app.domain.profile_summary import STATUS_OK, shown_status
-from app.domain.quota import ai_replies_scope, month_window
 from app.domain.sentiment import STATUS_ERROR, SentimentPolicy
 from app.domain.session import hash_token
+from app.ports.billing_store import BillingStore
 from app.ports.store import (
     Account,
     ActivationRefused,
@@ -61,7 +62,7 @@ from app.ports.store import (
 log = logging.getLogger("fichaitor.me")
 
 # docs/multinegocio.md, «Aclaraciones para la web». No charging yet (beta).
-MSG_NO_ROOM = "No te quedan fichas libres en tu plan. Escríbenos para activar más fichas."
+MSG_NO_ROOM = "No te quedan fichas libres en ese plan. Pásate a Pro o a Pro+ para activar más."
 MSG_FREE_TAKEN = (
     "Esta ficha ya está activa en el plan Gratis en otra cuenta. Actívala con un plan de "
     "pago o pide a esa cuenta que la desactive."
@@ -95,8 +96,11 @@ class PendingOut(BaseModel):
 
 
 class AiRepliesUsageOut(BaseModel):
-    used: int  # replies drafted by the model this calendar month (Madrid)
-    limit: int | None  # 25 in Gratis; None without a cap
+    # Replies drafted by the model with the free allowance of this Google profile, for
+    # ever (owner, 2026-11-13): they do not come back each month nor with a new account.
+    used: int
+    limit: int | None  # 25 in Gratis; None without a cap (Pro, Pro+)
+    lifetime: bool = True
 
 
 class UsageOut(BaseModel):
@@ -176,15 +180,19 @@ class MeResponse(BaseModel):
     pending_deletion: PendingDeletionOut | None
     plans: PlansOut
     pricing: PricingOut
+    # The paywall (docs/contrato-web-api.md, «Cobro y paywall»): fiscal profile done, the
+    # block for a payment not made, the paid seats and the price of a new one. None only
+    # without a billing store (old tests).
+    billing: BillingOut | None = None
 
 
 class SelectLocationRequest(BaseModel):
     location_id: str = Field(min_length=1, max_length=64)
 
 
-async def _ai_replies_used(store: Store, location_id: str, now: datetime) -> int:
+async def _ai_replies_used(store: Store, account_id: str, location_id: str) -> int:
     try:
-        return await store.quota_used(ai_replies_scope(location_id), month_window(now)[0])
+        return await store.ai_replies_used(account_id, location_id)
     except Exception as exc:  # GET /me never fails for a counter
         log.warning("uso de respuestas con IA no disponible: %s", type(exc).__name__)
         return 0
@@ -222,7 +230,7 @@ def _location_out(
             UsageOut(
                 ai_replies=AiRepliesUsageOut(
                     used=ai_replies_used,
-                    limit=plans.FEATURES[location.plan].monthly_ai_replies,
+                    limit=plans.FEATURES[location.plan].lifetime_ai_replies,
                 )
             )
             if location.plan is not None
@@ -239,9 +247,12 @@ def _location_out(
     )
 
 
-async def me_body(store: Store, account: Account, now: datetime) -> MeResponse:
+async def me_body(
+    store: Store, account: Account, now: datetime, billing: BillingStore | None = None
+) -> MeResponse:
     """The body of GET /me, which is also the answer of choosing, activating and
     deactivating a profile."""
+    launch_at = await billing.launch_at() if billing is not None else plans.LAUNCH_AT
     # Key dates count from today in the zone they are asked in (app/application/key_dates.py).
     today = now.astimezone(timezone_for(DEFAULT_TIMEZONE)).date()
     overview = await store.locations_overview(account.id, today)
@@ -252,7 +263,7 @@ async def me_body(store: Store, account: Account, now: datetime) -> MeResponse:
             _location_out(
                 loc,
                 leaving,
-                await _ai_replies_used(store, loc.id, now) if loc.plan is not None else 0,
+                await _ai_replies_used(store, account.id, loc.id) if loc.plan is not None else 0,
             )
             for loc in overview.locations
         ],
@@ -269,7 +280,8 @@ async def me_body(store: Store, account: Account, now: datetime) -> MeResponse:
         plans=PlansOut.model_validate(
             plans.usage(overview.active_by_plan(), overview.entitlements, now)
         ),
-        pricing=PricingOut.model_validate(plans.pricing(overview.active(), now)),
+        pricing=PricingOut.model_validate(plans.pricing(overview.active(), now, launch_at)),
+        billing=await billing_body(billing, account, now) if billing is not None else None,
     )
 
 
@@ -281,6 +293,7 @@ def build_router(
     cookie_secure: bool,
     clock: Callable[[], float],
     sentiment_policy: SentimentPolicy | None = None,
+    billing: BillingStore | None = None,
 ) -> APIRouter:
     router = APIRouter()
     current_account = account_guard(store, clock, cookie_secure)
@@ -289,7 +302,7 @@ def build_router(
     sentiment_policy = sentiment_policy or SentimentPolicy()
 
     async def me_of(account: Account) -> MeResponse:
-        return await me_body(store, account, datetime.fromtimestamp(clock(), UTC))
+        return await me_body(store, account, datetime.fromtimestamp(clock(), UTC), billing)
 
     @router.get("/api/v1/me", response_model=MeResponse)
     async def me(account: Account = Depends(current_account)) -> MeResponse:  # noqa: B008

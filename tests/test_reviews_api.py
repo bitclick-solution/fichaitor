@@ -173,10 +173,16 @@ class World:
         )
         return client
 
-    def select(self, client: TestClient, title: str | None = None) -> None:
+    def select(self, client: TestClient, title: str | None = None, plan: str = "gratis") -> None:
+        # The free plan by default, as these tests were written (during the beta an
+        # activation without a plan now takes Pro: test_paywall.py).
         locations = client.get(ME).json()["locations"]
         chosen = next(loc for loc in locations if title in (None, loc["title"]))
-        client.post(f"/api/v1/me/locations/{chosen['id']}/activation", json={}, headers=HEADER)
+        url = f"/api/v1/me/locations/{chosen['id']}/activation"
+        if client.post(url, json={"plan": plan}, headers=HEADER).status_code != 200:
+            # The free plan is used (in this account, or that Google profile in another
+            # one): the next plan with room.
+            client.post(url, json={}, headers=HEADER)
         r = client.post(SELECT, json={"location_id": chosen["id"]}, headers=HEADER)
         assert r.status_code == 200
 

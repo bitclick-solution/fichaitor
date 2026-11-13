@@ -14,6 +14,7 @@ from typing import Any, Literal
 
 from app.domain.billing import TAX_PERCENT, PriceKey, TaxTreatment, price_cents
 from app.ports.payments import (
+    CheckoutInfo,
     CheckoutSession,
     CustomerDetails,
     DisputeInfo,
@@ -128,7 +129,7 @@ class FakePayments:
             period_start=start,
             period_end=end,
             paid_at=self.now() if paid else None,
-            hosted_invoice_url=f"https://invoice.stripe.test/{invoice_id}",
+            hosted_invoice_url=f"https://invoice.stripe.com/i/test_{invoice_id}",
             payment_intent_id=self._new("pi"),
             payment_intent_status=intent_status,
             charge_id=self._new("ch") if paid else None,
@@ -173,7 +174,11 @@ class FakePayments:
     def complete_checkout(self, session_id: str) -> SubscriptionInfo:
         """The customer pays in the hosted Checkout."""
         pending = self.checkouts[session_id]
-        return self._subscribe(**pending)
+        params = {k: pending[k] for k in ("customer_id", "price_key", "treatment", "account_id")}
+        sub = self._subscribe(**params, seat_id=pending["seat_id"])
+        pending["subscription_id"] = sub.id
+        pending["status"] = "complete"
+        return sub
 
     def open_dispute(self, invoice_id: str) -> DisputeInfo:
         invoice = self.invoices[invoice_id]
@@ -254,7 +259,7 @@ class FakePayments:
                 "account_id": account_id,
                 "seat_id": seat_id,
             }
-            return CheckoutSession(session_id, f"https://checkout.stripe.test/{session_id}")
+            return CheckoutSession(session_id, f"https://checkout.stripe.com/c/pay/{session_id}")
 
         return self._once(idempotency_key, "checkout.sessions.create", params, make)
 
@@ -296,6 +301,20 @@ class FakePayments:
             hosted_invoice_url=invoice.hosted_invoice_url,
         )
         return seat.subscription
+
+    async def checkout_session(self, session_id: str) -> CheckoutInfo:
+        self._start("checkout.sessions.retrieve")
+        found = self.checkouts.get(session_id)
+        if found is None:
+            raise PaymentsNotFound("Stripe: no existe", status=404, code="resource_missing")
+        return CheckoutInfo(
+            id=session_id,
+            status=found.get("status", "open"),
+            subscription_id=found.get("subscription_id"),
+            customer_id=found["customer_id"],
+            account_id=found["account_id"],
+            seat_id=found["seat_id"],
+        )
 
     async def create_subscription(
         self,
@@ -366,7 +385,7 @@ class FakePayments:
     async def portal_url(self, customer_id: str, return_url: str) -> str:
         self._start("billing_portal.sessions.create")
         self._customer(customer_id)
-        return f"https://billing.stripe.test/p/{customer_id}"
+        return f"https://billing.stripe.com/p/session/test_{customer_id}"
 
     async def refund(
         self, invoice_id: str, amount: int | None, reason: str, *, idempotency_key: str

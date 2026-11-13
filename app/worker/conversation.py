@@ -187,7 +187,9 @@ async def run(settings: ConversationSettings) -> None:
     channels_settings = ChannelsSettings()
     telegram.redact_bot_token_in_logs()
     pool = await asyncpg.create_pool(settings.conversation_database_url, min_size=1, max_size=4)
-    store = PostgresStore(settings.conversation_database_url)
+    store = PostgresStore(
+        settings.conversation_database_url, allowance_pepper=Settings().allowance_pepper
+    )
     writer = build_writer(ScreenshotSettings())
     if writer is None:
         log.event("reply_writer_missing", logging.WARNING)

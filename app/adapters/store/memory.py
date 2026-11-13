@@ -37,10 +37,10 @@ from app.domain.offboarding import (
 )
 from app.domain.plans import (
     BETA_PRO_QUANTITY,
-    PAID_PLANS,
     Entitlement,
     Plan,
     activation_allowed,
+    default_plan_order,
 )
 from app.domain.proposals import (
     CANCELLED_BY_DEACTIVATION,
@@ -52,6 +52,7 @@ from app.domain.proposals import (
     ProposalType,
     advance,
 )
+from app.domain.quota import allowance_key
 from app.domain.special_hours import JOB_MAX_ATTEMPTS as HOURS_MAX_ATTEMPTS
 from app.domain.special_hours import SpecialHoursChange, describe
 from app.ports.channel_links import LinkCodeTaken
@@ -61,6 +62,7 @@ from app.ports.key_dates import KeyDateNotFound, KeyDateView, SpecialHoursInProg
 from app.ports.store import (
     Account,
     ActiveProfile,
+    BillingBlock,
     FreeTaken,
     GoogleConnection,
     Location,
@@ -91,6 +93,17 @@ def review_order(row: ReviewRow) -> tuple:
     """Unanswered first; then fewer stars; then the newest."""
     age = -row.created_at.timestamp() if row.created_at else float("inf")
     return (row.reply_text is not None, row.rating if row.rating is not None else 6, age, row.id)
+
+
+@dataclass
+class BlockRow:
+    account_id: str
+    reason: str
+    blocked_at: datetime
+    stripe_invoice_id: str | None = None
+    seat_id: str | None = None
+    unblocked_at: datetime | None = None
+    unblocked_by: str | None = None
 
 
 @dataclass
@@ -187,6 +200,13 @@ class MemoryStore:
         self.link_codes: list[LinkCode] = []  # hashes only, never a code
         # Key date proposals, as the conversation would have created them (by id).
         self.key_date_proposals: dict[str, Proposal] = {}
+        # billing_setting.launch_at: None is the beta (nothing is charged).
+        self.launch_at: datetime | None = None
+        # free_allowance: by allowance_key, which survives a leave (nothing deletes it).
+        self.allowance_pepper = ""
+        self.free_allowance: dict[str, int] = {}
+        # account_billing_block: written by MemoryBillingStore (the billing process).
+        self.billing_blocks: list[BlockRow] = []
         self._fail = fail
 
     def _check(self) -> None:
@@ -268,7 +288,26 @@ class MemoryStore:
         row = self._account(session.account_id)
         leave = self._pending(row.id)
         pending = PendingDeletion(leave.scope, leave.delete_at) if leave else None
-        return Account(row.id, row.email, row.selected_location_id, session.id, pending)
+        return Account(
+            row.id,
+            row.email,
+            row.selected_location_id,
+            session.id,
+            pending,
+            blocked=self.billing_block(row.id),
+        )
+
+    def billing_block(self, account_id: str) -> BillingBlock | None:
+        """The oldest open block of the account (account_billing_block)."""
+        rows = sorted(
+            (
+                b
+                for b in self.billing_blocks
+                if b.account_id == account_id and b.unblocked_at is None
+            ),
+            key=lambda b: b.blocked_at,
+        )
+        return BillingBlock(rows[0].blocked_at, rows[0].reason) if rows else None
 
     async def revoke_session(self, token_hash: str, now: datetime) -> None:
         self._check()
@@ -341,11 +380,7 @@ class MemoryStore:
             account = self._account(row.account_id)
             active = self._active_by_plan(row.account_id, row.id)
             now = datetime.now(UTC)
-            candidates = [
-                p
-                for p in (Plan.GRATIS, *PAID_PLANS)
-                if activation_allowed(active, account.entitlements, p, now)
-            ]
+            candidates = default_plan_order(active, account.entitlements, now, self.launch_at)
         if not candidates:
             raise LocationLimit
         for index, candidate in enumerate(candidates):
@@ -398,6 +433,27 @@ class MemoryStore:
             )
             account.selected_location_id = oldest[0].id if oldest else None
         return True
+
+    async def take_ai_reply(self, account_id: str, location_id: str, limit: int) -> bool | None:
+        self._check()
+        row = self._own(account_id, location_id)
+        if row is None or not row.active or self._pending(account_id) is not None:
+            return None
+        key = allowance_key(self.allowance_pepper, row.profile.location)
+        used = self.free_allowance.get(key, 0)
+        if used >= limit:
+            return False
+        self.free_allowance[key] = used + 1
+        return True
+
+    async def ai_replies_used(self, account_id: str, location_id: str) -> int:
+        self._check()
+        row = self._own(account_id, location_id)
+        if row is None:
+            return 0
+        return self.free_allowance.get(
+            allowance_key(self.allowance_pepper, row.profile.location), 0
+        )
 
     async def location_plan(self, account_id: str, location_id: str) -> Plan | None:
         self._check()

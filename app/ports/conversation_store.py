@@ -168,6 +168,12 @@ class ConversationStore(Protocol):
         being one, its unfinished proposals are cancelled (`location_inactive`)."""
         ...
 
+    async def location_plan(self, account_id: str, location_id: str) -> Plan | None:
+        """The plan that profile of that account is active in now, or None if it is not
+        an active profile of it (or the fake does not model plans). A key date of a
+        profile that moved to the free plan cannot be confirmed (`plan_required`)."""
+        ...
+
     # --- conversations ----------------------------------------------------------
     async def get_conversation(self, account_id: str) -> Conversation:
         """The thread of the account; created the first time."""

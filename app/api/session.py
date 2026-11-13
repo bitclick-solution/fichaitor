@@ -82,18 +82,40 @@ def account_guard(
 
 MSG_LEAVE_PENDING = "Tienes una baja programada. Restáurala para seguir usando Fichaitor."
 
+# docs/admin-facturacion.md, 3.6: a payment not made blocks the whole account, with no
+# time limit. Every data route answers 402 with this code; GET /me, the billing routes,
+# leaving, logout, unlinking chats and deactivating profiles still answer.
+CODE_ACCOUNT_BLOCKED = "account_blocked"
+MSG_ACCOUNT_BLOCKED = (
+    "Tu cuenta está en pausa por un pago pendiente. Paga la factura pendiente o cambia la "
+    "tarjeta en Ajustes > Facturación para seguir usando Fichaitor."
+)
+
+
+class AccountBlocked(Exception):
+    """Raised by active_account_guard; create_app answers it with 402 account_blocked."""
+
+
+def account_blocked_response() -> JSONResponse:
+    return JSONResponse(
+        {"detail": MSG_ACCOUNT_BLOCKED, "code": CODE_ACCOUNT_BLOCKED}, status_code=402
+    )
+
 
 def active_account_guard(
     store: Store, clock: Callable[[], float], cookie_secure: bool = True
 ) -> Callable[[Request], Awaitable[Account]]:
     """The account of the session, unless it has a scheduled leave: from the moment a
-    leave is confirmed, nothing of the profile is read or shown until it is restored."""
+    leave is confirmed, nothing of the profile is read or shown until it is restored.
+    Nor while it is blocked for a payment not made (AccountBlocked: 402)."""
     current_account = account_guard(store, clock, cookie_secure)
 
     async def active_account(request: Request) -> Account:
         account = await current_account(request)
         if account.pending_deletion is not None:
             raise HTTPException(409, MSG_LEAVE_PENDING)
+        if account.blocked is not None:
+            raise AccountBlocked
         return account
 
     return active_account
@@ -151,12 +173,12 @@ MSG_KEY_DATES_PRO = (
 def plan_required_detail(exc: PlanRequired) -> str:
     if exc.feature == FEATURE_AI_REPLIES:
         return (
-            f"Has usado las {exc.limit} respuestas con IA de este mes. Pásate a Pro para "
+            f"Has usado tus {exc.limit} respuestas con IA gratuitas. Pásate a Pro para "
             "tenerlas ilimitadas. Puedes seguir escribiendo tus respuestas."
         )
     if exc.feature == FEATURE_KEY_DATES:
         return MSG_KEY_DATES_PRO
-    return "Tu plan no incluye esta función. Pásate a Pro."
+    return "Tu plan no incluye esta función. Pásate a Pro o a Pro+."
 
 
 def plan_required(exc: PlanRequired) -> JSONResponse:

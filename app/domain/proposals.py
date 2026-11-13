@@ -102,6 +102,9 @@ CANCELLED_BY_LEAVE = (S.SCHEDULED, S.SENT, S.REMINDED, S.COLLECTING, S.TO_CONFIR
 # leave are cancelled, with this reason and without telling anybody. The database lets
 # the API write it (policy proposal_api_update).
 OUTCOME_LOCATION_INACTIVE = "location_inactive"
+# Paywall (2026-11-13): the profile of a key date moved to a plan without key dates (the
+# free one). It cannot be confirmed: cancelled with this reason, Google untouched.
+OUTCOME_PLAN_REQUIRED = "plan_required"
 CANCELLED_BY_DEACTIVATION = CANCELLED_BY_LEAVE
 # Shown to the owner and still waiting for them: the only states in which a button or
 # a text of the owner can move the proposal.

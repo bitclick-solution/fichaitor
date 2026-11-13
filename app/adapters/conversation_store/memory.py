@@ -31,6 +31,7 @@ from app.domain.link_codes import (
     register_attempt,
     register_success,
 )
+from app.domain.plans import Plan
 from app.domain.proposals import Proposal, counts_towards_weekly_cap
 from app.ports.conversation_store import Lane, LinkResult, LocationInactive, MessageRecord
 
@@ -44,6 +45,7 @@ class MemoryLocation:
     title: str = ""
     address: str = ""
     active: bool = True
+    plan: Plan | None = None  # None: not modelled (tests without plans)
 
 
 class MemoryConversationStore:
@@ -230,6 +232,12 @@ class MemoryConversationStore:
         if location is None:
             return True  # not modelled (tests without profiles): as the old code
         return location.account_id == account_id and location.active
+
+    async def location_plan(self, account_id: str, location_id: str) -> Plan | None:
+        location = self.locations.get(location_id)
+        if location is None or location.account_id != account_id or not location.active:
+            return None
+        return location.plan
 
     # --- conversations ----------------------------------------------------------
     async def get_conversation(self, account_id: str) -> Conversation:
