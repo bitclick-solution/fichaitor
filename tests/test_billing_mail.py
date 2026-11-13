@@ -127,7 +127,8 @@ def ours(vista) -> dict:
 def test_the_html_is_byte_for_byte_the_one_of_the_brand_preview(vista):
     mails = ours(vista)
     assert set(mails) == BILLING_PREVIEWS
-    assert {n for n in vista["CORREOS"] if int(n.split("-")[0]) >= 5} == BILLING_PREVIEWS
+    billing_range = {n for n in vista["CORREOS"] if 5 <= int(n.split("-")[0]) < 12}
+    assert billing_range == BILLING_PREVIEWS
     for name, mail in mails.items():
         if name in PENDING_BRAND:
             continue

@@ -83,6 +83,7 @@ def _email(
     blocks: list[str],
     plain: list[str],
     reason: str,
+    baja: str = "",
 ) -> Email:
     html = BASE.substitute(
         asunto=escape(subject),
@@ -90,6 +91,9 @@ def _email(
         titular=escape(headline),
         contenido="\n".join(blocks),  # already escaped, block by block
         motivo=escape(reason),
+        # The unsubscribe block of a commercial communication, already escaped; empty
+        # in every other email (brand/correo/LEEME.md, 12).
+        baja=baja,
     )
     text = "\n\n".join([headline.upper(), *plain, reason]) + "\n\n" + _PLAIN_FOOTER
     return Email(to, subject, text, html)

@@ -63,6 +63,7 @@ def test_the_templates_have_the_placeholders_the_backend_fills():
         "titular",
         "contenido",
         "motivo",
+        "baja",
     }
     # The blocks of the offboarding mails and of the billing mails (tables and highlight).
     blocks = {k: set(t.get_identifiers()) for k, t in mail_templates.BLOCKS.items()}
@@ -74,6 +75,7 @@ def test_the_templates_have_the_placeholders_the_backend_fills():
         "dato": {"etiqueta", "valor"},
         "datos_fin": set(),
         "destacado": {"texto"},
+        "baja": {"enlace_baja"},
     }
 
 
@@ -291,7 +293,10 @@ def test_the_html_is_byte_for_byte_the_one_of_the_brand_preview(monkeypatch):
         assert mail.html == vista["CORREOS"][name], name
     # Email 4 is never sent. The billing emails (5 to 10) are compared byte for byte in
     # tests/test_billing_mail.py; between the two files, every preview is covered.
-    left = set(vista["CORREOS"]) - set(ours) - BILLING_PREVIEWS
+    # The communications (12) are rendered by the back office, which compares them itself.
+    left = {
+        n for n in set(vista["CORREOS"]) - set(ours) - BILLING_PREVIEWS if not n.startswith("12-")
+    }
     assert left == {"4-completada-ficha", "4-completada-cuenta"}
 
 
