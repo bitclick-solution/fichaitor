@@ -161,8 +161,12 @@ def test_me_has_the_shape_of_the_multinegocio_contract():
         "active_since",
         "status",
         "pending",
+        "usage",
+        "features",
     }
     assert (active["id"], active["active"], active["plan"]) == (bar, True, "gratis")
+    assert active["usage"] == {"ai_replies": {"used": 0, "limit": 25}}
+    assert active["features"] == {"key_dates": False, "whatsapp": False}
     assert active["status"] == "ok" and active["active_since"].endswith("Z")
     assert active["pending"] == {"reviews": 3, "key_dates": 1}
     assert inactive == {
@@ -175,6 +179,8 @@ def test_me_has_the_shape_of_the_multinegocio_contract():
         "active_since": None,
         "status": None,
         "pending": None,
+        "usage": None,
+        "features": None,
     }
     assert body["selected_location_id"] is None  # activating is not choosing
     assert body["plans"] == {
@@ -362,6 +368,7 @@ def test_deactivating_the_selected_profile_moves_the_preference_to_the_oldest_ac
     world = World()
     client = world.owner("ana", [profile(1), profile(2), profile(3)])
     first, second, third = world.ids(client)
+    assert activate(client, third).status_code == 200
     assert client.post(SELECT, json={"location_id": third}, headers=HEADER).status_code == 200
     assert activate(client, second).status_code == 200
     assert activate(client, first).status_code == 200
@@ -387,6 +394,7 @@ def test_deactivating_the_last_active_profile_is_allowed_and_again_is_no_error()
     world = World()
     client = world.owner("ana", [profile(1)])
     (bar,) = world.ids(client)
+    assert activate(client, bar).status_code == 200
     assert client.post(SELECT, json={"location_id": bar}, headers=HEADER).status_code == 200
     body = client.delete(activation(bar), headers=HEADER).json()
     assert body["selected_location_id"] is None
@@ -514,20 +522,49 @@ def test_a_key_date_of_a_deactivated_profile_is_not_found():
     assert client.post(f"{url}/dismiss", headers=HEADER).status_code == 404
 
 
-# --- POST /me/location until step 9 (5.5) --------------------------------------
+# --- POST /me/location: only the preference (step 9) --------------------------
 
 
-def test_choosing_an_inactive_profile_activates_it_and_keeps_the_others():
+def test_choosing_an_inactive_profile_is_a_409_that_sends_to_activate_it():
     world = World()
     client = world.owner("ana", [profile(1), profile(2)])
     bar, shop = world.ids(client)
+    r = client.post(SELECT, json={"location_id": bar}, headers=HEADER)
+    assert r.status_code == 409
+    assert r.json() == {
+        "detail": "Esa ficha no está activa. Actívala primero en «Tus negocios».",
+        "code": "location_inactive",
+    }
+    me = client.get(ME).json()
+    # Nothing was activated, nothing chosen and nothing synced.
+    assert me["selected_location_id"] is None and me["plans"]["active"] == 0
+    assert all(loc["active"] is False for loc in me["locations"])
+    assert world.synced() == []
+
+
+def test_choosing_an_active_profile_only_moves_the_preference():
+    world = World()
+    client = world.owner("ana", [profile(1), profile(2)])
+    bar, shop = world.ids(client)
+    for location_id in (bar, shop):
+        assert activate(client, location_id).status_code == 200
     body = client.post(SELECT, json={"location_id": bar}, headers=HEADER).json()
     assert body["selected_location_id"] == bar
-    assert by_id(body)[bar]["plan"] == "gratis"
-    # During the beta every account has 3 Pro: the second one is added, not swapped.
     body = client.post(SELECT, json={"location_id": shop}, headers=HEADER).json()
     assert body["selected_location_id"] == shop
     assert (by_id(body)[bar]["plan"], by_id(body)[shop]["plan"]) == ("gratis", "pro")
-    # Choosing an active profile only moves the preference.
-    body = client.post(SELECT, json={"location_id": bar}, headers=HEADER).json()
-    assert body["selected_location_id"] == bar and body["plans"]["active"] == 2
+    assert body["plans"]["active"] == 2
+    # Once deactivated, it cannot be the preference any more.
+    client.delete(activation(bar), headers=HEADER)
+    assert client.post(SELECT, json={"location_id": bar}, headers=HEADER).status_code == 409
+
+
+def test_choosing_a_profile_of_another_account_is_the_same_404_as_an_unknown_one():
+    world = World()
+    luis = world.owner("luis", [profile(9)])
+    (theirs,) = world.ids(luis)
+    activate(luis, theirs)
+    client = world.owner("ana", [profile(1)])
+    for location_id in (theirs, "loc_doesnotexist"):
+        r = client.post(SELECT, json={"location_id": location_id}, headers=HEADER)
+        assert r.status_code == 404 and r.json() == {"detail": "Esa ficha no está en tu cuenta."}

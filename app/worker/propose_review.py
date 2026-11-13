@@ -38,6 +38,7 @@ from app.domain.channel_jobs import (
     propose_key,
 )
 from app.domain.jobs import Job, JobError, PermanentJobError
+from app.domain.plans import PlanRequired
 from app.ports.conversation_store import ReviewTargets
 from app.ports.job_queue import JobEnqueuer
 from app.ports.worker_store import NewReview
@@ -102,8 +103,13 @@ class ProposeReview:
         unavailable = False
         proposed = 0
         for account_id, location_id in target.targets:
+            reply, write_own = "", False
             try:
-                draft = await self._replies.draft(account_id, review_id)
+                reply = (await self._replies.draft(account_id, review_id)).text
+            except PlanRequired:
+                # The free plan used its replies drafted by the model this month: the
+                # review is told, and the owner is offered to write the reply.
+                write_own = True
             except DraftUnavailable:
                 unavailable = True  # the model did not answer: tried again later
                 continue
@@ -114,7 +120,9 @@ class ProposeReview:
             try:
                 created = await self._service.submit_review(
                     account_id,
-                    ReviewInput(review_id, target.stars, target.text, draft.text, location_id),
+                    ReviewInput(
+                        review_id, target.stars, target.text, reply, location_id, write_own
+                    ),
                 )
             except ValueError:
                 # The reply cannot be shown whole next to the review: panel only.

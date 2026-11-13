@@ -92,6 +92,7 @@ async def _account_with(store, sub: str, locations, selected: ProfileLocation | 
             account_id,
             selected.location,
         )
+        await store.activate(account_id, rows[0]["id"])
         assert await store.select_location(account_id, rows[0]["id"])
     return account_id
 
@@ -117,10 +118,11 @@ async def _write_summary(sub: str, location: str, review_count: int, status: str
 def test_selected_profile_is_none_without_a_selection_and_has_no_summary_until_written():
     async def scenario(store):
         account_id = await _account_with(store, "pytest-ana", [SHARED], None)
-        before = await store.selected_profile(account_id)
+        before = await store.profile(account_id)
         rows = await _owner("SELECT id FROM location WHERE account_id = $1::uuid", account_id)
+        await store.activate(account_id, rows[0]["id"])
         await store.select_location(account_id, rows[0]["id"])
-        return before, await store.selected_profile(account_id)
+        return before, await store.profile(account_id)
 
     before, after = with_store(scenario)
     assert before is None
@@ -135,7 +137,7 @@ def test_summary_columns_are_read_with_their_real_types():
     async def scenario(store):
         account_id = await _account_with(store, "pytest-ana", [SHARED], SHARED)
         await _write_summary("pytest-ana", SHARED.location, 13)
-        return await store.selected_profile(account_id)
+        return await store.profile(account_id)
 
     summary = with_store(scenario).summary
     assert summary.status == "ok"
@@ -161,7 +163,7 @@ def test_a_status_without_figures_is_read_as_such():
             SHARED.location,
             NOW,
         )
-        return await store.selected_profile(account_id)
+        return await store.profile(account_id)
 
     summary = with_store(scenario).summary
     assert summary.status == "needs_reconnect"
@@ -176,9 +178,9 @@ def test_an_account_never_reads_the_summary_of_another_for_the_same_google_profi
         luis = await _account_with(store, "pytest-luis", [SHARED], SHARED)
         await _write_summary("pytest-ana", SHARED.location, 40)
         await _write_summary("pytest-ana", OTHER.location, 99)  # not the selected one
-        only_ana = (await store.selected_profile(ana), await store.selected_profile(luis))
+        only_ana = (await store.profile(ana), await store.profile(luis))
         await _write_summary("pytest-luis", SHARED.location, 7)
-        both = (await store.selected_profile(ana), await store.selected_profile(luis))
+        both = (await store.profile(ana), await store.profile(luis))
         return only_ana, both
 
     only_ana, both = with_store(scenario)
@@ -193,7 +195,7 @@ def test_a_retired_profile_is_not_the_selected_one():
         account_id = await _account_with(store, "pytest-ana", [SHARED, OTHER], OTHER)
         await _write_summary("pytest-ana", OTHER.location, 5)
         await store.sync_locations(account_id, [SHARED], NOW)  # Google no longer lists it
-        return await store.selected_profile(account_id)
+        return await store.profile(account_id)
 
     assert with_store(scenario) is None
 
@@ -315,6 +317,11 @@ def test_whole_journey_api_writes_the_job_the_worker_handles_and_the_api_reads_i
         assert client.get("/api/v1/me/summary").status_code == 409
 
         location_id = client.get("/api/v1/me").json()["locations"][0]["id"]
+        client.post(
+            f"/api/v1/me/locations/{location_id}/activation",
+            json={},
+            headers={"X-Requested-With": "fichaitor"},
+        )
         r = client.post(
             "/api/v1/me/location",
             json={"location_id": location_id},
@@ -354,14 +361,15 @@ def test_whole_journey_api_writes_the_job_the_worker_handles_and_the_api_reads_i
 def test_selected_profile_carries_title_and_place_id_of_the_connection():
     async def scenario(store):
         account_id = await _account_with(store, "pytest-ana", [SHARED, OTHER], SHARED)
-        first = await store.selected_profile(account_id)
+        first = await store.profile(account_id)
         rows = await _owner(
             "SELECT id FROM location WHERE account_id = $1::uuid AND gbp_location = $2",
             account_id,
             OTHER.location,
         )
+        await store.activate(account_id, rows[0]["id"])
         await store.select_location(account_id, rows[0]["id"])
-        return first, await store.selected_profile(account_id)
+        return first, await store.profile(account_id)
 
     first, second = with_store(scenario)
     assert (first.title, first.place_id) == ("Bar compartido", "place-pytest-9")
@@ -392,12 +400,12 @@ def test_facts_written_by_the_worker_are_read_by_the_api_role():
     async def scenario(store):
         account_id = await _account_with(store, "pytest-ana", [SHARED], SHARED)
         await _write_summary("pytest-ana", SHARED.location, 13)
-        before = (await store.selected_profile(account_id)).summary
+        before = (await store.profile(account_id)).summary
         await _owner(
             "UPDATE profile_summary SET facts = $1::jsonb WHERE google_sub = 'pytest-ana'",
             json.dumps(facts_to_json(facts)),
         )
-        return before, (await store.selected_profile(account_id)).summary
+        return before, (await store.profile(account_id)).summary
 
     before, after = with_store(scenario)
     assert before.facts is None and before.review_count == 13  # a row from before the facts
@@ -415,7 +423,7 @@ def test_facts_of_an_unknown_version_or_shape_are_read_as_missing():
                 "UPDATE profile_summary SET facts = $1::jsonb WHERE google_sub = 'pytest-ana'",
                 raw,
             )
-            seen.append((await store.selected_profile(account_id)).summary)
+            seen.append((await store.profile(account_id)).summary)
         return seen
 
     for summary in with_store(scenario):
@@ -491,6 +499,11 @@ def test_the_whole_diagnosis_over_http_reads_stored_facts_on_postgresql():
         )["state"][0]
         client.get("/api/v1/google/oauth/callback", params={"code": "c", "state": state})
         (location,) = client.get("/api/v1/me").json()["locations"]
+        client.post(
+            f"/api/v1/me/locations/{location['id']}/activation",
+            json={},
+            headers={"X-Requested-With": "fichaitor"},
+        )
         r = client.post(
             "/api/v1/me/location",
             json={"location_id": location["id"]},

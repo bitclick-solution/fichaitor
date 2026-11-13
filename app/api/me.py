@@ -43,12 +43,14 @@ from app.domain import plans
 from app.domain.calendar import Holiday
 from app.domain.conversation import DEFAULT_TIMEZONE, timezone_for
 from app.domain.profile_summary import STATUS_OK, shown_status
+from app.domain.quota import ai_replies_scope, month_window
 from app.domain.sentiment import STATUS_ERROR, SentimentPolicy
 from app.domain.session import hash_token
 from app.ports.store import (
     Account,
     ActivationRefused,
     FreeTaken,
+    LocationInactive,
     LocationLimit,
     LocationOverview,
     LocationRemoved,
@@ -68,6 +70,9 @@ MSG_LOCATION_REMOVED = (
     "Google ya no muestra esa ficha en tu cuenta. Vuelve a conectar con Google para verla."
 )
 MSG_NOT_ACTIVATED = "Ahora no se puede activar esa ficha."
+# POST /me/location only keeps the preference (step 9): it never activates.
+MSG_SELECT_INACTIVE = "Esa ficha no está activa. Actívala primero en «Tus negocios»."
+CODE_LOCATION_INACTIVE = "location_inactive"
 
 
 def activation_refused(exc: ActivationRefused) -> JSONResponse:
@@ -89,6 +94,20 @@ class PendingOut(BaseModel):
     key_dates: int  # key dates still to answer, today or later
 
 
+class AiRepliesUsageOut(BaseModel):
+    used: int  # replies drafted by the model this calendar month (Madrid)
+    limit: int | None  # 25 in Gratis; None without a cap
+
+
+class UsageOut(BaseModel):
+    ai_replies: AiRepliesUsageOut
+
+
+class FeaturesOut(BaseModel):
+    key_dates: bool
+    whatsapp: bool
+
+
 class LocationOut(BaseModel):
     id: str
     title: str
@@ -101,6 +120,9 @@ class LocationOut(BaseModel):
     # The status of its summary (ok, pendiente, error or needs_reconnect); None if inactive.
     status: str | None
     pending: PendingOut | None  # None if inactive
+    # Limits of its plan (app/domain/plans.py, FEATURES); None if inactive.
+    usage: UsageOut | None = None
+    features: FeaturesOut | None = None
 
 
 class PlanRoomOut(BaseModel):
@@ -160,7 +182,17 @@ class SelectLocationRequest(BaseModel):
     location_id: str = Field(min_length=1, max_length=64)
 
 
-def _location_out(location: LocationOverview, leaving: bool) -> LocationOut:
+async def _ai_replies_used(store: Store, location_id: str, now: datetime) -> int:
+    try:
+        return await store.quota_used(ai_replies_scope(location_id), month_window(now)[0])
+    except Exception as exc:  # GET /me never fails for a counter
+        log.warning("uso de respuestas con IA no disponible: %s", type(exc).__name__)
+        return 0
+
+
+def _location_out(
+    location: LocationOverview, leaving: bool, ai_replies_used: int = 0
+) -> LocationOut:
     # During a scheduled leave nothing of a profile is read: no status, no counters.
     shown = location.active and not leaving
     return LocationOut(
@@ -186,6 +218,24 @@ def _location_out(location: LocationOverview, leaving: bool) -> LocationOut:
             if shown
             else None
         ),
+        usage=(
+            UsageOut(
+                ai_replies=AiRepliesUsageOut(
+                    used=ai_replies_used,
+                    limit=plans.FEATURES[location.plan].monthly_ai_replies,
+                )
+            )
+            if location.plan is not None
+            else None
+        ),
+        features=(
+            FeaturesOut(
+                key_dates=plans.FEATURES[location.plan].key_dates,
+                whatsapp=plans.FEATURES[location.plan].whatsapp,
+            )
+            if location.plan is not None
+            else None
+        ),
     )
 
 
@@ -198,7 +248,14 @@ async def me_body(store: Store, account: Account, now: datetime) -> MeResponse:
     leaving = account.pending_deletion is not None
     return MeResponse(
         email=account.email,
-        locations=[_location_out(loc, leaving) for loc in overview.locations],
+        locations=[
+            _location_out(
+                loc,
+                leaving,
+                await _ai_replies_used(store, loc.id, now) if loc.plan is not None else 0,
+            )
+            for loc in overview.locations
+        ],
         selected_location_id=account.selected_location_id,
         connected=account.connected,
         pending_deletion=(
@@ -248,12 +305,14 @@ def build_router(
         account: Account = Depends(active_account),  # noqa: B008
     ) -> MeResponse | JSONResponse:
         # Same answer for a profile of another account and for one that does not exist.
-        # Until step 9 of docs/multinegocio.md (5.5), choosing an inactive profile
-        # activates it with the default plan; that may not fit.
+        # Only the preference of the panel: an inactive profile is activated first, with
+        # POST /me/locations/{id}/activation (step 9 of docs/multinegocio.md).
         try:
             chosen = await store.select_location(account.id, body.location_id)
-        except ActivationRefused as exc:
-            return activation_refused(exc)
+        except LocationInactive:
+            return JSONResponse(
+                {"detail": MSG_SELECT_INACTIVE, "code": CODE_LOCATION_INACTIVE}, status_code=409
+            )
         if not chosen:
             raise HTTPException(404, "Esa ficha no está en tu cuenta.")
         # So that the panel finds its figures ready. Never fails the choice itself.

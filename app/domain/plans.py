@@ -51,12 +51,47 @@ class Features:
     monthly_ai_replies: int | None  # None = without a cap
 
 
-# docs/fase0/precios.md. Not enforced yet: the beta gives Pro to every account.
+# docs/fase0/precios.md. Enforced per profile (`location.plan`) at the moment of each
+# action (decision of the owner, 2026-11-13):
+# - Free: the panel, the summary, the diagnosis, the sentiment analysis and the notices of
+#   reviews (panel and Telegram); replies written by the owner without a cap; 25 replies
+#   drafted by the model per month and profile (`monthly_ai_replies`: every draft asked to
+#   the model, in the panel and in the bot); no key dates (no proposals, no answer, no
+#   dismiss).
+# - Pro and Pro WhatsApp: without those limits.
+FREE_MONTHLY_AI_REPLIES = 25
 FEATURES: Mapping[Plan, Features] = {
-    Plan.GRATIS: Features(whatsapp=False, key_dates=False, monthly_ai_replies=25),
+    Plan.GRATIS: Features(
+        whatsapp=False, key_dates=False, monthly_ai_replies=FREE_MONTHLY_AI_REPLIES
+    ),
     Plan.PRO: Features(whatsapp=False, key_dates=True, monthly_ai_replies=None),
     Plan.PRO_WHATSAPP: Features(whatsapp=True, key_dates=True, monthly_ai_replies=None),
 }
+
+# What a plan may lack, as the API names it in a 402 (`feature`).
+FEATURE_AI_REPLIES = "ai_replies"
+FEATURE_KEY_DATES = "key_dates"
+
+
+class PlanRequired(Exception):
+    """The plan of that profile does not include `feature`, or its monthly cap of it is
+    used up. The API answers 402 with `code: plan_required` and this `feature`."""
+
+    def __init__(self, feature: str, limit: int | None = None) -> None:
+        super().__init__(feature)
+        self.feature = feature
+        self.limit = limit
+
+
+def features_of(plan: Plan) -> Features:
+    return FEATURES[plan]
+
+
+def check_key_dates(plan: Plan | None) -> None:
+    """Raises PlanRequired unless that plan includes the key dates. An inactive profile
+    (None) is not served at all: whoever asks answers that apart."""
+    if plan is not None and not FEATURES[plan].key_dates:
+        raise PlanRequired(FEATURE_KEY_DATES)
 
 
 def parse_plan(value: object) -> Plan | None:

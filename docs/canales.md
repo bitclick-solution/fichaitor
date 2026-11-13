@@ -351,7 +351,7 @@ uv run pytest -q tests/test_conversation_store_postgres.py
 
 `db/schema_channels.sql` es idempotente y se aplica después de `schema.sql` y `schema_worker.sql`: en `docker-compose.yml` (al crear el volumen), `scripts/preparar_bd_pruebas.sh`, la integración continua (`scripts/ci/aplicar_esquema.sh`) y `deploy/deploy.sh` (en la misma transacción que los otros dos).
 
-> **Precaución:** Desde el paso 6b de `docs/multinegocio.md`, `db/schema_channels.sql` termina con `SELECT fichaitor_fill_conversation_lanes();`: copia la propuesta abierta de cada hilo (`conversation.active_proposal_id`) al carril de su ficha y vacía el hilo. Se puede repetir sin efecto. En el despliegue del 6b, detén antes el proceso de la conversación (`python -m app.worker.conversation`), aplica los esquemas con el código nuevo ya en su sitio y arráncalo después. Si el código antiguo siguiera en marcha, escribiría en el hilo y el carril dejaría de coincidir.
+> **Precaución:** Desde el paso 6b de `docs/multinegocio.md`, `db/schema_channels.sql` termina con `SELECT fichaitor_fill_conversation_lanes();`: copia la propuesta abierta de cada hilo (`conversation.active_proposal_id`) al carril de su ficha. Desde el paso 9, además borra esa columna; sin ella, no hace nada. Se puede repetir sin efecto. En el despliegue del 6b, detén antes el proceso de la conversación (`python -m app.worker.conversation`), aplica los esquemas con el código nuevo ya en su sitio y arráncalo después. Si el código antiguo siguiera en marcha, escribiría en el hilo y el carril dejaría de coincidir.
 
 Tres roles. La API es la sesión web; la conversación (`fichaitor_conversation`, proceso aparte) habla con el dueño y crea la acción; el worker ejecuta y, en estas tablas, solo borra (baja y retención).
 
@@ -362,7 +362,7 @@ Tres roles. La API es la sesión web; la conversación (`fichaitor_conversation`
 | `link_failure_window` | Códigos incorrectos de todos los chats, por hora | Nada | Lee y suma en una sentencia |
 | `channel_sender` | Direcciones sin vincular, por huella: intentos, bloqueo y última respuesta genérica | Nada | Lee y escribe |
 | `proposal` | Propuestas con su estado, paso, testigo y confirmación registrada | Lee | Crea y mueve. No puede cambiar la cuenta, el tipo, el origen ni `payload` |
-| `conversation` | Un hilo por cuenta: el bloqueo y los textos no entendidos. Su `active_proposal_id` queda obsoleto desde el paso 6b y se borra en el paso 9 | Bloquea la fila | Lee, crea y bloquea |
+| `conversation` | Un hilo por cuenta: el bloqueo y los textos no entendidos. Su `active_proposal_id` se borró en el paso 9: la propuesta activa de cada ficha está en `conversation_lane` | Bloquea la fila | Lee, crea y bloquea |
 | `conversation_lane` | Un carril por ficha con su propuesta activa | Lee y la libera | Lee, crea y cambia la propuesta activa |
 | `channel_inbound_event` | Eventos entrantes ya vistos: el mismo se atiende una vez | Nada | Lee y escribe |
 | `channel_message` | Mensajes en los dos sentidos. Solo se añaden | Nada | Solo inserta |

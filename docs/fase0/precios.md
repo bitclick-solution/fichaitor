@@ -28,6 +28,24 @@ Decidido por el propietario el 2026-11-12 (`docs/multinegocio.md`, sección 15).
 
 El cálculo está en `app/domain/plans.py` (`pricing`, `yearly_price`).
 
+## Límites del plan Gratis
+
+Decidido por el propietario el 2026-11-13. Se aplican por ficha (`location.plan`) en el momento de cada acción. Las reglas están en `app/domain/plans.py` (`FEATURES`).
+
+| Función | Gratis | Pro y Pro WhatsApp |
+|---|---|---|
+| Panel, resumen, diagnóstico y análisis de opinión | Sí | Sí |
+| Avisos de reseñas por el panel y por Telegram | Sí | Sí |
+| Respuestas propias, escritas por el dueño | Sin límite | Sin límite |
+| Respuestas redactadas con IA | 25 al mes por ficha | Sin límite |
+| Festivos y fechas clave | No | Sí |
+
+- **Respuestas con IA:** cuenta cada borrador pedido al modelo, en el panel y en el bot. Un borrador ya guardado no cuenta. El mes es el natural, en hora de Madrid. El contador va en `usage_counter`, con el ámbito `ai_replies:<id de la ficha>` y una ventana por mes.
+- **Al llegar al tope:** el panel responde 402 `plan_required` (`feature: ai_replies`) y el dueño puede seguir escribiendo y publicando sus respuestas. El bot sigue avisando de cada reseña, sin respuesta propuesta, y ofrece escribirla.
+- **Festivos y fechas clave:** el planificador (`plan_key_dates`) salta las fichas Gratis, y responder o descartar una fecha clave de una ficha Gratis da 402 `plan_required` (`feature: key_dates`).
+- `GET /api/v1/me` enseña por ficha el uso del mes (`usage`) y lo que incluye el plan (`features`). Consulta `docs/contrato-web-api.md`, «Límites del plan».
+- Una activación sin plan elige Gratis si está libre. Durante la beta, cada cuenta tiene además 3 fichas Pro: para quitar los límites a una ficha, se activa con `plan: "pro"`.
+
 ## Reglas
 
 - **Sin monedero.** Al agotar los 80 mensajes del mes, los avisos siguen llegando por correo, web o Telegram hasta el mes siguiente. El servicio no se corta.

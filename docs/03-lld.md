@@ -27,7 +27,8 @@ channel_identity(id, account_id, channel,   -- 'whatsapp' | 'telegram' | 'email'
 link_code(code_hash, account_id, expires_at, used_at)
 
 -- Conversación
-conversation(id, account_id, channel_identity_id, active_proposal_id, locked_until)
+conversation(id, account_id, unknown_streak)   -- el bloqueo de la cuenta; las propuestas
+                                               -- abiertas van en conversation_lane
 message(id, conversation_id, direction, channel_message_id UNIQUE,
         kind, body, payload jsonb, proposal_id)
 
@@ -96,8 +97,36 @@ Reglas en la base:
 | Derecho beta de 3 fichas Pro en cada cuenta nueva | Disparador `account_beta_entitlement` |
 | Una propuesta, un carril o un filtro no nombran fichas de otra cuenta | Claves ajenas compuestas y disparador `location_filter_guard` (`filtro_ajeno`) |
 | La API solo libera un carril | Política `conversation_lane_api_release` |
+| La API solo bloquea el hilo (`SELECT ... FOR UPDATE`): no cambia ninguna fila | Política `conversation_api_lock` (`WITH CHECK (false)`) y `UPDATE (updated_at)` como único privilegio de escritura |
+| Toda propuesta nueva nombra una ficha activa de su cuenta. Sin ficha, `propuesta_sin_ficha`: desde el paso 9 nada la rellena | Disparador `proposal_location_guard` |
 
 El relleno (activar la ficha elegida, `deactivated_at` de las demás con datos, `proposal.location_id` y el derecho beta de las cuentas existentes) va en los mismos archivos y se puede repetir sin efecto.
+
+### 1.2 Retirada de la compatibilidad (paso 9, 2026-11-12)
+
+- `POST /api/v1/me/location` solo guarda la preferencia de una ficha **activa**. Con una inactiva responde 409 `location_inactive` y no activa nada (`Store.select_location` lanza `LocationInactive`).
+- `conversation.active_proposal_id` ya no existe. `fichaitor_fill_conversation_lanes()`, al final de `db/schema_channels.sql`, copia la propuesta abierta de cada hilo a su carril y borra la columna si todavía la tiene; si no, no hace nada. La propuesta activa de cada ficha está solo en `conversation_lane`.
+- El disparador `proposal_location_guard` ya no rellena `location_id`.
+- En el worker, «en uso» es solo `removed_at IS NULL AND active_since IS NOT NULL`, para la coherencia de las acciones (`claim_action`) y para la retención de 30 días de las fichas desactivadas.
+- Fuera del código: `ReviewTarget.accounts`, `ConversationStore.accounts_with_open_work`, `Store.selected_profile`, `Conversation.active_proposal_id` y `AccountInfo.business_name`.
+
+#### Usos que quedan de `account.selected_location_id`
+
+Es la **preferencia de la vista del panel**: qué ficha enseña cuando la petición no trae `?location=`. No decide nada fuera del panel: ni qué se sincroniza, ni qué se propone por los chats, ni qué ejecuta o borra el worker. Estos son todos los usos que quedan:
+
+| Dónde | Para qué |
+|---|---|
+| `app/adapters/store/postgres.py` (`_CHOSEN`, `resolve_location`, `profile`, `_lost_profile`, `list_reviews`, `list_key_dates`, `sentiment`) y `app/adapters/store/memory.py` | Las lecturas del panel sin `?location=`. `_lost_profile` enseña «sin acceso» de la ficha preferida que el worker retiró por falta de acceso (la web lo pinta con la vista `sin-acceso`) |
+| `Store.select_location` (`POST /api/v1/me/location`) | Guardarla, solo con una ficha activa |
+| `account_for_session` y `GET /api/v1/me` | Devolverla a la web |
+| `Store.sync_locations` | Vaciarla si Google deja de listar la ficha al reconectar |
+| Disparador `location_activation_audit` (`db/schema.sql`) | Al desactivar a mano la ficha preferida, pasa a la activa más antigua o a `NULL` |
+| Disparador `account_baja_guard` (`db/schema.sql`) | Vaciarla al dar de baja la cuenta |
+| Worker: `apply_offboarding`, la baja efectiva y la retención (`app/adapters/worker_store/postgres.py`) | Vaciarla en la baja efectiva y antes de borrar una ficha retirada (la clave ajena lo exige). Por eso el worker conserva `SELECT` y `UPDATE` de la columna |
+| Rellenos de migración: `db/schema.sql` (la ficha elegida pasa a activa en `gratis`) y `db/schema_channels.sql` (`proposal.location_id` de las propuestas sin terminar y sin ficha) | Traducen el modelo de una ficha elegida al de varias activas en una base de antes del multinegocio. Se pueden repetir sin efecto: el primero solo actúa en cuentas sin ninguna fila en `location_activation_log`; el segundo, solo en propuestas sin ficha, que desde el paso 6a no se crean |
+| `scripts/baja_manual.py` | Nada: libera los carriles, como la confirmación de la baja en el panel |
+
+La conversación ya no tiene `SELECT` sobre la columna.
 
 ## 2. Agentes
 

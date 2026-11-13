@@ -352,6 +352,18 @@ TEXTS: dict[str, str] = {
     "review.new.no_text": (
         "Nueva reseña, {estrellas}, sin texto.\nRespuesta que propongo: «{respuesta}»\n¿La envío?"
     ),
+    # NEW (2026-11-13): the free plan used its replies drafted by the model this month.
+    # The review is told anyway, and the owner is offered to write the reply.
+    "review.new.write": (
+        "Nueva reseña, {estrellas}: «{extracto}»\n"
+        "Este mes ya has usado las respuestas con IA de tu plan Gratis. ¿La contestas tú? "
+        "Pulsa «Escribir respuesta» y te la enseño antes de enviarla."
+    ),
+    "review.new.write_no_text": (
+        "Nueva reseña, {estrellas}, sin texto.\n"
+        "Este mes ya has usado las respuestas con IA de tu plan Gratis. ¿La contestas tú? "
+        "Pulsa «Escribir respuesta» y te la enseño antes de enviarla."
+    ),
     "review.sent": "Respuesta enviada a Google. Suele verse en unos minutos. {enlace_reseña}",
     "review.skipped": "Hecho. La dejo sin respuesta.",
     "review.edit_ask": "Escríbeme o díctame tu respuesta y la envío tal cual.",
@@ -476,6 +488,7 @@ BUTTONS: dict[str, str] = {
     "publish": "Publicar",
     "edit": "Editar",
     "no_reply": "No responder",
+    "write": "Escribir respuesta",
     "yes_send": "Sí, enviar",
     "change": "Cambiar",
     "cancel": "Cancelar",

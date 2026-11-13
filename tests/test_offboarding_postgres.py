@@ -107,6 +107,7 @@ async def cleanup():
         "(SELECT id FROM account WHERE google_sub LIKE 'pytest-%' OR google_sub LIKE 'deleted:%')"
     )
     await owner(f"DELETE FROM audit_log WHERE account_id IN {mine}")  # noqa: S608
+    await owner(f"DELETE FROM conversation_lane WHERE account_id IN {mine}")  # noqa: S608
     await owner(f"DELETE FROM conversation WHERE account_id IN {mine}")  # noqa: S608
     await owner(f"DELETE FROM proposal WHERE account_id IN {mine}")  # noqa: S608
     await owner(f"DELETE FROM action WHERE account_id IN {mine}")  # noqa: S608
@@ -203,6 +204,7 @@ class Scene:
             account_id,
             SHARED.location,
         )
+        await self.store.activate(account_id, rows[0]["id"])
         assert await self.store.select_location(account_id, rows[0]["id"])
 
     async def sync(self, sub: str) -> None:
@@ -337,7 +339,7 @@ class Scene:
 
     async def reads(self, account_id: str):
         """Everything a route could show of the profile of that account."""
-        profile = await self.store.selected_profile(account_id)
+        profile = await self.store.profile(account_id)
         reviews = await self.store.list_reviews(account_id, unanswered_only=False, limit=50)
         sentiment = await self.store.sentiment(account_id, self.now)
         return profile, reviews.total, sentiment
@@ -570,9 +572,12 @@ def test_confirming_a_leave_cancels_the_open_proposals_of_the_account(scope):
         ):
             ids[name] = f"prop_{uuid.uuid4().hex[:16]}"
             confirmed = state in ("ejecutando", "aplicada")
+            location = (
+                await owner("SELECT id FROM location WHERE account_id = $1::uuid", account)
+            )[0]["id"]
             await owner(
                 "INSERT INTO proposal (id, account_id, type, source_ref, state, confirmed_at,"
-                " confirmed_event_id) VALUES ($1, $2::uuid, $3, $4, $5, $6, $7)",
+                " confirmed_event_id, location_id) VALUES ($1, $2::uuid, $3, $4, $5, $6, $7, $8)",
                 ids[name],
                 account,
                 kind,
@@ -580,10 +585,16 @@ def test_confirming_a_leave_cancels_the_open_proposals_of_the_account(scope):
                 state,
                 NOW if confirmed else None,
                 "pytest-event" if confirmed else None,
+                location if kind == "review_reply" else None,
             )
+        ana_location = (
+            await owner("SELECT location_id FROM proposal WHERE id = $1", ids["review"])
+        )[0]["location_id"]
         await owner(
-            "INSERT INTO conversation (account_id, active_proposal_id) VALUES ($1::uuid, $2)",
+            "INSERT INTO conversation_lane (account_id, location_id, active_proposal_id)"
+            " VALUES ($1::uuid, $2, $3)",
             ana,
+            ana_location,
             ids["review"],
         )
         await s.leave(session, scope)
@@ -594,7 +605,7 @@ def test_confirming_a_leave_cancels_the_open_proposals_of_the_account(scope):
             for name, proposal_id in ids.items()
         }
         active = await owner(
-            "SELECT active_proposal_id FROM conversation WHERE account_id = $1::uuid", ana
+            "SELECT active_proposal_id FROM conversation_lane WHERE account_id = $1::uuid", ana
         )
         return {k: (v["state"], v["outcome_reason"]) for k, v in states.items()}, active
 

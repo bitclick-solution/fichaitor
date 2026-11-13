@@ -22,6 +22,7 @@ from pydantic import BaseModel
 from app.adapters.gemini_client import (
     BASE_URL,
     THINKING_LEVEL,
+    GeminiBackend,
     GeminiClient,
     GeminiUnavailable,
     model_path,
@@ -68,7 +69,7 @@ def to_facts(extraction: ScreenshotExtraction) -> dict[str, object]:
 class GeminiScreenshotReader:
     def __init__(
         self,
-        api_key: str,
+        api_key: str | GeminiBackend,  # the key of AI Studio, or Vertex AI
         model: str,
         timeout_seconds: float = 20.0,
         client: httpx.AsyncClient | None = None,

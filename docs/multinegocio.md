@@ -148,8 +148,9 @@ Un disparador `BEFORE UPDATE` sobre `location`, `location_active_guard`, con fun
 ### 3.5 `selected_location_id` pasa a ser preferencia
 
 - Indica qué ficha enseña el panel cuando la petición no trae `?location=`. Nada más.
-- No pausa ni activa nada, salvo durante la compatibilidad (consulta la [sección 5.5](#55-post-apimev1melocation-durante-la-transición)).
-- Se conserva su clave ajena. Puede apuntar a una ficha inactiva: entonces las rutas responden 409 «Esa ficha no está activa».
+- No pausa ni activa nada. Desde el paso 9, `POST /api/v1/me/location` solo la guarda con una ficha activa (consulta la [sección 5.5](#55-post-apimev1melocation-durante-la-transición)).
+- Se conserva su clave ajena. Aun así puede apuntar a una ficha inactiva (una base anterior al paso 9) o retirada: entonces las rutas responden 409 «Esa ficha no está activa» o enseñan «sin acceso».
+- Los usos que quedan están en `docs/03-lld.md`, sección 1.2.
 
 ### 3.6 Propuestas por ficha y carriles
 
@@ -289,6 +290,8 @@ Los indicadores salen de una sola consulta con `profile_summary.unanswered_count
 - **Compatibilidad hasta el paso 9.** Si la ficha está inactiva y la cuenta no tiene ninguna activa, la activa en `gratis`. Si la cuenta tiene exactamente una activa en `gratis` y ningún derecho, **la sustituye**: desactiva la anterior y activa la nueva. Es lo que la web antigua entiende por «cambiar de ficha».
 - La web nueva no llama a esta ruta con fichas inactivas: primero activa.
 - En el paso 9 se quita la compatibilidad, y la ruta solo cambia la preferencia.
+
+> **Nota (paso 9, hecho):** La ruta solo guarda la preferencia de una ficha activa. Con una ficha inactiva responde 409 `{"detail": "Esa ficha no está activa. Actívala primero en «Tus negocios».", "code": "location_inactive"}` y no cambia nada. Ya no responde 402 ni los 409 de la activación.
 
 ## 6. Conversación
 
@@ -625,6 +628,8 @@ Cada paso se despliega con los `db/schema*.sql` aplicados otra vez y deja el sis
 - **Pruebas clave:** cambiar de ficha mientras carga no mezcla datos; flujo de activación y 402; desactivar con su confirmación.
 
 ### Paso 9. Retirada de la compatibilidad
+
+**Estado: hecho (2026-11-12).** El detalle y los usos que quedan de `selected_location_id` están en `docs/03-lld.md`, sección 1.2.
 
 - **Depende de:** 8 desplegado.
 - **Qué hace:**

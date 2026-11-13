@@ -11,6 +11,7 @@ from datetime import UTC, date, datetime, tzinfo
 
 from app.domain.conversation import DEFAULT_TIMEZONE, timezone_for
 from app.domain.key_dates import answerable
+from app.domain.plans import check_key_dates
 from app.domain.special_hours import checked
 from app.ports.key_dates import KeyDateNotFound, KeyDateStore, KeyDateView
 
@@ -47,11 +48,12 @@ class KeyDates:
         return [v for v in found if self.answerable(v)] if pending_only else list(found)
 
     async def answer(self, account_id: str, proposal_id: str, answer: Answer) -> KeyDateView:
-        """Raises KeyDateNotFound, InvalidSpecialHours, PanelRefused or
-        SpecialHoursInProgress."""
+        """Raises KeyDateNotFound, PlanRequired (the plan of its profile has no key
+        dates), InvalidSpecialHours, PanelRefused or SpecialHoursInProgress."""
         view = await self._store.get_key_date(account_id, proposal_id)
         if view is None:
             raise KeyDateNotFound
+        await self._check_plan(account_id, view)
         change = checked(view.day, answer.kind, answer.periods)
         await self._store.answer_key_date(
             account_id, proposal_id, change, self._now(), self.today()
@@ -59,10 +61,17 @@ class KeyDates:
         return await self._found(account_id, proposal_id)
 
     async def dismiss(self, account_id: str, proposal_id: str) -> KeyDateView:
-        if await self._store.get_key_date(account_id, proposal_id) is None:
+        """Raises KeyDateNotFound, PlanRequired or PanelRefused."""
+        view = await self._store.get_key_date(account_id, proposal_id)
+        if view is None:
             raise KeyDateNotFound
+        await self._check_plan(account_id, view)
         await self._store.dismiss_key_date(account_id, proposal_id, self._now())
         return await self._found(account_id, proposal_id)
+
+    async def _check_plan(self, account_id: str, view: KeyDateView) -> None:
+        """The plan of the profile of that key date, read now (app/domain/plans.py)."""
+        check_key_dates(await self._store.location_plan(account_id, view.location_id))
 
     async def _found(self, account_id: str, proposal_id: str) -> KeyDateView:
         view = await self._store.get_key_date(account_id, proposal_id)

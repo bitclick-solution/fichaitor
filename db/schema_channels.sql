@@ -156,14 +156,15 @@ CREATE INDEX IF NOT EXISTS proposal_sent ON proposal (account_id, sent_at)
 -- Para avisar al dueño del resultado de la acción que salió de su confirmación.
 CREATE INDEX IF NOT EXISTS proposal_action ON proposal (action_id) WHERE action_id IS NOT NULL;
 
--- El hilo entre el agente y una cuenta, participen las direcciones que participen:
--- una sola propuesta abierta a la vez. La fila se bloquea (SELECT ... FOR UPDATE)
--- mientras se atiende un mensaje, para que dos pulsaciones no se traten a la vez.
+-- El hilo entre el agente y una cuenta, participen las direcciones que participen.
+-- La fila se bloquea (SELECT ... FOR UPDATE) mientras se atiende un mensaje, para que
+-- dos pulsaciones no se traten a la vez. Las propuestas abiertas van en los carriles
+-- (conversation_lane), una por ficha. La columna active_proposal_id de antes del
+-- multinegocio se retira al final de este archivo (paso 9 de docs/multinegocio.md).
 CREATE TABLE IF NOT EXISTS conversation (
     id                 text PRIMARY KEY DEFAULT 'conv_' || encode(gen_random_bytes(8), 'hex')
                        CHECK (id ~ '^conv_[0-9a-f]{8,32}$'),
     account_id         uuid NOT NULL UNIQUE REFERENCES account (id),
-    active_proposal_id text REFERENCES proposal (id),
     unknown_streak     smallint NOT NULL DEFAULT 0 CHECK (unknown_streak BETWEEN 0 AND 1000),
     created_at         timestamptz NOT NULL DEFAULT now(),
     updated_at         timestamptz NOT NULL DEFAULT now()
@@ -225,13 +226,15 @@ GRANT UPDATE (used_at) ON link_code TO fichaitor_api;
 -- responde o descarta las de su cuenta como lo haría el chat: estado, testigo y
 -- confirmación registrada. No puede crearlas ni cambiar de quién son, su tipo, su
 -- origen ni su carga. Para no pisarse con el chat, bloquea antes el hilo
--- (SELECT ... FOR UPDATE sobre conversation) y lo libera si era la activa.
+-- (SELECT ... FOR UPDATE sobre conversation) y libera el carril de su ficha si era la
+-- activa. Bloquear exige UPDATE en alguna columna: updated_at, y la política
+-- conversation_api_lock no deja cambiar ninguna fila.
 GRANT SELECT ON proposal TO fichaitor_api;
 GRANT UPDATE (state, slots, step_token, message_refs, confirmed_at, confirmed_event_id,
               confirmed_summary, action_id, outcome_reason)
     ON proposal TO fichaitor_api;
-GRANT SELECT (id, account_id, active_proposal_id) ON conversation TO fichaitor_api;
-GRANT UPDATE (active_proposal_id, updated_at) ON conversation TO fichaitor_api;
+GRANT SELECT (id, account_id) ON conversation TO fichaitor_api;
+GRANT UPDATE (updated_at) ON conversation TO fichaitor_api;
 
 -- === Conversación ============================================================
 GRANT SELECT ON channel_identity TO fichaitor_conversation;
@@ -247,8 +250,7 @@ GRANT UPDATE (used_at) ON link_code TO fichaitor_conversation;
 GRANT SELECT, INSERT, UPDATE ON channel_sender, link_failure_window, channel_inbound_event
     TO fichaitor_conversation;
 GRANT SELECT, INSERT ON conversation TO fichaitor_conversation;
-GRANT UPDATE (active_proposal_id, unknown_streak, updated_at)
-    ON conversation TO fichaitor_conversation;
+GRANT UPDATE (unknown_streak, updated_at) ON conversation TO fichaitor_conversation;
 
 -- Propuestas: las crea y las mueve, sin poder cambiar de quién son ni con qué se crearon.
 GRANT SELECT, INSERT ON proposal TO fichaitor_conversation;
@@ -264,13 +266,15 @@ GRANT INSERT (conversation_id, identity_id, direction, channel, channel_message_
 
 -- Fuera de las tablas de canales, lo que necesita para hacer lo mismo que la API hace
 -- desde el panel (app/application/review_replies.py y Store.create_reply_action), con
--- las mismas consultas: leer las reseñas de la ficha elegida de una cuenta, guardar el
+-- las mismas consultas: leer las reseñas de las fichas activas de una cuenta, guardar el
 -- borrador, contar el tope de borradores y crear la acción confirmada con su fila de
 -- auditoría y su job. No lee el correo de la cuenta ni google_connection.
 REVOKE ALL ON account, location, review, review_draft, usage_counter, action, audit_log,
               job, offboarding, profile_summary
     FROM fichaitor_conversation;
-GRANT SELECT (id, google_sub, selected_location_id, deleted_at, disconnected_at) ON account
+-- Sin selected_location_id desde el paso 9: la preferencia del panel no decide nada en
+-- la conversación.
+GRANT SELECT (id, google_sub, deleted_at, disconnected_at) ON account
     TO fichaitor_conversation;
 -- Fechas clave: el planificador lee de cada ficha elegida su estado y sus hechos
 -- (comunidad, dirección y días con horario especial). Nada más del resumen.
@@ -319,7 +323,7 @@ GRANT SELECT (account_id, expires_at, used_at) ON link_code TO fichaitor_worker;
 GRANT SELECT (updated_at, blocked_until) ON channel_sender TO fichaitor_worker;
 GRANT SELECT (window_start) ON link_failure_window TO fichaitor_worker;
 GRANT SELECT (id, account_id, state, created_at) ON proposal TO fichaitor_worker;
-GRANT SELECT (id, account_id, active_proposal_id) ON conversation TO fichaitor_worker;
+GRANT SELECT (id, account_id) ON conversation TO fichaitor_worker;
 GRANT SELECT (received_at) ON channel_inbound_event TO fichaitor_worker;
 GRANT SELECT (id, at, conversation_id, identity_id, proposal_id) ON channel_message
     TO fichaitor_worker;
@@ -404,7 +408,8 @@ $$;
 -- - Propuestas: solo cambia las de fechas clave (las que se contestan en el panel). Una
 --   propuesta de respuesta a una reseña solo puede cancelarla por una baja (B12) o
 --   porque su ficha se desactiva (multinegocio, 'location_inactive').
--- - Hilos: solo los libera (active_proposal_id a NULL); nunca apunta uno a otra propuesta.
+-- - Hilos: solo los bloquea (SELECT ... FOR UPDATE); no cambia ninguna fila. Los carriles
+--   (más abajo) solo los libera.
 -- La conversación hace lo de siempre; el worker lee lo que usan sus WHERE y borra.
 ALTER TABLE proposal ENABLE ROW LEVEL SECURITY;
 DROP POLICY IF EXISTS proposal_api_read ON proposal;
@@ -424,9 +429,13 @@ CREATE POLICY proposal_worker ON proposal FOR ALL TO fichaitor_worker
 ALTER TABLE conversation ENABLE ROW LEVEL SECURITY;
 DROP POLICY IF EXISTS conversation_api_read ON conversation;
 CREATE POLICY conversation_api_read ON conversation FOR SELECT TO fichaitor_api USING (true);
+-- Paso 9: el hilo ya no guarda la propuesta activa. La API solo lo bloquea: un
+-- SELECT ... FOR UPDATE mira el USING de la política de UPDATE, no su WITH CHECK, así
+-- que cualquier UPDATE de verdad se rechaza.
 DROP POLICY IF EXISTS conversation_api_release ON conversation;
-CREATE POLICY conversation_api_release ON conversation FOR UPDATE TO fichaitor_api
-    USING (true) WITH CHECK (active_proposal_id IS NULL);
+DROP POLICY IF EXISTS conversation_api_lock ON conversation;
+CREATE POLICY conversation_api_lock ON conversation FOR UPDATE TO fichaitor_api
+    USING (true) WITH CHECK (false);
 DROP POLICY IF EXISTS conversation_conversation ON conversation;
 CREATE POLICY conversation_conversation ON conversation FOR ALL TO fichaitor_conversation
     USING (true) WITH CHECK (true);
@@ -467,8 +476,8 @@ CREATE UNIQUE INDEX IF NOT EXISTS proposal_account_location_id
     ON proposal (account_id, location_id, id);
 
 -- Carriles: como mucho una propuesta activa por ficha. El hilo (conversation) se queda:
--- es el bloqueo por cuenta y guarda unknown_streak. Su active_proposal_id queda obsoleto
--- cuando el paso 6 use los carriles.
+-- es el bloqueo por cuenta y guarda unknown_streak. Su active_proposal_id se retira al
+-- final de este archivo (paso 9).
 -- La clave ajena a proposal incluye la cuenta y la ficha: un carril no puede apuntar a
 -- la propuesta de otra ficha ni de otra cuenta. Al borrar la ficha se borra su carril.
 CREATE TABLE IF NOT EXISTS conversation_lane (
@@ -585,7 +594,9 @@ WHERE p.location_id IS NULL AND p.type = 'review_reply'
   AND a.id = p.account_id AND r.id = p.source_ref AND r.google_sub = a.google_sub
   AND l.account_id = a.id AND l.gbp_location = r.location;
 -- - Las demás que siguen sin terminar: la ficha elegida de la cuenta. Las terminadas
---   que no se pueden resolver se quedan sin ficha.
+--   que no se pueden resolver se quedan sin ficha. Es migración desde el modelo de una
+--   ficha elegida (docs/03-lld.md, «selected_location_id»): solo toca propuestas sin
+--   ficha, y desde el paso 6a ninguna propuesta nueva se crea sin ella.
 UPDATE proposal p SET location_id = a.selected_location_id
 FROM account a
 WHERE p.location_id IS NULL AND p.type <> 'key_date' AND a.id = p.account_id
@@ -595,29 +606,18 @@ WHERE p.location_id IS NULL AND p.type <> 'key_date' AND a.id = p.account_id
 
 -- Paso 6a (docs/multinegocio.md, 3.6): toda propuesta nueva es de una ficha activa de
 -- su cuenta. Fuera del propietario (que aplica los esquemas y prepara las pruebas):
--- - Sin location_id, el disparador la pone como lo haría el código antiguo, que todavía
---   no la pasa (hasta el paso 6b): una fecha clave, la de su carga; lo demás, la ficha
---   elegida de la cuenta. Se retira en el paso 9.
--- - Si sigue sin ficha: check_violation 'propuesta_sin_ficha'.
+-- - Sin location_id: check_violation 'propuesta_sin_ficha'. Desde el paso 9 no se
+--   rellena nada: ni con la carga de una fecha clave ni con la ficha elegida.
 -- - Si la ficha no es de la cuenta o no está activa: check_violation 'ficha_inactiva'.
 --   La clave ajena compuesta ya impide la ficha de otra cuenta; aquí se mira además que
 --   esté activa, con el mismo mensaje en los dos casos.
 -- Con los privilegios de quien escribe (no SECURITY DEFINER), para que fichaitor_is_owner
--- vea al propietario de verdad. La conversación lee account.selected_location_id y
--- location.active_since.
+-- vea al propietario de verdad. La conversación lee location.active_since.
 CREATE OR REPLACE FUNCTION proposal_location_guard() RETURNS trigger
 LANGUAGE plpgsql SET search_path = pg_catalog, public, pg_temp AS $$
 BEGIN
     IF fichaitor_is_owner(TG_RELID) THEN
         RETURN NEW;
-    END IF;
-    IF NEW.location_id IS NULL THEN
-        IF NEW.type = 'key_date' THEN
-            NEW.location_id := NEW.payload->>'location_id';
-        ELSE
-            NEW.location_id := (SELECT a.selected_location_id FROM public.account a
-                                WHERE a.id = NEW.account_id);
-        END IF;
     END IF;
     IF NEW.location_id IS NULL THEN
         RAISE EXCEPTION 'propuesta_sin_ficha' USING ERRCODE = 'check_violation';
@@ -635,39 +635,50 @@ DROP TRIGGER IF EXISTS proposal_location_guard ON proposal;
 CREATE TRIGGER proposal_location_guard BEFORE INSERT ON proposal
     FOR EACH ROW EXECUTE FUNCTION proposal_location_guard();
 
--- Relleno 3.8.4 de los carriles. SÍ se ejecuta en cada aplicación de este esquema: la
--- última línea del archivo lo llama (I18 de docs/seguridad/revision-2026-11-12-c.md). Por
--- eso deploy/deploy.sh para la conversación antes de aplicar los esquemas y la arranca
--- después con el código nuevo, que ya lleva los carriles (ola 3): el código anterior
--- podría volver a escribir en el hilo después del relleno. Consulta la precaución de la
--- sección 3.8 de docs/multinegocio.md.
--- Cada pasada vacía conversation.active_proposal_id de todos los hilos. Una propuesta
--- abierta cuyo carril ya tenía otra queda fuera de los dos sin perderse: el carril la
--- vuelve a entregar.
--- Copia la propuesta activa de cada hilo al carril de su ficha, solo si sigue abierta y
--- tiene ficha, sin pisar un carril que ya tenga una; después vacía la del hilo. Devuelve
--- cuántos carriles ha escrito. Se puede repetir: la segunda vez no hay nada que copiar.
--- Solo el propietario la ejecuta.
+-- Relleno 3.8.4 de los carriles y retirada de conversation.active_proposal_id (paso 9).
+-- SÍ se ejecuta en cada aplicación de este esquema: la última línea del archivo lo llama
+-- (I18 de docs/seguridad/revision-2026-11-12-c.md). Por eso deploy/deploy.sh para la
+-- conversación antes de aplicar los esquemas y la arranca después con el código nuevo.
+-- Consulta la precaución de la sección 3.8 de docs/multinegocio.md.
+-- Mientras el hilo tenga la columna (una base de antes del paso 9):
+-- 1. copia la propuesta activa de cada hilo al carril de su ficha, solo si sigue abierta
+--    y tiene ficha, sin pisar un carril que ya tenga una. Una propuesta abierta cuyo
+--    carril ya tenía otra queda fuera de los dos sin perderse: el carril la vuelve a
+--    entregar;
+-- 2. borra la columna. No se pierde nada: lo que apuntaba a una propuesta abierta ya
+--    está en su carril, y lo demás nadie lo lee desde el paso 6b. Su clave ajena y sus
+--    privilegios de columna se van con ella; las políticas que la nombraban ya se han
+--    sustituido más arriba.
+-- Devuelve cuántos carriles ha escrito. Se puede repetir: sin la columna, no hace nada y
+-- devuelve 0. SQL dinámico: el cuerpo no nombra una columna que puede no existir.
+-- Solo el propietario la ejecuta (es quien puede cambiar la tabla).
 CREATE OR REPLACE FUNCTION fichaitor_fill_conversation_lanes() RETURNS integer
 LANGUAGE plpgsql SET search_path = pg_catalog, public, pg_temp AS $$
 DECLARE
-    written integer;
+    written integer := 0;
 BEGIN
-    WITH moved AS (
-        INSERT INTO public.conversation_lane AS cl (account_id, location_id, active_proposal_id)
-        SELECT p.account_id, p.location_id, p.id
-        FROM public.conversation c
-        JOIN public.proposal p ON p.id = c.active_proposal_id AND p.account_id = c.account_id
-        WHERE p.location_id IS NOT NULL
-          AND p.state IN ('enviada', 'recordada', 'recopilando', 'por_confirmar')
-        ON CONFLICT (account_id, location_id) DO UPDATE
-            SET active_proposal_id = EXCLUDED.active_proposal_id, updated_at = now()
-            WHERE cl.active_proposal_id IS NULL
-        RETURNING 1
-    )
-    SELECT count(*) INTO written FROM moved;
-    UPDATE public.conversation SET active_proposal_id = NULL, updated_at = now()
-    WHERE active_proposal_id IS NOT NULL;
+    IF NOT EXISTS (SELECT 1 FROM pg_catalog.pg_attribute
+                   WHERE attrelid = 'public.conversation'::regclass
+                     AND attname = 'active_proposal_id' AND NOT attisdropped) THEN
+        RETURN 0;
+    END IF;
+    EXECUTE $sql$
+        WITH moved AS (
+            INSERT INTO public.conversation_lane AS cl
+                (account_id, location_id, active_proposal_id)
+            SELECT p.account_id, p.location_id, p.id
+            FROM public.conversation c
+            JOIN public.proposal p ON p.id = c.active_proposal_id AND p.account_id = c.account_id
+            WHERE p.location_id IS NOT NULL
+              AND p.state IN ('enviada', 'recordada', 'recopilando', 'por_confirmar')
+            ON CONFLICT (account_id, location_id) DO UPDATE
+                SET active_proposal_id = EXCLUDED.active_proposal_id, updated_at = now()
+                WHERE cl.active_proposal_id IS NULL
+            RETURNING 1
+        )
+        SELECT count(*) FROM moved
+    $sql$ INTO written;
+    ALTER TABLE public.conversation DROP COLUMN active_proposal_id;
     RETURN written;
 END
 $$;
@@ -677,5 +688,6 @@ REVOKE ALL ON FUNCTION fichaitor_fill_conversation_lanes() FROM PUBLIC;
 -- Solo desarrollo local y pruebas: está en db/dev-init.sql.
 -- En producción el usuario fichaitor_conversation_prod lo crea deploy/init-roles.sh.
 
--- El relleno de los carriles, en cada aplicación (ver el comentario de la función).
+-- El relleno de los carriles y la retirada del hilo, en cada aplicación (ver el
+-- comentario de la función).
 SELECT fichaitor_fill_conversation_lanes();

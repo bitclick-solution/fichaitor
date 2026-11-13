@@ -28,3 +28,14 @@ class MemoryQuota:
 
     async def quota_left(self, scope: str, limit: int, window_seconds: int, now: datetime) -> bool:
         return self._hits(scope, window_seconds, now)[1] < limit
+
+    async def take_quota_in(self, scope: str, limit: int, start: datetime, end: datetime) -> bool:
+        hits = self._counters.get((scope, start), (end, 0))[1]
+        if limit <= 0 or hits >= limit:
+            return False
+        self._counters[(scope, start)] = (end, hits + 1)
+        return True
+
+    async def quota_used(self, scope: str, start: datetime) -> int:
+        found = self._counters.get((scope, start))
+        return found[1] if found is not None else 0

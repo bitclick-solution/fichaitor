@@ -167,6 +167,7 @@ class Scene:
         )
         location_id = self.api.locations[0].id
         self.location_id = location_id
+        run(self.api.activate(self.account, location_id))
         assert run(self.api.select_location(self.account, location_id))
         self.api.tables.save_reviews(
             SUB,
@@ -184,7 +185,7 @@ class Scene:
             clock=lambda: self.now.timestamp(),
         )
         self.store = MemoryConversationStore()
-        self.store.accounts[self.account] = AccountInfo(business_name="Bar Pepe")
+        self.store.accounts[self.account] = AccountInfo()
         self.telegram = FakeChannel("telegram")
         self.service = ConversationService(
             self.store,
@@ -210,7 +211,6 @@ class Scene:
             "created_at": row.created_at,
             "unanswered": row.reply_text is None,
             "live": row.removed_at is None,
-            "accounts": (),
             "targets": ((self.account, self.location_id),),
         }
         return ReviewTarget(**{**values, **changes})

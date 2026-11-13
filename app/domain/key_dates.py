@@ -190,7 +190,7 @@ class PanelRefused(ValueError):
 
 REFUSED_CLOSED = "closed"  # answered, dismissed or running already
 REFUSED_PAST = "past"  # its day has passed
-REFUSED_PROFILE = "profile"  # its profile is no longer the selected one
+REFUSED_PROFILE = "profile"  # its profile is no longer an active one
 
 
 def panel_status(state: ProposalState) -> str:

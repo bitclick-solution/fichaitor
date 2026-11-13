@@ -7,13 +7,15 @@ scripts/preparar_bd_pruebas.sh.
 
 What it covers:
 - the trigger `proposal_location_guard`: a new proposal is of an active profile of its
-  account, and the old code (without a profile) still works through the selected one;
+  account, and one without a profile is refused: since step 9 nothing fills it in, not
+  the payload of a key date nor the selected profile;
 - the new methods of `PostgresConversationStore`: lanes, the filter of each chat, the
   focus, the header, the quoted message and the weekly cap per profile;
 - `linked_profiles`, `key_date_profiles` and `review_targets` over active profiles;
-- the backfill of the lanes (3.8.4), which db/schema_channels.sql runs at its end since
-  the deployment of step 6b, and applying the schemas again over real data, which only
-  moves open threads to their lanes once.
+- the backfill of the lanes (3.8.4) and the retirement of conversation.active_proposal_id
+  (step 9), which db/schema_channels.sql runs at its end: over a database that still has
+  the column (re-added here as the old schema had it) it moves the open threads to their
+  lanes once and drops the column; applying the schemas again changes nothing more.
 
 Rows are written by the owner, as the old code and the other roles left them, and
 deleted at the end. Nothing here uses the API's store.
@@ -23,6 +25,7 @@ import asyncio
 import json
 import os
 import uuid
+from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
@@ -221,7 +224,7 @@ def proposal(
         created_at=NOW,
         scheduled_for=NOW,
         payload=payload,
-        location_id=None if kind is ProposalType.KEY_DATE else location,
+        location_id=location,
     )
 
 
@@ -277,45 +280,50 @@ def test_a_proposal_cannot_name_an_active_profile_of_another_account():
     assert refusal(CONVERSATION_URL, INSERT, _pid(), mine, "review_reply", their_loc, "{}")
 
 
-def test_the_old_code_without_a_profile_gets_the_selected_one_or_the_one_of_its_payload():
+def test_without_a_profile_nothing_fills_it_in_any_more():
+    """Step 9: neither the selected profile nor the payload of a key date gives a
+    proposal its profile. The store says LocationInactive and stores nothing."""
+
     async def go():
-        account, _ = await new_account("antiguo")
+        account, _ = await new_account("sin-relleno")
         selected = await new_location(account, selected=True)
-        other = await new_location(account)
         async with Conversation() as store:
-            review = proposal(account, None)
-            assert await store.add_proposal(review)
-            key_date = proposal(account, other, kind=ProposalType.KEY_DATE)
-            assert await store.add_proposal(key_date)
-            stored = [await store.get_proposal(p.id) for p in (review, key_date)]
-        return selected, other, stored
+            review = replace(proposal(account, None), location_id=None)
+            with pytest.raises(LocationInactive):
+                await store.add_proposal(review)
+            key_date = replace(
+                proposal(account, selected, kind=ProposalType.KEY_DATE), location_id=None
+            )
+            with pytest.raises(LocationInactive):
+                await store.add_proposal(key_date)
+            return [await store.get_proposal(p.id) for p in (review, key_date)]
 
-    selected, other, (review, key_date) = run(go())
-    assert review.location_id == selected
-    assert key_date.location_id == other
+    assert run(go()) == [None, None]
 
 
-def test_without_a_profile_and_without_a_selected_one_nothing_is_stored():
+def test_without_a_profile_nothing_is_stored_even_with_a_selected_active_one():
     account, _ = run(new_account("sin-ficha"))
-    run(new_location(account))
+    selected = run(new_location(account, selected=True))
     assert (
         refusal(CONVERSATION_URL, INSERT, _pid(), account, "review_reply", None, "{}")
         == "propuesta_sin_ficha"
     )
-    key_date = json.dumps({"date": "2027-12-08"})
+    key_date = json.dumps({"date": "2027-12-08", "location_id": selected})
     assert (
         refusal(CONVERSATION_URL, INSERT, _pid(), account, "key_date", None, key_date)
         == "propuesta_sin_ficha"
     )
 
 
-def test_the_old_code_with_a_selected_profile_that_is_not_active_is_refused():
-    account, _ = run(new_account("elegida-inactiva"))
-    run(new_location(account, active=False, selected=True))
-    assert (
-        refusal(CONVERSATION_URL, INSERT, _pid(), account, "review_reply", None, "{}")
-        == "ficha_inactiva"
+def test_the_conversation_no_longer_reads_the_preference_of_the_panel():
+    account, _ = run(new_account("preferencia"))
+    run(new_location(account, selected=True))
+    message = refusal(
+        CONVERSATION_URL,
+        "SELECT selected_location_id FROM account WHERE id = $1::uuid",
+        account,
     )
+    assert message is not None and "permission denied" in message
 
 
 def test_the_store_says_location_inactive_and_the_thread_goes_on():
@@ -636,7 +644,7 @@ def test_review_targets_are_the_active_profiles_with_a_chat_that_sees_them():
             )
             seen.append(await store.review_targets(review))
             await owner("UPDATE profile_summary SET status = 'ok' WHERE google_sub = $1", sub)
-            # Inactive: neither the old list nor the new one.
+            # Inactive: not proposed.
             await owner("UPDATE location SET active_since = NULL, plan = NULL WHERE id = $1", bar)
             seen.append(await store.review_targets(review))
             await owner("UPDATE location SET active_since = now(), plan = 'pro' WHERE id = $1", bar)
@@ -647,13 +655,14 @@ def test_review_targets_are_the_active_profiles_with_a_chat_that_sees_them():
 
     account, bar, twin_account, twin, seen = run(go())
     first, filtered, lost, inactive, leaving, twin_target = seen
-    assert first.accounts == (account,) and first.targets == ((account, bar),)
-    assert filtered.targets == () and filtered.accounts == (account,)
-    assert lost.targets == () and lost.accounts == (account,)
-    assert inactive.targets == () and inactive.accounts == ()
-    assert leaving.targets == () and leaving.accounts == ()
-    # The twin account has the profile active but not selected: only the new list.
-    assert twin_target.targets == ((twin_account, twin),) and twin_target.accounts == ()
+    assert first.targets == ((account, bar),)
+    assert filtered.targets == ()
+    assert lost.targets == ()
+    assert inactive.targets == ()
+    assert leaving.targets == ()
+    # The twin account has the profile active but not selected: the preference of the
+    # panel decides nothing here.
+    assert twin_target.targets == ((twin_account, twin),)
 
 
 # =============================================================================
@@ -661,33 +670,45 @@ def test_review_targets_are_the_active_profiles_with_a_chat_that_sees_them():
 # =============================================================================
 
 
-async def _threads_as_the_old_code_left_them():
-    """Two accounts with a thread each: one open proposal active (and one waiting),
-    and one whose active proposal is already finished."""
+OLD_COLUMN = (
+    "ALTER TABLE conversation ADD COLUMN IF NOT EXISTS active_proposal_id text"
+    " REFERENCES proposal (id)"
+)
+HAS_OLD_COLUMN = (
+    "SELECT EXISTS (SELECT 1 FROM pg_attribute WHERE attrelid = 'conversation'::regclass"
+    " AND attname = 'active_proposal_id' AND NOT attisdropped)"
+)
+OLD_THREAD = "INSERT INTO conversation (account_id, active_proposal_id) VALUES ($1::uuid, $2)"
+
+
+async def _threads_as_the_old_code_left_them(conn: asyncpg.Connection | None = None):
+    """Two accounts with a thread each, as a database from before step 9 has them: one
+    open proposal active (and one waiting), and one whose active proposal is already
+    finished. The column the old schema had is put back first: in `conn` (a transaction
+    that is rolled back) or, without it, for good until the schemas are applied again."""
+
+    async def write(sql: str, *args):
+        if conn is not None:
+            return await conn.execute(sql, *args)
+        return await owner(sql, *args)
+
     account, _ = await new_account("relleno")
     a = await new_location(account)
     b = await new_location(account)
     active = await owner_proposal(account, a)
     waiting = await owner_proposal(account, b, "programada")
-    await owner(
-        "INSERT INTO conversation (account_id, active_proposal_id) VALUES ($1::uuid, $2)",
-        account,
-        active,
-    )
     done_account, _ = await new_account("relleno-terminada")
     c = await new_location(done_account)
     finished = await owner_proposal(done_account, c, "aplicada")
-    await owner(
-        "INSERT INTO conversation (account_id, active_proposal_id) VALUES ($1::uuid, $2)",
-        done_account,
-        finished,
-    )
+    await write(OLD_COLUMN)
+    await write(OLD_THREAD, account, active)
+    await write(OLD_THREAD, done_account, finished)
     return account, done_account, a, active, waiting
 
 
 async def _state(accounts: list[str], conn: asyncpg.Connection | None = None) -> dict[str, list]:
     tables = {
-        "conversation": "SELECT account_id::text, active_proposal_id, unknown_streak"
+        "conversation": "SELECT account_id::text, unknown_streak"
         " FROM conversation WHERE account_id = ANY($1::uuid[]) ORDER BY 1",
         "lanes": "SELECT account_id::text, location_id, active_proposal_id"
         " FROM conversation_lane WHERE account_id = ANY($1::uuid[]) ORDER BY 1, 2",
@@ -697,18 +718,19 @@ async def _state(accounts: list[str], conn: asyncpg.Connection | None = None) ->
         " WHERE account_id = ANY($1::uuid[]) ORDER BY 1",
         "location": "SELECT to_jsonb(l)::text AS row FROM location l"
         " WHERE account_id = ANY($1::uuid[]) ORDER BY 1",
+        "column": HAS_OLD_COLUMN,
     }
     found = {}
     for name, sql in tables.items():
-        rows = await (conn.fetch(sql, accounts) if conn is not None else owner(sql, accounts))
+        args = () if name == "column" else (accounts,)
+        rows = await (conn.fetch(sql, *args) if conn is not None else owner(sql, *args))
         found[name] = [tuple(r) for r in rows]
     return found
 
 
 async def _in_a_rolled_back_transaction(work):
-    """The backfill empties every thread of the database: run it, as the owner, in a
-    transaction that is always rolled back, so that other tests running at the same time
-    on the test database are not touched."""
+    """The backfill empties every thread of the database and drops a column: run it, as
+    the owner, in a transaction that is always rolled back."""
     conn = await asyncpg.connect(OWNER_URL)
     try:
         tx = conn.transaction()
@@ -730,10 +752,10 @@ async def _apply_schemas() -> None:
         await conn.close()
 
 
-def test_applying_the_schemas_again_fills_the_lanes_once_and_changes_nothing_else():
-    """From the deployment of step 6b, db/schema_channels.sql ends by calling the backfill:
-    the open thread moves to the lane of its profile, the threads are emptied, and
-    everything else stays as it was. Applying it again changes nothing more."""
+def test_applying_the_schemas_moves_old_threads_drops_the_column_and_changes_nothing_else():
+    """Over a database from before step 9 (with real threads in the old column): the
+    open thread moves to the lane of its profile and the column goes. Applying the
+    schemas again changes nothing more, and the roles keep working on the thread."""
 
     async def go():
         account, done_account, a, active, _ = await _threads_as_the_old_code_left_them()
@@ -748,65 +770,92 @@ def test_applying_the_schemas_again_fills_the_lanes_once_and_changes_nothing_els
         await _apply_schemas()
         once = await _state(accounts)
         await _apply_schemas()
-        return account, done_account, a, active, before, once, await _state(accounts)
+        twice = await _state(accounts)
+        async with Conversation() as store:
+            async with store.lock(account):
+                thread = await store.get_conversation(account)
+                await store.save_conversation(replace(thread, unknown_streak=1))
+            streak = (await store.get_conversation(account)).unknown_streak
+        return account, done_account, a, active, before, once, twice, streak
 
-    account, done_account, a, active, before, once, twice = run(go())
+    account, done_account, a, active, before, once, twice, streak = run(go())
+    assert before["column"] == [(True,)]
     assert once["lanes"] == [(account, a, active)]
-    assert {(c[0], c[1]) for c in once["conversation"]} == {
-        (account, None),
-        (done_account, None),
-    }
+    assert once["column"] == [(False,)]
+    assert once["conversation"] == before["conversation"]
     for table in ("proposal", "channel_identity", "location"):
         assert once[table] == before[table]
     assert twice == once
+    assert streak == 1
 
 
-def test_the_backfill_moves_open_threads_to_their_lane_once():
+def test_the_backfill_moves_open_threads_to_their_lane_once_and_drops_the_column():
     async def go():
-        account, done_account, a, active, _ = await _threads_as_the_old_code_left_them()
-        accounts = [account, done_account]
-
         async def work(conn):
+            account, done_account, a, active, _ = await _threads_as_the_old_code_left_them(conn)
+            accounts = [account, done_account]
             first = await conn.fetchval("SELECT fichaitor_fill_conversation_lanes()")
             after_first = await _state(accounts, conn)
             second = await conn.fetchval("SELECT fichaitor_fill_conversation_lanes()")
-            return first, after_first, second, await _state(accounts, conn)
+            return (
+                account,
+                a,
+                active,
+                first,
+                after_first,
+                second,
+                await _state(accounts, conn),
+            )
 
-        return (account, done_account, a, active, *await _in_a_rolled_back_transaction(work))
+        return await _in_a_rolled_back_transaction(work)
 
-    account, done_account, a, active, first, after_first, second, after_second = run(go())
+    account, a, active, first, after_first, second, after_second = run(go())
     assert first >= 1  # other accounts of the test database may have threads too
-    # Only the open one; the finished one is not copied. Both threads are emptied.
+    # Only the open one; the finished one is not copied.
     assert after_first["lanes"] == [(account, a, active)]
-    assert {(c[0], c[1]) for c in after_first["conversation"]} == {
-        (account, None),
-        (done_account, None),
-    }
+    assert after_first["column"] == [(False,)]
     assert second == 0
     assert after_second == after_first
 
 
 def test_the_backfill_does_not_overwrite_a_lane_that_already_has_a_proposal():
     async def go():
-        account, done_account, a, active, _ = await _threads_as_the_old_code_left_them()
-        newer = await owner_proposal(account, a, "recopilando")
-        await owner(
-            "INSERT INTO conversation_lane (account_id, location_id, active_proposal_id)"
-            " VALUES ($1::uuid, $2, $3)",
-            account,
-            a,
-            newer,
-        )
-
         async def work(conn):
+            account, _, a, _, _ = await _threads_as_the_old_code_left_them(conn)
+            # On the same connection: the column put back holds proposal locked.
+            newer = f"prop_{uuid.uuid4().hex[:16]}"
+            await conn.execute(
+                "INSERT INTO proposal (id, account_id, type, source_ref, state, location_id)"
+                " VALUES ($1, $2::uuid, 'review_reply', $3, 'recopilando', $4)",
+                newer,
+                account,
+                f"pytest:{newer}",
+                a,
+            )
+            await conn.execute(
+                "INSERT INTO conversation_lane (account_id, location_id, active_proposal_id)"
+                " VALUES ($1::uuid, $2, $3)",
+                account,
+                a,
+                newer,
+            )
             await conn.fetchval("SELECT fichaitor_fill_conversation_lanes()")
-            return await _state([account], conn)
+            return newer, await _state([account], conn)
 
-        return newer, await _in_a_rolled_back_transaction(work)
+        return await _in_a_rolled_back_transaction(work)
 
     newer, state = run(go())
     assert [lane[2] for lane in state["lanes"]] == [newer]
-    assert state["conversation"][0][1] is None
+    assert state["column"] == [(False,)]
+
+
+def test_without_the_old_column_the_backfill_does_nothing():
+    async def work(conn):
+        return await conn.fetchval("SELECT fichaitor_fill_conversation_lanes()"), (
+            await conn.fetchval(HAS_OLD_COLUMN)
+        )
+
+    assert run(_in_a_rolled_back_transaction(work)) == (0, False)
 
 
 @pytest.mark.parametrize("url", ["api", "worker", "conversation"])

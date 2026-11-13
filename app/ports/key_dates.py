@@ -11,6 +11,7 @@ from dataclasses import dataclass, field
 from datetime import date, datetime
 from typing import Any, Protocol
 
+from app.domain.plans import Plan
 from app.domain.proposals import ProposalState
 from app.domain.special_hours import SpecialHoursChange
 from app.ports.store import StoredAction
@@ -41,6 +42,12 @@ class KeyDateView:
 
 
 class KeyDateStore(Protocol):
+    async def location_plan(self, account_id: str, location_id: str) -> Plan | None:
+        """The plan of that profile if it is an active one of that account, without a
+        scheduled leave; None otherwise. Read at the moment of each action: the plan
+        decides what the profile may do (app/domain/plans.py, FEATURES)."""
+        ...
+
     async def create_special_hours_action(
         self, account_id: str, location_id: str, change: SpecialHoursChange, now: datetime
     ) -> str | None:

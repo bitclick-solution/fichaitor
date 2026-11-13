@@ -271,18 +271,18 @@ Las reseñas son públicas en Google, pero su texto puede contener datos persona
 
 ## Proveedor del modelo: beta y producción
 
-**Decisión del propietario (2026-11-12):** durante la beta, el modelo se usa con la clave de Google AI Studio (`FICHAITOR_GEMINI_API_KEY`). En producción se usará Google Cloud (Vertex AI). Vertex AI no está implementado.
+**Decisión del propietario (2026-11-12):** durante la beta, el modelo se usa con la clave de Google AI Studio (`FICHAITOR_GEMINI_API_KEY`). En producción se usará Google Cloud (Vertex AI) en la multirregión `eu`.
 
-Toda la llamada HTTP está en un único módulo, `app/adapters/gemini_client.py`, que comparten el lector de capturas, el borrador de respuestas y el sentimiento. Para pasar a Vertex AI hay que cambiar ese módulo y la configuración, no los prompts, los esquemas ni el dominio:
+El cambio es solo de configuración (`FICHAITOR_GEMINI_PROVIDER=vertex`). Toda la llamada HTTP está en `app/adapters/gemini_client.py`, que comparten el lector de capturas, el borrador de respuestas y el sentimiento; la autenticación de Vertex AI está en `app/adapters/gemini_auth.py` y la elección del proveedor en `app/adapters/gemini_provider.py`. Los prompts, los esquemas y el dominio no cambian:
 
-| Qué cambia | Hoy (AI Studio) | Con Vertex AI |
+| Qué cambia | AI Studio | Vertex AI |
 |---|---|---|
-| URL base | `https://generativelanguage.googleapis.com/v1beta/models/<modelo>:generateContent` (`BASE_URL` y `model_path`) | El punto de acceso de Vertex AI, que incluye el proyecto de Google Cloud y la región en la ruta |
-| Autenticación | Clave de API en la cabecera `x-goog-api-key` | Token OAuth de una cuenta de servicio en la cabecera `Authorization`, que hay que renovar. Requiere dónde guardar la credencial y cómo renovarla |
-| Región | No se elige | Hay que elegirla y configurarla. Añade una variable para ella |
-| Configuración | `FICHAITOR_GEMINI_API_KEY` y `FICHAITOR_GEMINI_MODEL` (`app/screenshot_config.py`) | Proyecto, región y credencial de la cuenta de servicio |
+| URL | `https://generativelanguage.googleapis.com/v1beta/models/<modelo>:generateContent` | `https://aiplatform.eu.rep.googleapis.com/v1/projects/<proyecto>/locations/eu/publishers/google/models/<modelo>:generateContent` |
+| Autenticación | Clave de API en la cabecera `x-goog-api-key` | Token OAuth de una cuenta de servicio en `Authorization: Bearer`, obtenido con un JWT firmado y guardado hasta 5 minutos antes de caducar |
+| Configuración | `FICHAITOR_GEMINI_API_KEY` y `FICHAITOR_GEMINI_MODEL` | `FICHAITOR_VERTEX_PROJECT`, `FICHAITOR_VERTEX_LOCATION` (`eu` por defecto), `FICHAITOR_VERTEX_CREDENTIALS_FILE` y `FICHAITOR_GEMINI_MODEL` |
+| Cuerpo y respuesta | `systemInstruction`, `generationConfig.responseJsonSchema`, `thinkingConfig`; `candidates`, `usageMetadata` | Los mismos (comprobado en la referencia REST v1 de Vertex AI, 2026-11-12) |
 
-Antes de implementarlo, comprueba en la documentación de Vertex AI que el cuerpo de la petición (`systemInstruction`, `generationConfig.responseJsonSchema`, `thinkingConfig`) y la respuesta (`candidates`, `usageMetadata`) son los mismos que usa hoy el cliente. No se ha verificado para este documento.
+La elección de la ubicación, sus fuentes y los pasos en Google Cloud están en `docs/despliegue.md`, «Gemini en Vertex AI».
 
 > **Importante:** La región se decide teniendo en cuenta la protección de datos, no solo el precio. Los textos de las reseñas pueden contener datos personales y los clientes son negocios españoles: lo previsible es una región de la Unión Europea, pero la decisión debe pasar por quien lleva la parte legal y quedar reflejada en la política de privacidad y en el registro de encargados del tratamiento.
 

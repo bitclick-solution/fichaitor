@@ -16,12 +16,14 @@ from datetime import datetime
 from typing import Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Response
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 
 from app.api.session import (
     MSG_NO_LOCATION,
     active_account_guard,
     location_param,
+    plan_required,
     require_csrf_header,
     resolve_location,
 )
@@ -35,6 +37,7 @@ from app.domain.key_dates import (
     PanelRefused,
     panel_status,
 )
+from app.domain.plans import PlanRequired
 from app.domain.special_hours import (
     KIND_CLOSED,
     KIND_PERIODS,
@@ -218,7 +221,7 @@ def build_router(
         proposal_id: str,
         body: AnswerRequest,
         account: Account = Depends(current_account),  # noqa: B008
-    ) -> KeyDateOut:
+    ) -> KeyDateOut | JSONResponse:
         # This request IS the owner's confirmation ("Confirmar" in the panel): a session,
         # the protection header and the exact hours. What goes to Google is what is
         # checked here.
@@ -232,6 +235,8 @@ def build_router(
             )
         except KeyDateNotFound:
             raise HTTPException(404, MSG_NOT_FOUND) from None
+        except PlanRequired as exc:  # the free plan has no key dates
+            return plan_required(exc)
         except InvalidSpecialHours as exc:
             raise HTTPException(422, str(exc)) from None
         except PanelRefused as exc:
@@ -257,6 +262,8 @@ def build_router(
             await key_dates.dismiss(account.id, proposal_id)
         except KeyDateNotFound:
             raise HTTPException(404, MSG_NOT_FOUND) from None
+        except PlanRequired as exc:
+            return plan_required(exc)
         except PanelRefused:
             raise HTTPException(409, MSG_CLOSED) from None
         return Response(status_code=204)

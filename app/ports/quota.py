@@ -22,3 +22,12 @@ class Quota(Protocol):
     async def quota_left(self, scope: str, limit: int, window_seconds: int, now: datetime) -> bool:
         """Whether one more use would be counted now. Counts nothing."""
         ...
+
+    async def take_quota_in(self, scope: str, limit: int, start: datetime, end: datetime) -> bool:
+        """`take_quota` in a window given by its start and end, for windows that are not
+        of a fixed length (a calendar month: app/domain/quota.py, `month_window`)."""
+        ...
+
+    async def quota_used(self, scope: str, start: datetime) -> int:
+        """Uses counted in the window of `scope` that starts at `start`. Counts nothing."""
+        ...

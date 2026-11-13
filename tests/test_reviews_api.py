@@ -176,6 +176,7 @@ class World:
     def select(self, client: TestClient, title: str | None = None) -> None:
         locations = client.get(ME).json()["locations"]
         chosen = next(loc for loc in locations if title in (None, loc["title"]))
+        client.post(f"/api/v1/me/locations/{chosen['id']}/activation", json={}, headers=HEADER)
         r = client.post(SELECT, json={"location_id": chosen["id"]}, headers=HEADER)
         assert r.status_code == 200
 
@@ -926,6 +927,7 @@ def test_fake_google_without_database_runs_the_whole_journey():
     state = parse_qs(urlparse(r.headers["location"]).query)["state"][0]
     assert client.get(CALLBACK, params={"code": "c", "state": state}).status_code == 303
     location_id = client.get(ME).json()["locations"][0]["id"]
+    client.post(f"/api/v1/me/locations/{location_id}/activation", json={}, headers=HEADER)
     assert client.post(SELECT, json={"location_id": location_id}, headers=HEADER).status_code == 200
 
     # List: the demo profile, the 1-star review first.
@@ -967,6 +969,7 @@ def test_without_the_fake_model_the_demo_journey_still_lists_and_publishes():
     state = parse_qs(urlparse(r.headers["location"]).query)["state"][0]
     client.get(CALLBACK, params={"code": "c", "state": state})
     location_id = client.get(ME).json()["locations"][0]["id"]
+    client.post(f"/api/v1/me/locations/{location_id}/activation", json={}, headers=HEADER)
     client.post(SELECT, json={"location_id": location_id}, headers=HEADER)
     rid = client.get(REVIEWS).json()["reviews"][0]["id"]
 

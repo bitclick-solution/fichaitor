@@ -45,6 +45,7 @@ from app.domain.link_codes import (
     SenderState,
     failure_window,
 )
+from app.domain.plans import parse_plan
 from app.domain.profile_summary import facts_from_json
 from app.domain.proposals import Proposal, ProposalState, ProposalType
 from app.ports.conversation_store import (
@@ -533,16 +534,7 @@ class PostgresConversationStore:
 
     async def get_account_info(self, account_id: str) -> AccountInfo:
         # The time zone is not in `account` yet: the peninsula until it is.
-        async with self._conn() as conn:
-            title = await conn.fetchval(
-                """
-                SELECT l.title FROM account a
-                JOIN location l ON l.id = a.selected_location_id AND l.account_id = a.id
-                WHERE a.id = $1::uuid AND a.deleted_at IS NULL AND l.removed_at IS NULL
-                """,
-                account_id,
-            )
-        return AccountInfo(business_name=title or "", timezone=DEFAULT_TIMEZONE)
+        return AccountInfo(timezone=DEFAULT_TIMEZONE)
 
     async def location_label(self, account_id: str, location_id: str) -> str:
         async with self._conn() as conn:
@@ -613,7 +605,7 @@ class PostgresConversationStore:
             )
             row = await conn.fetchrow(
                 """
-                SELECT id, account_id::text AS account_id, active_proposal_id, unknown_streak
+                SELECT id, account_id::text AS account_id, unknown_streak
                 FROM conversation WHERE account_id = $1::uuid
                 """,
                 account_id,
@@ -621,7 +613,6 @@ class PostgresConversationStore:
         return Conversation(
             id=row["id"],
             account_id=row["account_id"],
-            active_proposal_id=row["active_proposal_id"],
             unknown_streak=row["unknown_streak"],
         )
 
@@ -629,29 +620,12 @@ class PostgresConversationStore:
         async with self._conn() as conn:
             await conn.execute(
                 """
-                UPDATE conversation
-                SET active_proposal_id = $2, unknown_streak = $3, updated_at = now()
+                UPDATE conversation SET unknown_streak = $2, updated_at = now()
                 WHERE account_id = $1::uuid
                 """,
                 conversation.account_id,
-                conversation.active_proposal_id,
                 min(conversation.unknown_streak, 1000),
             )
-
-    async def accounts_with_open_work(self) -> Sequence[str]:
-        # An account with a leave scheduled has nothing to do here until it is restored.
-        async with self._conn() as conn:
-            rows = await conn.fetch(
-                f"""
-                SELECT DISTINCT p.account_id::text AS account_id FROM proposal p
-                WHERE p.state = ANY($1::text[])
-                  AND NOT EXISTS (SELECT 1 FROM offboarding o
-                                  WHERE o.account_id = p.account_id AND {_SCHEDULED})
-                ORDER BY 1
-                """,  # noqa: S608
-                _UNFINISHED,
-            )
-        return [r["account_id"] for r in rows]
 
     # --- lanes ---------------------------------------------------------------------------
 
@@ -916,33 +890,16 @@ class PostgresConversationStore:
     # --- outside the conversation: what its jobs read and write -------------------------
 
     async def review_targets(self, review_id: str) -> ReviewTarget | None:
-        """The review and whom it may be proposed to (ReviewTarget). `accounts`, for the
-        code before step 6b: those whose selected profile, active, has it (same Google
-        user and profile), not deleted, without a scheduled leave, with an address linked
-        before the review was written. `targets`: every active profile with it, of such
-        an account, whose last sync is "ok" (docs/multinegocio.md, 6.5) and with an
-        address that sees that profile linked before the review was written."""
+        """The review and whom it may be proposed to (ReviewTarget.targets): every
+        active profile with it (same Google user and profile), of an account not deleted
+        and without a scheduled leave, whose last sync is "ok" (docs/multinegocio.md,
+        6.5) and with an address that sees that profile linked before the review was
+        written."""
         async with self._conn() as conn:
             row = await conn.fetchrow(
                 """
                 SELECT r.rating, r.comment, r.created_at,
-                       r.reply_text IS NULL AS unanswered, r.removed_at IS NULL AS live,
-                       array(
-                           SELECT a.id::text FROM account a
-                           JOIN location l
-                             ON l.id = a.selected_location_id AND l.account_id = a.id
-                            AND l.removed_at IS NULL AND l.active_since IS NOT NULL
-                           WHERE a.google_sub = r.google_sub AND l.gbp_location = r.location
-                             AND a.deleted_at IS NULL
-                             AND NOT EXISTS (SELECT 1 FROM offboarding o
-                                             WHERE o.account_id = a.id
-                                               AND o.restored_at IS NULL
-                                               AND o.effective_at IS NULL)
-                             AND (SELECT min(ci.verified_at) FROM channel_identity ci
-                                  WHERE ci.account_id = a.id AND ci.unlinked_at IS NULL)
-                                 <= r.created_at
-                           ORDER BY a.id
-                       ) AS accounts
+                       r.reply_text IS NULL AS unanswered, r.removed_at IS NULL AS live
                 FROM review r WHERE r.id = $1
                 """,
                 review_id,
@@ -977,7 +934,6 @@ class PostgresConversationStore:
             created_at=row["created_at"],
             unanswered=row["unanswered"],
             live=row["live"],
-            accounts=tuple(row["accounts"]),
             targets=tuple((t["account_id"], t["location_id"]) for t in targets),
         )
 
@@ -1009,7 +965,8 @@ class PostgresConversationStore:
         async with self._conn() as conn:
             rows = await conn.fetch(
                 """
-                SELECT a.id::text AS account_id, l.id AS location_id, p.facts::text AS facts
+                SELECT a.id::text AS account_id, l.id AS location_id, l.plan,
+                       p.facts::text AS facts
                 FROM account a
                 JOIN location l
                   ON l.account_id = a.id AND l.active_since IS NOT NULL
@@ -1036,6 +993,7 @@ class PostgresConversationStore:
                     facts.region,
                     facts.address,
                     facts.special_dates,
+                    parse_plan(row["plan"]),
                 )
             )
         return found

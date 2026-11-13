@@ -150,6 +150,7 @@ class World:
     def select(self, client: TestClient, title: str | None = None) -> None:
         locations = client.get(ME).json()["locations"]
         chosen = next(loc for loc in locations if title in (None, loc["title"]))
+        client.post(f"/api/v1/me/locations/{chosen['id']}/activation", json={}, headers=HEADER)
         r = client.post(SELECT, json={"location_id": chosen["id"]}, headers=HEADER)
         assert r.status_code == 200
 
@@ -348,6 +349,7 @@ def test_demo_mode_serves_a_diagnosis_right_after_selecting_a_profile():
     state = parse_qs(urlparse(r.headers["location"]).query)["state"][0]
     assert client.get(CALLBACK, params={"code": "c", "state": state}).status_code == 303
     location = client.get(ME).json()["locations"][0]
+    client.post(f"/api/v1/me/locations/{location['id']}/activation", json={}, headers=HEADER)
     client.post(SELECT, json={"location_id": location["id"]}, headers=HEADER)
 
     r = client.get(DIAGNOSIS)

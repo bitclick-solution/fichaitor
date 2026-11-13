@@ -6,7 +6,9 @@ from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime
 
 from fastapi import HTTPException, Query, Request, Response
+from fastapi.responses import JSONResponse
 
+from app.domain.plans import FEATURE_AI_REPLIES, FEATURE_KEY_DATES, PlanRequired
 from app.domain.session import SESSION_TTL_SECONDS, hash_token
 from app.ports.store import (
     Account,
@@ -135,3 +137,36 @@ async def resolve_location(store: Store, account: Account, location_id: str | No
         raise HTTPException(404, MSG_LOCATION_NOT_FOUND) from None
     except LocationInactive:
         raise HTTPException(409, MSG_LOCATION_INACTIVE) from None
+
+
+# --- what the plan of a profile does not include (app/domain/plans.py) --------------
+
+CODE_PLAN_REQUIRED = "plan_required"
+MSG_KEY_DATES_PRO = (
+    "Los festivos y las fechas clave están en Pro. Pásate a Pro para que te preguntemos "
+    "por ellos y cambiemos el horario en Google."
+)
+
+
+def plan_required_detail(exc: PlanRequired) -> str:
+    if exc.feature == FEATURE_AI_REPLIES:
+        return (
+            f"Has usado las {exc.limit} respuestas con IA de este mes. Pásate a Pro para "
+            "tenerlas ilimitadas. Puedes seguir escribiendo tus respuestas."
+        )
+    if exc.feature == FEATURE_KEY_DATES:
+        return MSG_KEY_DATES_PRO
+    return "Tu plan no incluye esta función. Pásate a Pro."
+
+
+def plan_required(exc: PlanRequired) -> JSONResponse:
+    """402 with `code: plan_required` and the `feature` the plan lacks, and a `detail`
+    ready to show (docs/contrato-web-api.md, «Límites del plan»)."""
+    return JSONResponse(
+        {
+            "detail": plan_required_detail(exc),
+            "code": CODE_PLAN_REQUIRED,
+            "feature": exc.feature,
+        },
+        status_code=402,
+    )

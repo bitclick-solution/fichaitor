@@ -13,7 +13,12 @@ from collections.abc import Mapping, Sequence
 
 import httpx
 
-from app.adapters.gemini_client import GeminiClient, GeminiUnavailable, GeminiUsage
+from app.adapters.gemini_client import (
+    GeminiBackend,
+    GeminiClient,
+    GeminiUnavailable,
+    GeminiUsage,
+)
 from app.adapters.sentiment_model.prompt import (
     CLASSIFY_SYSTEM_PROMPT,
     SUMMARY_SCHEMA,
@@ -41,7 +46,7 @@ def _usage(usage: GeminiUsage) -> ModelUsage:
 class GeminiSentimentModel:
     def __init__(
         self,
-        api_key: str,
+        api_key: str | GeminiBackend,  # the key of AI Studio, or Vertex AI
         model: str,
         timeout_seconds: float = 15.0,
         client: httpx.AsyncClient | None = None,

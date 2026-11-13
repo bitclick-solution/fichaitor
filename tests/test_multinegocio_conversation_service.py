@@ -194,7 +194,7 @@ class MemoryStage(Stage):
     def build(cls, **kwargs) -> "MemoryStage":
         store = MemoryConversationStore()
         account = "acc-varias"
-        store.accounts[account] = AccountInfo(business_name=TITLE_A)
+        store.accounts[account] = AccountInfo()
         store.locations["loc_parra"] = MemoryLocation(account, TITLE_A)
         store.locations["loc_sur"] = MemoryLocation(account, TITLE_B)
         return cls(store, account, "loc_parra", "loc_sur", **kwargs)

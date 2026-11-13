@@ -31,7 +31,7 @@ from app.domain.link_codes import (
     register_attempt,
     register_success,
 )
-from app.domain.proposals import Proposal, ProposalType, counts_towards_weekly_cap
+from app.domain.proposals import Proposal, counts_towards_weekly_cap
 from app.ports.conversation_store import Lane, LinkResult, LocationInactive, MessageRecord
 
 
@@ -247,15 +247,6 @@ class MemoryConversationStore:
         async with self._locks[account_id]:
             yield
 
-    async def accounts_with_open_work(self) -> Sequence[str]:
-        return sorted(
-            {
-                p.account_id
-                for p in self.proposals.values()
-                if not p.is_terminal and p.account_id not in self.leaves
-            }
-        )
-
     # --- lanes ------------------------------------------------------------------
     async def get_lane(self, account_id: str, location_id: str) -> Lane:
         return self.lanes.get((account_id, location_id), Lane(account_id, location_id))
@@ -293,11 +284,11 @@ class MemoryConversationStore:
 
     # --- proposals --------------------------------------------------------------
     async def add_proposal(self, proposal: Proposal) -> bool:
-        if proposal.location_id is None and proposal.type is ProposalType.KEY_DATE:
-            from_payload = proposal.payload.get("location_id")
-            if isinstance(from_payload, str) and from_payload:
-                proposal = replace(proposal, location_id=from_payload)
-        if proposal.location_id is not None and proposal.location_id in self.locations:
+        # As proposal_location_guard (db/schema_channels.sql): a proposal without a
+        # profile is refused, never filled in (step 9 of docs/multinegocio.md).
+        if proposal.location_id is None:
+            raise LocationInactive
+        if proposal.location_id in self.locations:
             location = self.locations[proposal.location_id]
             if location.account_id != proposal.account_id or not location.active:
                 raise LocationInactive

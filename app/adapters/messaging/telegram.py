@@ -390,7 +390,7 @@ async def _run_local() -> None:
     from dataclasses import replace
     from datetime import UTC, datetime, time, timedelta
 
-    from app.adapters.conversation_store.memory import MemoryConversationStore
+    from app.adapters.conversation_store.memory import MemoryConversationStore, MemoryLocation
     from app.application.conversation_service import (
         ActionOutcome,
         ConversationService,
@@ -398,7 +398,7 @@ async def _run_local() -> None:
         ReviewInput,
     )
     from app.channels_config import ChannelsSettings
-    from app.domain.conversation import AccountInfo, QuietHours
+    from app.domain.conversation import QuietHours
     from app.ports.proposal_actions import InMemoryProposalActions
 
     settings = ChannelsSettings()
@@ -410,7 +410,7 @@ async def _run_local() -> None:
     redact_bot_token_in_logs()
     account = "cuenta-de-prueba"
     store = MemoryConversationStore()
-    store.accounts[account] = AccountInfo(business_name="Bar de prueba")
+    store.locations["loc_prueba"] = MemoryLocation(account, "Bar de prueba")
     actions = InMemoryProposalActions()
     async with httpx.AsyncClient() as client:
         channel = TelegramChannel(settings.telegram_bot_token.get_secret_value(), client)

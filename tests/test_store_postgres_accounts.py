@@ -92,6 +92,7 @@ def test_locations_are_synced_keep_their_id_and_are_retired_not_deleted():
         account = await store.upsert_account("pytest-ana", "ana@example.com")
         await store.sync_locations(account, [BAR, SHOP], NOW)
         before = await store.list_locations(account)
+        await store.activate(account, before[1].id)
         assert await store.select_location(account, before[1].id)
         renamed = ProfileLocation(BAR.account, BAR.location, "Bar renombrado", BAR.place_id, False)
         await store.sync_locations(account, [renamed], LATER)
@@ -132,6 +133,7 @@ def test_an_account_cannot_list_or_select_a_location_of_another_account():
         luis_locs = await store.list_locations(luis)
         stolen = [await store.select_location(ana, loc.id) for loc in luis_locs]
         unknown = await store.select_location(ana, "loc_noexiste")
+        await store.activate(luis, luis_locs[0].id)
         own = await store.select_location(luis, luis_locs[0].id)
         return ana, luis, ana_locs, luis_locs, stolen, unknown, own
 
@@ -319,6 +321,11 @@ def test_whole_journey_over_http_on_postgresql():
             assert client.post("/api/v1/me/location", json=body, headers=header).status_code == 404
             body = {"location_id": location["id"]}
             assert client.post("/api/v1/me/location", json=body).status_code == 403
+            # Choosing an inactive profile activates nothing (step 9): activate first.
+            r = client.post("/api/v1/me/location", json=body, headers=header)
+            assert r.status_code == 409
+            activation = f"/api/v1/me/locations/{location['id']}/activation"
+            assert client.post(activation, json={}, headers=header).status_code == 200
             r = client.post("/api/v1/me/location", json=body, headers=header)
             assert r.status_code == 200
             assert r.json()["selected_location_id"] == location["id"]

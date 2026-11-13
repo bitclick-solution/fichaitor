@@ -228,9 +228,12 @@ class PostgresStore:
     # move it to another window or set it back. The worker deletes past windows.
 
     async def take_quota(self, scope: str, limit: int, window_seconds: int, now: datetime) -> bool:
+        start, end = window(now, window_seconds)
+        return await self.take_quota_in(scope, limit, start, end)
+
+    async def take_quota_in(self, scope: str, limit: int, start: datetime, end: datetime) -> bool:
         if limit <= 0:
             return False
-        start, end = window(now, window_seconds)
         try:
             # One statement: the first use creates the counter, the next ones add one
             # while below the limit. Two processes at once never go over it.
@@ -263,6 +266,17 @@ class PostgresStore:
         except Exception as exc:
             raise QuotaUnavailable(type(exc).__name__) from None
         return (hits or 0) < limit
+
+    async def quota_used(self, scope: str, start: datetime) -> int:
+        try:
+            hits = await self._require_pool().fetchval(
+                "SELECT hits FROM usage_counter WHERE scope = $1 AND window_start = $2",
+                scope,
+                start,
+            )
+        except Exception as exc:
+            raise QuotaUnavailable(type(exc).__name__) from None
+        return hits or 0
 
     async def add_signup(self, signup: WaitlistSignup) -> None:
         # ON CONFLICT without a target needs only INSERT privilege.
@@ -433,27 +447,28 @@ class PostgresStore:
         return [Location(r["id"], r["title"], r["place_id"], r["verified"]) for r in rows]
 
     async def select_location(self, account_id: str, location_id: str) -> bool:
+        # Only the preference of the panel: it activates nothing (step 9 of
+        # docs/multinegocio.md). The ownership and the activity are checked in the
+        # statement itself, not in a previous read.
         async with self._require_pool().acquire() as conn, conn.transaction():
-            row = await self._own_location(conn, account_id, location_id)
-            if row is None or row["removed"]:
-                return False
-            # Until step 9 (docs/multinegocio.md, 5.5): choosing an inactive profile
-            # activates it, as the web that only knows "choose" expects.
-            if row["plan"] is None:
-                await self._activate(conn, account_id, location_id, None, row)
-            # The ownership check is part of the statement, not a previous read.
             status = await conn.execute(
                 """
                 UPDATE account SET selected_location_id = $2
-                WHERE id = $1::uuid AND EXISTS (
+                WHERE id = $1::uuid AND deleted_at IS NULL AND EXISTS (
                     SELECT 1 FROM location
                     WHERE id = $2 AND account_id = $1::uuid AND removed_at IS NULL
+                      AND active_since IS NOT NULL
                 )
                 """,
                 account_id,
                 location_id,
             )
-        return status == "UPDATE 1"
+            if status == "UPDATE 1":
+                return True
+            row = await self._own_location(conn, account_id, location_id)
+        if row is None or row["removed"]:
+            return False
+        raise LocationInactive
 
     # --- profiles of the account, active or not (docs/multinegocio.md) -------------
 
@@ -598,15 +613,6 @@ class PostgresStore:
                 account_id,
                 location_id,
             )
-            await conn.execute(
-                f"""
-                UPDATE conversation SET active_proposal_id = NULL, updated_at = now()
-                WHERE account_id = $1::uuid AND active_proposal_id IN (
-                    SELECT id FROM proposal WHERE account_id = $1::uuid AND {mine})
-                """,  # noqa: S608
-                account_id,
-                location_id,
-            )
         return True
 
     async def resolve_location(self, account_id: str, location_id: str | None) -> str:
@@ -682,6 +688,16 @@ class PostgresStore:
             )
         return LocationsOverview(tuple(locations), tuple(granted))
 
+    async def location_plan(self, account_id: str, location_id: str) -> Plan | None:
+        # The same join as every read: an id from outside only picks among the active
+        # profiles of the account of the session.
+        value = await self._require_pool().fetchval(
+            f"SELECT l.plan {_active('$2')} WHERE a.id = $1::uuid",  # noqa: S608
+            account_id,
+            location_id,
+        )
+        return parse_plan(value)
+
     async def active_profiles(self, account_id: str) -> list[ActiveProfile]:
         rows = await self._require_pool().fetch(
             f"""
@@ -707,9 +723,6 @@ class PostgresStore:
         return await PostgresJobQueue(self._require_pool()).enqueue(
             kind, payload, idempotency_key=idempotency_key, run_at=run_at, max_attempts=max_attempts
         )
-
-    async def selected_profile(self, account_id: str) -> SelectedProfile | None:
-        return await self.profile(account_id)
 
     async def profile(
         self, account_id: str, location_id: str | None = None
@@ -1071,15 +1084,7 @@ class PostgresStore:
 
     @staticmethod
     async def _release(conn: asyncpg.Connection, account_id: str, proposal_id: str) -> None:
-        """The thread and the lane of its profile let that proposal go."""
-        await conn.execute(
-            """
-            UPDATE conversation SET active_proposal_id = NULL, updated_at = now()
-            WHERE account_id = $1::uuid AND active_proposal_id = $2
-            """,
-            account_id,
-            proposal_id,
-        )
+        """The lane of its profile lets that proposal go."""
         await conn.execute(
             """
             UPDATE conversation_lane SET active_proposal_id = NULL, updated_at = now()
@@ -1351,7 +1356,7 @@ class PostgresStore:
             if offboarding_id is None:
                 return CodeCheck(CODE_GONE)
             # What waited in the chat is not sent any more (B12): the proposals not yet
-            # confirmed end here, and the thread stops showing one.
+            # confirmed end here, and no lane shows one any more.
             await conn.execute(
                 """
                 UPDATE proposal SET state = $3, outcome_reason = $4, step_token = $5,
@@ -1366,7 +1371,7 @@ class PostgresStore:
             )
             await conn.execute(
                 """
-                UPDATE conversation SET active_proposal_id = NULL, updated_at = now()
+                UPDATE conversation_lane SET active_proposal_id = NULL, updated_at = now()
                 WHERE account_id = $1::uuid AND active_proposal_id IS NOT NULL
                 """,
                 account_id,

@@ -17,6 +17,7 @@ from pydantic import BaseModel
 from starlette.datastructures import UploadFile
 from starlette.formparsers import MultiPartException, MultiPartParser
 
+from app.adapters.gemini_provider import gemini_credentials
 from app.adapters.screenshot_reader.fake import FakeScreenshotReader
 from app.adapters.screenshot_reader.gemini import GeminiScreenshotReader
 from app.api.waitlist import SOURCE_PATTERN
@@ -262,10 +263,10 @@ def build_reader(settings: ScreenshotSettings) -> ScreenshotReader | None:
     """The fake reader, the real one, or None when the feature is not configured."""
     if settings.fake_screenshot:
         return FakeScreenshotReader()
-    api_key = settings.gemini_api_key.get_secret_value()
-    if api_key:
+    credentials = gemini_credentials(settings)
+    if credentials:
         return GeminiScreenshotReader(
-            api_key, settings.gemini_model, settings.screenshot_timeout_seconds
+            credentials, settings.gemini_model, settings.screenshot_timeout_seconds
         )
     return None
 

@@ -169,6 +169,7 @@ class World:
     def select(self, client: TestClient, title: str | None = None) -> None:
         locations = client.get(ME).json()["locations"]
         chosen = next(loc for loc in locations if title in (None, loc["title"]))
+        client.post(f"/api/v1/me/locations/{chosen['id']}/activation", json={}, headers=HEADER)
         r = client.post(SELECT, json={"location_id": chosen["id"]}, headers=HEADER)
         assert r.status_code == 200
 
@@ -495,6 +496,7 @@ def test_the_whole_journey_works_with_fake_google_and_the_fake_model():
     assert client.get(CALLBACK, params={"code": "c", "state": state}).status_code == 303
     assert client.get(SENTIMENT).status_code == 409
     location_id = client.get(ME).json()["locations"][0]["id"]
+    client.post(f"/api/v1/me/locations/{location_id}/activation", json={}, headers=HEADER)
     assert client.post(SELECT, json={"location_id": location_id}, headers=HEADER).status_code == 200
 
     # Right after connecting: the summary and the sentiment are already there.
@@ -539,6 +541,7 @@ def test_the_demo_without_any_model_still_shows_a_score_by_rules():
     state = parse_qs(urlparse(client.get(START).headers["location"]).query)["state"][0]
     client.get(CALLBACK, params={"code": "c", "state": state})
     location_id = client.get(ME).json()["locations"][0]["id"]
+    client.post(f"/api/v1/me/locations/{location_id}/activation", json={}, headers=HEADER)
     client.post(SELECT, json={"location_id": location_id}, headers=HEADER)
     body = client.get(SENTIMENT).json()
     assert (body["status"], body["based_on"]) == ("ok", 13)

@@ -165,6 +165,7 @@ def test_while_a_leave_is_scheduled_a_link_code_is_a_409():
     w = World()
     client = w.connect()
     location = client.get(ME).json()["locations"][0]["id"]
+    client.post(f"/api/v1/me/locations/{location}/activation", json={}, headers=HEADER)
     client.post("/api/v1/me/location", json={"location_id": location}, headers=HEADER)
     client.post("/api/v1/me/offboarding/code", json={"scope": "ficha"}, headers=HEADER)
     code = [j.payload for j in w.jobs("send_mail")][-1]["code"]

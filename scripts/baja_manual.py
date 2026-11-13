@@ -316,7 +316,7 @@ async def apply(
         )
         await conn.execute(
             """
-            UPDATE conversation SET active_proposal_id = NULL, updated_at = now()
+            UPDATE conversation_lane SET active_proposal_id = NULL, updated_at = now()
             WHERE account_id = $1::uuid AND active_proposal_id IS NOT NULL
             """,
             plan.account_id,

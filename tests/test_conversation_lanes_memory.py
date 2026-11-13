@@ -41,7 +41,7 @@ def proposal(
         payload={"location_id": location} if kind is ProposalType.KEY_DATE else {},
         message_refs=refs or {},
         sent_at=sent_at,
-        location_id=None if kind is ProposalType.KEY_DATE else location,
+        location_id=location,
     )
 
 
@@ -92,7 +92,14 @@ def test_a_proposal_of_an_inactive_or_foreign_profile_is_refused():
     assert run(s.add_proposal(proposal("prop_3", "loc_a")))
     key_date = proposal("prop_4", "loc_c", kind=ProposalType.KEY_DATE)
     assert run(s.add_proposal(key_date))
-    assert s.proposals["prop_4"].location_id == "loc_c"  # from its payload
+    # Without a profile, refused: since step 9 not even a key date takes its payload's.
+    with pytest.raises(LocationInactive):
+        run(
+            s.add_proposal(
+                replace(proposal("prop_5", "loc_c", kind=ProposalType.KEY_DATE), location_id=None)
+            )
+        )
+    assert "prop_5" not in s.proposals
 
 
 def test_lanes_hold_a_proposal_of_their_profile_and_list_the_open_work():

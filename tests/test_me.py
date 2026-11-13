@@ -168,6 +168,9 @@ def test_tokens_and_emails_never_reach_the_logs(caplog):
     token = client.cookies.get(SESSION_COOKIE)
     client.get(ME)
     client.post(SELECT, json={"location_id": "loc_otra"}, headers=HEADER)
+    client.post(
+        f"/api/v1/me/locations/{location_ids(client)[0]}/activation", json={}, headers=HEADER
+    )
     client.post(SELECT, json={"location_id": location_ids(client)[0]}, headers=HEADER)
     client.get(DIAGNOSIS)
     client.post(LOGOUT, headers=HEADER)
@@ -233,8 +236,11 @@ def test_me_has_the_shape_of_the_contract():
         "active_since",
         "status",
         "pending",
+        "usage",
+        "features",
     }
     assert first["active"] is False and first["status"] is None
+    assert first["usage"] is None and first["features"] is None
     assert first["id"].startswith("loc_") and first["id"] != second["id"]
     assert (first["title"], first["place_id"], first["verified"]) == (
         "Bar La Parra (ejemplo)",
@@ -248,6 +254,7 @@ def test_reconnecting_keeps_the_account_and_refreshes_its_locations():
     world = World(locations=[LA_PARRA, NO_PLACE])
     client, _ = world.connect()
     kept, gone = location_ids(client)
+    client.post(f"/api/v1/me/locations/{kept}/activation", json={}, headers=HEADER)
     assert client.post(SELECT, json={"location_id": kept}, headers=HEADER).status_code == 200
 
     renamed = ProfileLocation("accounts/1", "locations/1", "Bar La Parra", DEMO.place_id, True)
@@ -265,6 +272,7 @@ def test_a_selected_location_that_google_no_longer_lists_is_deselected():
     world = World(locations=[LA_PARRA, NO_PLACE])
     client, _ = world.connect()
     _, second = location_ids(client)
+    client.post(f"/api/v1/me/locations/{second}/activation", json={}, headers=HEADER)
     client.post(SELECT, json={"location_id": second}, headers=HEADER)
     world.google.profile_locations = [LA_PARRA]
     world.connect(client)
@@ -329,6 +337,7 @@ def test_selecting_a_location_returns_me_and_requires_the_header():
     assert isinstance(r.json()["detail"], str)
     assert client.get(ME).json()["selected_location_id"] is None
 
+    client.post(f"/api/v1/me/locations/{second}/activation", json={}, headers=HEADER)
     r = client.post(SELECT, json={"location_id": second}, headers=HEADER)
     assert r.status_code == 200
     assert r.json() == client.get(ME).json()
@@ -346,6 +355,7 @@ def test_selecting_a_location_returns_me_and_requires_the_header():
 
 def select(client: TestClient, index: int = 0) -> None:
     location_id = location_ids(client)[index]
+    client.post(f"/api/v1/me/locations/{location_id}/activation", json={}, headers=HEADER)
     assert client.post(SELECT, json={"location_id": location_id}, headers=HEADER).status_code == 200
 
 

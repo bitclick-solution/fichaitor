@@ -13,12 +13,14 @@ from datetime import datetime
 from typing import Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 
 from app.api.session import (
     MSG_NO_LOCATION,
     active_account_guard,
     location_param,
+    plan_required,
     require_csrf_header,
     resolve_location,
 )
@@ -32,6 +34,7 @@ from app.application.review_replies import (
     ReviewReplies,
 )
 from app.domain.actions import ACTION_ID, PENDING, REVIEW_ID, status_label, status_message
+from app.domain.plans import PlanRequired
 from app.domain.profile_summary import STATUS_OK
 from app.domain.review_reply import GOOGLE_REPLY_MAX_BYTES, InvalidReplyText
 from app.ports.store import Account, ReplyInProgress, Store, StoredAction, StoredReview
@@ -191,9 +194,13 @@ def build_router(
     async def draft_reply(
         review_id: str,
         account: Account = Depends(current_account),  # noqa: B008
-    ) -> DraftResponse:
+    ) -> DraftResponse | JSONResponse:
         try:
             draft = await replies.draft(account.id, review_id_or_404(review_id))
+        except PlanRequired as exc:
+            # The free plan used its replies drafted by the model this month: the owner
+            # can still write the reply and publish it.
+            return plan_required(exc)
         except ReviewNotFound:
             raise HTTPException(404, MSG_REVIEW_NOT_FOUND) from None
         except DraftRejected:

@@ -4,3 +4,7 @@ __pycache__/
 *.pyc
 .pytest_cache/
 .ruff_cache/
+
+# Clave de la cuenta de servicio de Vertex AI: solo en el servidor (docs/despliegue.md).
+vertex/
+cuenta-servicio*.json

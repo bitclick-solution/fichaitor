@@ -101,17 +101,10 @@ _COHERENT_LEAVE = f"""
          OR o.reason = '{REASON_EMAIL_REQUEST}')
 """
 
-# A profile in use in its account (multinegocio, docs/multinegocio.md): active or,
-# until step 9, the one the panel has selected. Until the API activates the profile it
-# selects (step 4, section 5.5), the old panel still works on a selected profile that is
-# not active; the trigger of location moves the preference away from a profile the
-# owner deactivates, so this never keeps a deactivated profile in use. In step 9 it
-# becomes `l.active_since IS NOT NULL`. `l` is the location and `c` its account.
-# Never NULL (without a selection too), so that `NOT {_IN_USE}` means what it says.
-_IN_USE = (
-    "(l.removed_at IS NULL"
-    " AND (l.active_since IS NOT NULL OR c.selected_location_id IS NOT DISTINCT FROM l.id))"
-)
+# A profile in use in its account (multinegocio, docs/multinegocio.md): an active one.
+# The preference of the panel (account.selected_location_id) decides nothing here since
+# step 9. `l` is the location.
+_IN_USE = "(l.removed_at IS NULL AND l.active_since IS NOT NULL)"
 
 
 class PostgresWorkerStore:
@@ -1101,7 +1094,6 @@ class PostgresWorkerStore:
                                 WHERE c.id = l.account_id AND l.active_since IS NULL
                                   AND l.removed_at IS NULL AND l.deactivated_at
                                       <= $1::timestamptz - make_interval(days => $2)
-                                  AND NOT {_IN_USE}
                                   AND t.google_sub = c.google_sub AND t.location = l.gbp_location
                                 """,  # noqa: S608
                                 now,
@@ -1360,7 +1352,6 @@ async def _expire_channels(conn: asyncpg.Connection, now: datetime, days: int) -
             WHERE p.created_at <= $1
               AND p.state NOT IN ('programada', 'enviada', 'recordada', 'recopilando',
                                   'por_confirmar', 'ejecutando')
-              AND NOT EXISTS (SELECT 1 FROM conversation c WHERE c.active_proposal_id = p.id)
               AND NOT EXISTS (SELECT 1 FROM conversation_lane l
                               WHERE l.active_proposal_id = p.id)
               AND NOT EXISTS (SELECT 1 FROM channel_message m WHERE m.proposal_id = p.id)

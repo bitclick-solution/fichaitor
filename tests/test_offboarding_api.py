@@ -78,6 +78,7 @@ class World:
         """A session with a selected profile."""
         client = self.connect()
         location = client.get(ME).json()["locations"][0]["id"]
+        client.post(f"/api/v1/me/locations/{location}/activation", json={}, headers=HEADER)
         r = client.post("/api/v1/me/location", json={"location_id": location}, headers=HEADER)
         assert r.status_code == 200
         return client
@@ -331,7 +332,7 @@ def test_with_a_scheduled_leave_the_store_itself_gives_no_data():
     async def read():
         now = datetime.fromtimestamp(T0, UTC)
         return (
-            await w.store.selected_profile(account.id),
+            await w.store.profile(account.id),
             await w.store.list_reviews(account.id, unanswered_only=False, limit=50),
             await w.store.sentiment(account.id, now),
         )

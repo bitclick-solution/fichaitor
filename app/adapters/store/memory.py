@@ -201,6 +201,12 @@ class MemoryStore:
     async def quota_left(self, scope: str, limit: int, window_seconds: int, now: datetime) -> bool:
         return await self.quota.quota_left(scope, limit, window_seconds, now)
 
+    async def take_quota_in(self, scope: str, limit: int, start: datetime, end: datetime) -> bool:
+        return await self.quota.take_quota_in(scope, limit, start, end)
+
+    async def quota_used(self, scope: str, start: datetime) -> int:
+        return await self.quota.quota_used(scope, start)
+
     async def add_signup(self, signup: WaitlistSignup) -> None:
         self._check()
         self.signups.setdefault((signup.channel, signup.contact), signup)
@@ -284,8 +290,8 @@ class MemoryStore:
         row = self._own(account_id, location_id)
         if row is None or row.removed:
             return False
-        if row.plan is None:  # until step 9 (docs/multinegocio.md, 5.5)
-            self._activate(row, None)
+        if row.plan is None:  # the preference only: activating is apart (step 9)
+            raise LocationInactive
         self._account(account_id).selected_location_id = location_id
         return True
 
@@ -393,6 +399,13 @@ class MemoryStore:
             account.selected_location_id = oldest[0].id if oldest else None
         return True
 
+    async def location_plan(self, account_id: str, location_id: str) -> Plan | None:
+        self._check()
+        row = self._own(account_id, location_id)
+        if row is None or not row.active or self._pending(account_id) is not None:
+            return None
+        return row.plan
+
     async def resolve_location(self, account_id: str, location_id: str | None) -> str:
         self._check()
         account = self._account(account_id)
@@ -464,9 +477,6 @@ class MemoryStore:
         """Stand-in for the worker: the API itself never writes a summary."""
         self.summaries[(google_sub, location)] = summary
         self.syncs_requested.pop((google_sub, location), None)
-
-    async def selected_profile(self, account_id: str) -> SelectedProfile | None:
-        return await self.profile(account_id)
 
     async def profile(
         self, account_id: str, location_id: str | None = None

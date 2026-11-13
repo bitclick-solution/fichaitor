@@ -315,11 +315,9 @@ def test_an_action_on_a_profile_never_activated_and_not_selected_is_not_active()
     assert claimed.coherent and not claimed.active
 
 
-def test_until_step_9_the_selected_profile_still_counts_as_in_use():
-    # docs/multinegocio.md, 5.5: until the API activates on selecting (step 4), the old
-    # panel works on the selected profile even if it is not active. The trigger moves
-    # the preference away from a profile the owner deactivates, so this never keeps a
-    # deactivated profile in use.
+def test_since_step_9_the_selected_profile_is_not_in_use_unless_active():
+    # The preference of the panel decides nothing in the worker any more: an action on a
+    # selected profile that is not active does not reach Google.
     async def go():
         account, sub = await new_account("elegida")
         location, gbp = await new_location(account, active=False)
@@ -329,7 +327,7 @@ def test_until_step_9_the_selected_profile_still_counts_as_in_use():
         return await claim(await reply_action(account, sub, gbp))
 
     claimed = run(go())
-    assert claimed.coherent and claimed.active
+    assert claimed.coherent and not claimed.active
 
 
 def test_a_retired_profile_stays_incoherent_as_before():
@@ -405,23 +403,29 @@ def test_a_reactivated_profile_keeps_its_data_whenever_the_pass_runs():
     assert row["deactivated_at"] is None and row["active_since"] is not None
 
 
-def test_the_selected_profile_keeps_its_data_until_step_9():
-    # The same transitional rule as the coherence: the old panel still shows it.
+def test_since_step_9_a_selected_inactive_profile_loses_its_data_after_30_days_too():
+    # The preference does not keep anything: 30 days after deactivated_at, the data go.
     async def go():
         now = await db_now()
         account, sub = await new_account("elegida-datos")
         location, gbp = await new_location(account, active=False)
         await google_data(sub, gbp)
         await owner(
-            "UPDATE location SET deactivated_at = $2 WHERE id = $1", location, now - 60 * DAY
-        )
-        await owner(
             "UPDATE account SET selected_location_id = $2 WHERE id = $1::uuid", account, location
         )
+        await owner(
+            "UPDATE location SET deactivated_at = $2 WHERE id = $1", location, now - 29 * DAY
+        )
         await retain(now)
-        return await stored(sub, gbp)
+        kept = await stored(sub, gbp)
+        await owner(
+            "UPDATE location SET deactivated_at = $2 WHERE id = $1", location, now - 30 * DAY
+        )
+        await retain(now)
+        return kept, await stored(sub, gbp)
 
-    assert run(go()) == FULL
+    kept, gone = run(go())
+    assert kept == FULL and gone == EMPTY
 
 
 def test_another_account_with_the_same_google_profile_keeps_its_data():

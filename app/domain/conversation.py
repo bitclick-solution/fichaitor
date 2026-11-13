@@ -134,18 +134,20 @@ def may_act(
 @dataclass(frozen=True)
 class Conversation:
     """The thread between the agent and an account, whichever linked addresses take
-    part in it: one open proposal at a time."""
+    part in it. It is the lock of the account; the open proposals are in the lanes,
+    one per profile (`Lane`, docs/multinegocio.md, 6.1)."""
 
     id: str
     account_id: str
-    active_proposal_id: str | None = None
     # Messages in a row that were not understood, with no proposal open.
     unknown_streak: int = 0
 
 
 @dataclass(frozen=True)
 class AccountInfo:
-    business_name: str = ""
+    """What the conversation needs of the account itself. The names of the businesses
+    come from each profile (`ConversationStore.location_label`)."""
+
     timezone: str = "Europe/Madrid"
 
 

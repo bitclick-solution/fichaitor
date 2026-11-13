@@ -119,6 +119,7 @@ class World:
     def select(self, client: TestClient, title: str | None = None) -> None:
         locations = client.get(ME).json()["locations"]
         chosen = next(loc for loc in locations if title in (None, loc["title"]))
+        client.post(f"/api/v1/me/locations/{chosen['id']}/activation", json={}, headers=HEADER)
         r = client.post(SELECT, json={"location_id": chosen["id"]}, headers=HEADER)
         assert r.status_code == 200
 
@@ -551,6 +552,7 @@ def test_fake_google_without_database_shows_the_whole_journey_with_demo_figures(
     assert client.get(SUMMARY).status_code == 409
 
     location_id = client.get(ME).json()["locations"][0]["id"]
+    client.post(f"/api/v1/me/locations/{location_id}/activation", json={}, headers=HEADER)
     assert client.post(SELECT, json={"location_id": location_id}, headers=HEADER).status_code == 200
     body = client.get(SUMMARY).json()
     assert body["status"] == "ok"

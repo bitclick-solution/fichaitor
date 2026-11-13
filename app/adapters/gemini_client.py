@@ -4,23 +4,35 @@ Shared by the screenshot reader, the writer of replies and the sentiment analysi
 of them brings its prompt, its schema and the model of its answer; the HTTP call, the
 structured output and the reading of the answer are here and only here.
 
-`generateContent` is stateless: it keeps no conversation on Google's side. The key
-travels in the `x-goog-api-key` header, never in the URL, so it cannot end up in an
-access log. Nothing is written to disk or logged here.
+`generateContent` is stateless: it keeps no conversation on Google's side. Nothing is
+written to disk or logged here.
 
-To move to Vertex AI, this is the module to change: the base URL (which then carries
-the project and the region), and the authentication (an OAuth token of a service
-account instead of the API key header). See docs/sentimiento.md.
+Two providers of the same models, chosen by FICHAITOR_GEMINI_PROVIDER (see
+`app.adapters.gemini_provider` and docs/despliegue.md, «Gemini en Vertex AI»):
+
+- AI Studio (Gemini Developer API): the key travels in the `x-goog-api-key` header,
+  never in the URL, so it cannot end up in an access log.
+- Vertex AI: the URL carries the project and the location; an OAuth access token of a
+  service account goes in `Authorization: Bearer` (`app.adapters.gemini_auth`).
+
+The body, the structured output (`responseJsonSchema`, accepted by both), the limits,
+the reading of the answer, the errors and the usage of tokens are the same for both.
 """
 
 import re
 from dataclasses import dataclass
-from typing import TypeVar
+from typing import Protocol, TypeVar
 
 import httpx
 from pydantic import BaseModel, ValidationError
 
+from app.adapters.gemini_auth import TokenSource, VertexAuthError
+
 BASE_URL = "https://generativelanguage.googleapis.com/v1beta"
+VERTEX_API_VERSION = "v1"
+# The ID of the project (my-project) or its number (544696777336): Vertex takes both.
+_PROJECT_ID = re.compile(r"[a-z][a-z0-9-]{4,28}[a-z0-9]|[0-9]{1,20}")
+_LOCATION = re.compile(r"[a-z][a-z0-9-]{1,40}")
 # The tasks are transcription, classification and short texts: more reasoning only
 # adds cost and latency.
 THINKING_LEVEL = "LOW"
@@ -50,16 +62,86 @@ def model_path(model: str) -> str:
     return f"models/{name}"
 
 
+class GeminiBackend(Protocol):
+    """Where the request goes and how it is authenticated: the only difference between
+    the providers."""
+
+    def url(self, model: str) -> str: ...
+
+    async def headers(self, client: httpx.AsyncClient) -> dict[str, str]: ...
+
+    def rejected(self) -> None:
+        """The provider answered 401: the credential it got is no longer valid."""
+
+
+class AIStudioBackend:
+    def __init__(self, api_key: str) -> None:
+        self._api_key = api_key
+
+    def __repr__(self) -> str:  # never the key
+        return "AIStudioBackend()"
+
+    def url(self, model: str) -> str:
+        return f"{BASE_URL}/{model_path(model)}:generateContent"
+
+    async def headers(self, client: httpx.AsyncClient) -> dict[str, str]:
+        return {"x-goog-api-key": self._api_key}
+
+    def rejected(self) -> None:
+        pass
+
+
+def vertex_host(location: str) -> str:
+    """`global` and the multi-regions (`eu`, `us`) have their own hosts; a region is
+    `{region}-aiplatform.googleapis.com`."""
+    if location == "global":
+        return "aiplatform.googleapis.com"
+    if location in ("eu", "us"):
+        return f"aiplatform.{location}.rep.googleapis.com"
+    return f"{location}-aiplatform.googleapis.com"
+
+
+class VertexBackend:
+    def __init__(self, project: str, location: str, tokens: TokenSource) -> None:
+        if not _PROJECT_ID.fullmatch(project):
+            raise ValueError("FICHAITOR_VERTEX_PROJECT no es un ID de proyecto válido")
+        if not _LOCATION.fullmatch(location):
+            raise ValueError("FICHAITOR_VERTEX_LOCATION no es una ubicación válida")
+        self.project = project
+        self.location = location
+        self._tokens = tokens
+
+    def __repr__(self) -> str:  # never the token
+        return f"VertexBackend(project={self.project!r}, location={self.location!r})"
+
+    def url(self, model: str) -> str:
+        name = model_path(model).removeprefix("models/")
+        return (
+            f"https://{vertex_host(self.location)}/{VERTEX_API_VERSION}/projects/{self.project}"
+            f"/locations/{self.location}/publishers/google/models/{name}:generateContent"
+        )
+
+    async def headers(self, client: httpx.AsyncClient) -> dict[str, str]:
+        headers = {"Authorization": f"Bearer {await self._tokens.token(client)}"}
+        if self._tokens.quota_project:  # only for the credentials of a person (gcloud)
+            headers["x-goog-user-project"] = self._tokens.quota_project
+        return headers
+
+    def rejected(self) -> None:
+        self._tokens.invalidate()
+
+
 class GeminiClient:
     def __init__(
         self,
-        api_key: str,
+        api_key: str | GeminiBackend,
         model: str,
         timeout_seconds: float = 20.0,
         client: httpx.AsyncClient | None = None,
     ) -> None:
-        self._api_key = api_key
-        self._url = f"{BASE_URL}/{model_path(model)}:generateContent"
+        """`api_key` is the key of AI Studio, as before, or a backend (Vertex AI)."""
+        self._backend = AIStudioBackend(api_key) if isinstance(api_key, str) else api_key
+        self._url = self._backend.url(model)
         self._client = client or httpx.AsyncClient(timeout=timeout_seconds)
 
     async def close(self) -> None:
@@ -81,13 +163,18 @@ class GeminiClient:
             },
         }
         try:
-            resp = await self._client.post(
-                self._url, headers={"x-goog-api-key": self._api_key}, json=body
-            )
+            headers = await self._backend.headers(self._client)
+        except VertexAuthError as exc:
+            # One of the fixed strings of gemini_auth: never a key nor a token.
+            raise GeminiUnavailable(f"credentials: {exc}") from None
+        try:
+            resp = await self._client.post(self._url, headers=headers, json=body)
         except httpx.TimeoutException:
             raise GeminiUnavailable("timeout") from None
         except httpx.HTTPError:
             raise GeminiUnavailable("connection error") from None
+        if resp.status_code == 401:
+            self._backend.rejected()
         if resp.status_code != 200:
             raise GeminiUnavailable(f"status {resp.status_code}")
         try:

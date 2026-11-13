@@ -164,13 +164,24 @@ Al volver a conectar, las fichas se actualizan con lo que Google lista en ese mo
 { "location_id": "loc_3f2a" }
 ```
 
+Guarda la **ficha preferida** del panel (`selected_location_id`): la que sirven las lecturas sin `?location=`. Solo admite una ficha **activa**: no activa nada. Para una ficha inactiva, activa antes con [`POST /api/v1/me/locations/{id}/activation`](#post-apiv1melocationsidactivation).
+
 Devuelve el mismo cuerpo que `GET /me`, ya con `selected_location_id`. Se puede llamar otra vez para cambiar de ficha.
 
 Elegir ficha pide además la sincronización de esa ficha, para que `GET /api/v1/me/summary` tenga datos cuanto antes.
 
-Errores: 401, 403 (falta la cabecera), 404 (la ficha no es de esa cuenta o no existe; la respuesta es la misma en los dos casos), 422.
+Errores:
 
-> **Multinegocio (2026-11-12), hasta que la web nueva esté desplegada:** si la ficha elegida está inactiva, esta ruta la **activa** con el plan por defecto (Gratis si está libre; si no, el primer plan de pago con hueco) y no desactiva ninguna otra. Puede responder además 402 (no queda hueco) y 409 con `code` (`free_taken`, `offboarding_pending` o `location_removed`), como [la activación](#post-apiv1melocationsidactivation). La web nueva activa primero y usa esta ruta solo para guardar la preferencia. Más adelante la ruta solo guardará la preferencia.
+| Código | `code` | Cuándo | `detail` |
+|---|---|---|---|
+| 401 | — | Sin sesión | "No has iniciado sesión." |
+| 403 | — | Falta la cabecera `X-Requested-With` | "Petición no permitida." |
+| 404 | — | La ficha no es de esa cuenta, no existe o Google ya no la lista. La misma respuesta en todos los casos | "Esa ficha no está en tu cuenta." |
+| 409 | `location_inactive` | La ficha es de la cuenta pero no está activa. No cambia nada | "Esa ficha no está activa. Actívala primero en «Tus negocios»." |
+| 409 | — | La cuenta tiene una baja programada | "Tienes una baja programada. Restáurala para seguir usando Fichaitor." |
+| 422 | — | Falta `location_id` | — |
+
+> **Cambio del paso 9 de [multinegocio.md](multinegocio.md):** hasta ahora, elegir una ficha inactiva la activaba con el plan por defecto, y la ruta podía responder 402 y los 409 de la activación (`free_taken`, `offboarding_pending` y `location_removed`). Ya no: responde 409 `location_inactive` y no activa nada. La web actual no se ve afectada: solo elige fichas activas y, en «Activa tu primera ficha», activa antes de elegir.
 
 ### `GET /api/v1/me/diagnosis`
 
@@ -1198,7 +1209,7 @@ Con `FICHAITOR_FAKE_GOOGLE=true`, el worker "aplica" el horario en una ficha en 
 Una cuenta puede tener **varias fichas activas** a la vez. Fichaitor vigila, sincroniza y avisa de cada ficha activa; ver una en el panel no pausa las demás. El plan completo está en [multinegocio.md](multinegocio.md); aquí va el contrato exacto con la web.
 
 - **Activa** quiere decir que la ficha tiene plan: `gratis`, `pro` o `pro_whatsapp`. Como mucho una ficha Gratis por cuenta, y una ficha de Google solo puede estar en Gratis en una cuenta de Fichaitor. Durante la beta, cada cuenta tiene 3 fichas Pro.
-- `selected_location_id` es la **ficha preferida** del panel: la que sirven las lecturas sin `?location=`. No activa ni pausa nada. Se guarda con `POST /api/v1/me/location`.
+- `selected_location_id` es la **ficha preferida** del panel: la que sirven las lecturas sin `?location=`. No activa ni pausa nada. Se guarda con `POST /api/v1/me/location`, que solo admite una ficha activa (409 `location_inactive` si no lo está).
 - No hay cobro: con `pricing.charging: false`, los precios son de referencia.
 
 ### La ficha de cada lectura (`?location=`)
@@ -1322,12 +1333,77 @@ Todos llevan `detail` en español listo para mostrar. Los 409 llevan además `co
 | 409 | `location_removed` | Google ha dejado de listar la ficha justo antes. Solo en `POST` | "Google ya no muestra esa ficha en tu cuenta. Vuelve a conectar con Google para verla." |
 | 422 | — | `plan` desconocido o un campo de más en el cuerpo. `detail` es una lista | — |
 
+### Límites del plan (2026-11-13)
+
+Cada ficha activa tiene su plan, y el plan decide qué puede hacer la ficha. La API lo mira **por ficha y en el momento de cada acción**: cambiar de plan cambia lo que se puede hacer desde la siguiente petición.
+
+| Función | Gratis | Pro y Pro WhatsApp |
+|---|---|---|
+| Panel, resumen, diagnóstico y análisis de opinión | Sí | Sí |
+| Avisos de reseñas por el panel y por Telegram | Sí | Sí |
+| Escribir y publicar respuestas propias | Sin límite | Sin límite |
+| Respuestas redactadas con IA | **25 al mes por ficha** | Sin límite |
+| Festivos y fechas clave | **No** | Sí |
+| WhatsApp | No | Solo Pro WhatsApp |
+
+- **Qué cuenta como respuesta con IA:** cada borrador que se pide al modelo, desde el panel (`POST /api/v1/me/reviews/{id}/draft`) o desde el bot. Un borrador ya guardado (`cached: true`) no cuenta: el modelo no se vuelve a llamar.
+- **El mes** es el mes natural en hora de Madrid: el contador vuelve a 0 el día 1 a las 00:00.
+- **Gratis no tiene festivos ni fechas clave:** no se crean propuestas para fichas Gratis, y `answer` y `dismiss` responden 402. `GET /api/v1/me/key-dates` sigue respondiendo; en una ficha Gratis la lista sale vacía, salvo propuestas de cuando la ficha tenía otro plan.
+
+#### `usage` y `features` en `GET /api/v1/me`
+
+Cada ficha **activa** trae:
+
+```json
+{
+  "id": "loc_3f2a",
+  "plan": "gratis",
+  "usage": { "ai_replies": { "used": 7, "limit": 25 } },
+  "features": { "key_dates": false, "whatsapp": false }
+}
+```
+
+- `usage.ai_replies.used`: respuestas redactadas con IA este mes. Se cuentan en todos los planes.
+- `usage.ai_replies.limit`: `25` en Gratis; `null` sin límite.
+- `features.key_dates` y `features.whatsapp`: si el plan incluye esa función.
+- En una ficha inactiva, `usage` y `features` valen `null`.
+- La web no guarda cifras de límites: salen de aquí.
+
+#### El 402 `plan_required`
+
+Al llegar al tope del mes, o al pedir una función que el plan de la ficha no incluye, la API responde **402**:
+
+```json
+{
+  "detail": "Has usado las 25 respuestas con IA de este mes. Pásate a Pro para tenerlas ilimitadas. Puedes seguir escribiendo tus respuestas.",
+  "code": "plan_required",
+  "feature": "ai_replies"
+}
+```
+
+| Ruta | `feature` | `detail` |
+|---|---|---|
+| `POST /api/v1/me/reviews/{id}/draft` | `ai_replies` | "Has usado las 25 respuestas con IA de este mes. Pásate a Pro para tenerlas ilimitadas. Puedes seguir escribiendo tus respuestas." |
+| `POST /api/v1/me/key-dates/{id}/answer` y `…/dismiss` | `key_dates` | "Los festivos y las fechas clave están en Pro. Pásate a Pro para que te preguntemos por ellos y cambiemos el horario en Google." |
+
+- `detail` está listo para mostrar tal cual.
+- Distingue este 402 del de la activación (sin hueco en el plan) por `code`: la activación no lo lleva.
+- Con `feature: "ai_replies"`, deja escribir la respuesta a mano: `POST …/reply` no tiene límite.
+- Con `pricing.charging: false` (beta) no hay cobro: ofrece «Escríbenos para pasarte a Pro».
+
+#### En el bot
+
+- Una ficha Gratis que ya ha usado sus 25 respuestas con IA del mes sigue recibiendo el aviso de cada reseña nueva, sin respuesta propuesta. El mensaje lo explica y trae los botones «Escribir respuesta» y «No responder». El dueño escribe la respuesta, el bot se la enseña y la envía solo cuando él la confirma.
+- Las fichas Gratis no reciben preguntas de festivos ni de fechas clave.
+
 ### Lo que la web NO debe hacer con el multinegocio
 
 - Calcular precios, descuentos o huecos: salen de `plans` y `pricing`.
 - Mezclar respuestas de fichas distintas: descarta la que no traiga el `location_id` seleccionado.
-- Llamar a `POST /api/v1/me/location` con una ficha inactiva para activarla: activa con `POST …/activation`.
+- Llamar a `POST /api/v1/me/location` con una ficha inactiva: responde 409 `location_inactive` y no la activa. Activa antes con `POST …/activation`.
 - Reintentar una activación tras un 402 o un 409: no cambiará hasta que cambie la cuenta.
+- Calcular los límites del plan o el uso del mes: salen de `usage` y `features`.
+- Reintentar un borrador tras un 402 `plan_required`: no cambiará hasta el mes siguiente o hasta pasar la ficha a Pro.
 
 ## Pantallas mínimas para tener algo visible
 

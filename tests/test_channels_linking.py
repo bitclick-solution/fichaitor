@@ -28,7 +28,7 @@ class World:
     def __init__(self, global_max: int = 50) -> None:
         self.now = START
         self.store = MemoryConversationStore()
-        self.store.accounts[ACC] = AccountInfo(business_name="Bar Pepe")
+        self.store.accounts[ACC] = AccountInfo()
         self.telegram = FakeChannel("telegram")
         self._ids = itertools.count(1)
         self.service = ConversationService(

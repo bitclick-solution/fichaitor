@@ -195,6 +195,7 @@ class Scene:
             account_id,
             profile.location,
         )
+        await self.store.activate(account_id, rows[0]["id"])
         assert await self.store.select_location(account_id, rows[0]["id"])
 
     async def sync(self, sub: str, location: str = SHARED.location, work: bool = True) -> None:
@@ -778,6 +779,7 @@ def test_the_whole_journey_over_http_with_the_real_store_and_the_real_job(kind):
         client.get("/api/v1/google/oauth/callback", params={"code": "c", "state": state})
         assert client.get("/api/v1/me/sentiment").status_code == 409
         (location,) = client.get("/api/v1/me").json()["locations"]
+        client.post(f"/api/v1/me/locations/{location['id']}/activation", json={}, headers=HEADER)
         r = client.post("/api/v1/me/location", json={"location_id": location["id"]}, headers=HEADER)
         assert r.status_code == 200
 

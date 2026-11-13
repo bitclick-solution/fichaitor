@@ -61,7 +61,6 @@ async def owner(sql: str, *args):
 
 async def cleanup():
     for sql in (
-        f"UPDATE conversation SET active_proposal_id = NULL WHERE account_id IN {MINE}",
         f"DELETE FROM conversation_lane WHERE account_id IN {MINE}",
         f"DELETE FROM conversation WHERE account_id IN {MINE}",
         f"DELETE FROM proposal WHERE account_id IN {MINE}",
@@ -232,6 +231,8 @@ def test_reads_name_their_profile_and_deactivating_moves_the_preference(api):
     sub = api.connect("ana", [place(n) for n in names])
     bar, shop = api.ids("ana")
     client = api.as_("ana")
+    assert client.post(SELECT, json={"location_id": shop}, headers=HEADER).status_code == 409
+    assert api.activate("ana", shop).status_code == 200
     assert client.post(SELECT, json={"location_id": shop}, headers=HEADER).status_code == 200
     assert api.activate("ana", bar).status_code == 200
     run(

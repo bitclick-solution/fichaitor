@@ -15,6 +15,7 @@ from app.domain.conversation import (
     LinkOutcome,
 )
 from app.domain.link_codes import LinkCode, SenderState
+from app.domain.plans import Plan
 from app.domain.proposals import Proposal
 
 
@@ -51,8 +52,8 @@ class Lane:
 
 
 class LocationInactive(Exception):
-    """A proposal for a profile that is not an active profile of its account (or, from
-    the old code, of an account with no selected profile). Nothing was stored."""
+    """A proposal without a profile, or for a profile that is not an active profile of
+    its account. Nothing was stored."""
 
 
 class ConversationStore(Protocol):
@@ -179,10 +180,6 @@ class ConversationStore(Protocol):
         button are handled one after the other, never at once."""
         ...
 
-    async def accounts_with_open_work(self) -> Sequence[str]:
-        """Accounts with any proposal that is not finished."""
-        ...
-
     # --- lanes (multinegocio) -----------------------------------------------------
     async def get_lane(self, account_id: str, location_id: str) -> Lane:
         """The lane of that profile; an empty one if it has none yet. Reading it does
@@ -247,17 +244,14 @@ class ConversationStore(Protocol):
 
 @dataclass(frozen=True)
 class ReviewTarget:
-    """A stored review and the accounts it may be proposed to by the channels."""
+    """A stored review and the profiles it may be proposed for by the channels."""
 
     stars: int | None
     text: str  # written by a third party: data, only ever shown
     created_at: datetime | None
     unanswered: bool
     live: bool  # still returned by Google
-    # Until step 6b: accounts whose selected profile, active, has it, linked before it
-    # was written. The database gives their proposal that profile.
-    accounts: tuple[str, ...]
-    # Multinegocio: (account, profile) of every ACTIVE profile with it, of an account
+    # (account, profile) of every ACTIVE profile with it, of an account
     # without a scheduled leave, whose last sync is "ok" and with an address that sees
     # that profile linked before the review was written.
     targets: tuple[tuple[str, str], ...] = ()
@@ -285,6 +279,9 @@ class KeyDateProfile:
     region: str  # "AN", or empty when the sync did not get it
     address: str  # as the panel shows it; its postal code is the fallback for the region
     special_dates: tuple[date, ...]  # days that already have special hours in Google
+    # Its plan now (app/domain/plans.py): the free plan has no key dates, and the
+    # planner skips it. None only in fakes that do not model plans.
+    plan: Plan | None = None
 
 
 class KeyDateProfiles(Protocol):

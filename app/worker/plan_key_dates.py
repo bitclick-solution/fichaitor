@@ -27,6 +27,7 @@ from app.domain.channel_jobs import PLAN_KEY_DATES
 from app.domain.conversation import DEFAULT_TIMEZONE, timezone_for
 from app.domain.jobs import Job, JobError
 from app.domain.key_dates import DEFAULT_LEAD_DAYS, hours_questions, region_of, source_ref
+from app.domain.plans import FEATURES
 from app.ports.conversation_store import KeyDateProfiles
 from app.worker import log
 
@@ -55,7 +56,12 @@ class PlanKeyDates:
         today = self._clock().astimezone(self._zone).date()
         profiles = await self._profiles.key_date_profiles()
         created = asked = failed = 0
+        skipped = 0
         for profile in profiles:
+            # The free plan has no key dates (app/domain/plans.py): no proposal at all.
+            if profile.plan is not None and not FEATURES[profile.plan].key_dates:
+                skipped += 1
+                continue
             region = region_of(profile.region, profile.address)
             questions = hours_questions(
                 region,
@@ -84,6 +90,7 @@ class PlanKeyDates:
             "key_dates_planned",
             job_id=job.id,
             profiles=len(profiles),
+            skipped_plan=skipped,
             asked=asked,
             created=created,
             failed=failed,

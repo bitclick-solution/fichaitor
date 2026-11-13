@@ -62,7 +62,6 @@ async def owner(sql: str, *args):
 
 async def cleanup():
     for sql in (
-        f"UPDATE conversation SET active_proposal_id = NULL WHERE account_id IN {MINE}",
         f"DELETE FROM conversation_lane WHERE account_id IN {MINE}",
         f"DELETE FROM conversation WHERE account_id IN {MINE}",
         f"DELETE FROM proposal WHERE account_id IN {MINE}",
@@ -354,7 +353,7 @@ def test_a_profile_of_another_account_or_inactive_is_never_served():
         assert (await s.api.get_key_date(ana, shop_date)) is not None
         # Without an id, the preference: still the first one chosen.
         assert await s.api.select_location(ana, bar)
-        assert (await s.api.selected_profile(ana)).location_id == bar
+        assert (await s.api.profile(ana)).location_id == bar
         page = await s.api.list_reviews(ana, unanswered_only=False, limit=10)
         assert page.total == 0
 
@@ -364,6 +363,7 @@ def test_a_profile_of_another_account_or_inactive_is_never_served():
 def test_a_retired_preference_still_says_it_lost_access():
     async def scenario(s):
         ana, _, (bar, shop) = await s.account("ana", [profile("l1"), profile("l2")])
+        await s.api.activate(ana, bar)
         assert await s.api.select_location(ana, bar)
         await owner(
             "UPDATE location SET removed_at = now() WHERE id = $1", bar
@@ -384,7 +384,7 @@ def test_a_retired_preference_still_says_it_lost_access():
 # --- deactivation -----------------------------------------------------------
 
 
-def test_deactivation_cancels_open_proposals_and_frees_lane_and_thread_together():
+def test_deactivation_cancels_open_proposals_and_frees_their_lane_together():
     async def scenario(s):
         ana, _, (bar, shop) = await s.account("ana", [profile("d1"), profile("d2")])
         eva, _, (eva_bar,) = await s.account("eva", [profile("d3")])
@@ -398,11 +398,7 @@ def test_deactivation_cancels_open_proposals_and_frees_lane_and_thread_together(
         running = await s.proposal(ana, shop, state="ejecutando")
         other = await s.proposal(ana, bar)
         foreign = await s.proposal(eva, eva_bar)
-        await owner(
-            "INSERT INTO conversation (account_id, active_proposal_id) VALUES ($1::uuid, $2)",
-            ana,
-            open_one,
-        )
+        await owner("INSERT INTO conversation (account_id) VALUES ($1::uuid)", ana)
         await owner(
             "INSERT INTO conversation_lane (account_id, location_id, active_proposal_id)"
             " VALUES ($1::uuid, $2, $3), ($1::uuid, $4, $5)",
@@ -447,10 +443,6 @@ def test_deactivation_cancels_open_proposals_and_frees_lane_and_thread_together(
             bar: other,
             eva_bar: foreign,
         }
-        (thread,) = await owner(
-            "SELECT active_proposal_id FROM conversation WHERE account_id = $1::uuid", ana
-        )
-        assert thread["active_proposal_id"] is None
         shop_state = await state(shop)
         assert shop_state["plan"] is None and shop_state["deactivated_at"] is not None
         # The preference moved to the oldest active profile.
@@ -476,11 +468,14 @@ def test_deactivation_is_all_or_nothing():
         ana, _, (bar,) = await s.account("ana", [profile("t1")])
         await s.api.activate(ana, bar)
         pid = await s.proposal(ana, bar)
-        # The last statement (releasing the thread) is made to fail with a trigger of
-        # this test, only for this account: the profile and its proposals stay as they were.
+        # The last statement (releasing the lane) is made to fail with a trigger of this
+        # test, only for this account: the profile and its proposals stay as they were.
+        await owner("INSERT INTO conversation (account_id) VALUES ($1::uuid)", ana)
         await owner(
-            "INSERT INTO conversation (account_id, active_proposal_id) VALUES ($1::uuid, $2)",
+            "INSERT INTO conversation_lane (account_id, location_id, active_proposal_id)"
+            " VALUES ($1::uuid, $2, $3)",
             ana,
+            bar,
             pid,
         )
         await owner(
@@ -488,14 +483,14 @@ def test_deactivation_is_all_or_nothing():
             " $$ BEGIN RAISE EXCEPTION 'pytest_p3'; END $$"
         )
         await owner(
-            "CREATE TRIGGER pytest_p3_fail BEFORE UPDATE ON conversation FOR EACH ROW"
+            "CREATE TRIGGER pytest_p3_fail BEFORE UPDATE ON conversation_lane FOR EACH ROW"
             f" WHEN (NEW.account_id = '{ana}'::uuid) EXECUTE FUNCTION pytest_p3_fail()"
         )
         try:
             with pytest.raises(asyncpg.RaiseError):
                 await s.api.deactivate(ana, bar)
         finally:
-            await owner("DROP TRIGGER IF EXISTS pytest_p3_fail ON conversation")
+            await owner("DROP TRIGGER IF EXISTS pytest_p3_fail ON conversation_lane")
             await owner("DROP FUNCTION IF EXISTS pytest_p3_fail()")
         assert (await state(bar))["plan"] == "gratis"
         (row,) = await owner("SELECT state FROM proposal WHERE id = $1", pid)
@@ -504,24 +499,31 @@ def test_deactivation_is_all_or_nothing():
     scene(scenario)
 
 
-# --- the old web: choosing is activating ------------------------------------
+# --- choosing is only the preference (step 9) ------------------------------
 
 
-def test_choosing_an_inactive_profile_activates_it_until_step_9():
+def test_choosing_an_inactive_profile_activates_nothing_and_says_so():
     async def scenario(s):
-        ana, _, ids = await s.account("ana", [profile(f"s{n}") for n in range(5)])
-        for location_id in ids[:4]:
-            assert await s.api.select_location(ana, location_id)
-        plans = [(await state(i))["plan"] for i in ids]
-        assert plans == ["gratis", "pro", "pro", "pro", None]
-        with pytest.raises(LocationLimit):
-            await s.api.select_location(ana, ids[4])
+        ana, _, (bar, shop) = await s.account("ana", [profile("s1"), profile("s2")])
+        with pytest.raises(LocationInactive):
+            await s.api.select_location(ana, bar)
+        assert (await state(bar))["plan"] is None
+        await s.api.activate(ana, bar)
+        assert await s.api.select_location(ana, bar)
+        with pytest.raises(LocationInactive):
+            await s.api.select_location(ana, shop)
+        assert (await state(shop))["plan"] is None
         (account,) = await owner(
             "SELECT selected_location_id FROM account WHERE id = $1::uuid", ana
         )
-        assert account["selected_location_id"] == ids[3]  # unchanged
-        eva, _, _ = await s.account("eva", [profile("s9")])
-        assert not await s.api.select_location(eva, ids[4])
+        assert account["selected_location_id"] == bar  # unchanged
+        # Of another account, or retired: the same False as one that does not exist.
+        eva, _, (eva_bar,) = await s.account("eva", [profile("s9")])
+        await s.api.activate(eva, eva_bar)
+        assert not await s.api.select_location(ana, eva_bar)
+        assert not await s.api.select_location(ana, "loc_doesnotexist")
+        await owner("UPDATE location SET removed_at = now() WHERE id = $1", shop)
+        assert not await s.api.select_location(ana, shop)
 
     scene(scenario)
 

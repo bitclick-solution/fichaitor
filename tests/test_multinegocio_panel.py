@@ -227,38 +227,39 @@ def test_deactivating_cancels_its_open_proposals_and_moves_the_preference():
     run(go())
 
 
-# --- the old web: choosing is activating ------------------------------------
+# --- choosing is only the preference (step 9) ------------------------------
 
 
-def test_choosing_an_inactive_profile_activates_it_until_step_9():
+def test_choosing_an_inactive_profile_activates_nothing():
     async def go():
         store = MemoryStore()
-        ana, ids = await account_with(store, "ana", [profile(n) for n in range(1, 6)])
-        for location_id in ids[:4]:
-            assert await store.select_location(ana, location_id)
+        ana, (bar, shop) = await account_with(store, "ana", [profile(1), profile(2)])
+        with pytest.raises(LocationInactive):
+            await store.select_location(ana, bar)
         overview = await store.locations_overview(ana, NOW.date())
-        assert overview.active_by_plan() == {Plan.GRATIS: 1, Plan.PRO: 3}
-        with pytest.raises(LocationLimit):
-            await store.select_location(ana, ids[4])
-        assert store._account(ana).selected_location_id == ids[3]
+        assert overview.active_by_plan() == {}
+        await store.activate(ana, bar)
+        assert await store.select_location(ana, bar)
+        with pytest.raises(LocationInactive):
+            await store.select_location(ana, shop)
+        assert store._account(ana).selected_location_id == bar
+        assert not await store.select_location(ana, "loc_inventada")
 
     run(go())
 
 
-def test_choosing_beyond_the_limit_is_402_and_another_account_is_404():
+def test_choosing_an_inactive_profile_is_409_and_another_account_is_404():
     from tests.test_me import SELECT, World
 
     world = World()
-    client = world.connect_as("ana", "ana@example.com", [profile(n) for n in range(1, 6)])
+    client = world.connect_as("ana", "ana@example.com", [profile(n) for n in range(1, 3)])
     ids = [loc["id"] for loc in client.get("/api/v1/me").json()["locations"]]
     headers = {"X-Requested-With": "fichaitor"}
-    for location_id in ids[:4]:
-        assert (
-            client.post(SELECT, json={"location_id": location_id}, headers=headers).status_code
-            == 200
-        )
-    r = client.post(SELECT, json={"location_id": ids[4]}, headers=headers)
-    assert r.status_code == 402 and isinstance(r.json()["detail"], str)
+    r = client.post(SELECT, json={"location_id": ids[0]}, headers=headers)
+    assert r.status_code == 409 and r.json()["code"] == "location_inactive"
+    activated = client.post(f"/api/v1/me/locations/{ids[0]}/activation", json={}, headers=headers)
+    assert activated.status_code == 200
+    assert client.post(SELECT, json={"location_id": ids[0]}, headers=headers).status_code == 200
     r = client.post(SELECT, json={"location_id": "loc_inventada"}, headers=headers)
     assert r.status_code == 404
 
@@ -378,6 +379,7 @@ def test_key_dates_are_listed_per_profile():
     async def go():
         store = MemoryStore()
         ana, (bar, shop) = await account_with(store, "ana", [profile(1), profile(2)])
+        await store.activate(ana, bar)
         await store.select_location(ana, bar)
         await store.activate(ana, shop)
         a = key_date(ana, bar, "2026-12-08")

@@ -24,10 +24,12 @@ from app.adapters.worker_store.postgres import PostgresWorkerStore
 from app.domain.jobs import Job, PermanentJobError
 from app.domain.key_dates import PanelRefused
 from app.domain.offboarding import RetentionPolicy
+from app.domain.plans import Plan
 from app.domain.profile_summary import ProfileFacts, facts_to_json
 from app.domain.proposals import Proposal, ProposalType
 from app.domain.proposals import ProposalState as S
 from app.domain.special_hours import KIND_CLOSED, KIND_PERIODS, checked
+from app.ports.conversation_store import Lane
 from app.ports.google_oauth import ProfileLocation
 from app.ports.key_dates import KeyDateNotFound, SpecialHoursInProgress
 from app.ports.store import GoogleConnection
@@ -89,7 +91,7 @@ async def denied(url, sql, *args) -> bool:
 async def cleanup():
     mine = "(SELECT id FROM account WHERE google_sub LIKE 'pytest-kd-%')"
     for sql in (
-        f"UPDATE conversation SET active_proposal_id = NULL WHERE account_id IN {mine}",
+        f"DELETE FROM conversation_lane WHERE account_id IN {mine}",
         f"DELETE FROM conversation WHERE account_id IN {mine}",
         f"DELETE FROM proposal WHERE account_id IN {mine}",
         f"DELETE FROM audit_log WHERE account_id IN {mine}",
@@ -140,6 +142,8 @@ class Scene:
             )
         )
         self.bar = await self.location_id(BAR)
+        # Pro: the free plan has no key dates (app/domain/plans.py).
+        await self.api.activate(self.account_id, self.bar, Plan.PRO)
         assert await self.api.select_location(self.account_id, self.bar)
         # Active (multinegocio): a proposal is only made for an active profile. The other
         # profile stays inactive.
@@ -194,6 +198,7 @@ class Scene:
             },
             step="holiday.ask",
             step_token="abc123",
+            location_id=location_id,
         )
         inactive = location_id != self.bar
         if inactive:  # made while it was active, as one deactivated afterwards
@@ -202,12 +207,7 @@ class Scene:
             )
         async with self.conv_store.lock(self.account_id):
             assert await self.conv_store.add_proposal(proposal)
-            conversation = await self.conv_store.get_conversation(self.account_id)
-            from dataclasses import replace
-
-            await self.conv_store.save_conversation(
-                replace(conversation, active_proposal_id=proposal.id)
-            )
+            await self.conv_store.save_lane(Lane(self.account_id, location_id, proposal.id))
         if inactive:
             await owner(
                 "UPDATE location SET active_since = NULL, plan = NULL WHERE id = $1", location_id
@@ -317,7 +317,7 @@ def test_the_panel_answers_holding_the_thread_and_releases_it():
         assert p["confirmed_event_id"].startswith("panel:") and p["step_token"] != "abc123"
         assert json.loads(p["slots"])["confirmed"] == {"kind": "closed", "periods": []}
         (c,) = await owner(
-            "SELECT active_proposal_id FROM conversation WHERE account_id = $1::uuid",
+            "SELECT active_proposal_id FROM conversation_lane WHERE account_id = $1::uuid",
             s.account_id,
         )
         assert c["active_proposal_id"] is None

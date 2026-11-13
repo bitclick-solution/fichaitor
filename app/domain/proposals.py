@@ -203,10 +203,10 @@ class Proposal:
     confirmed_summary: str | None = None
     action_id: str | None = None
     outcome_reason: str | None = None
-    # Multinegocio: the profile ("loc_...") it is about, and so its lane. None only in
-    # proposals made by the code before step 6b: the database then fills it in (a key
-    # date from its payload, anything else with the selected profile) and refuses it
-    # if that profile is not active (docs/multinegocio.md, 3.6).
+    # Multinegocio: the profile ("loc_...") it is about, and so its lane. A new proposal
+    # without it is refused (proposal_location_guard; since step 9 nothing fills it in),
+    # as one whose profile is not active (docs/multinegocio.md, 3.6). None only in old
+    # finished proposals whose profile could not be resolved, or was deleted.
     location_id: str | None = None
 
     @property

@@ -63,7 +63,9 @@ def test_the_templates_have_the_placeholders_the_backend_fills():
         "contenido",
         "motivo",
     }
-    assert {k: set(t.get_identifiers()) for k, t in mail_templates.BLOCKS.items()} == {
+    # The blocks the offboarding mails use; brand/correo may add more (the billing mails).
+    blocks = {k: set(t.get_identifiers()) for k, t in mail_templates.BLOCKS.items()}
+    assert {k: blocks.get(k) for k in ("parrafo", "codigo", "boton", "aviso")} == {
         "parrafo": {"texto"},
         "codigo": {"codigo"},
         "boton": {"enlace", "etiqueta"},
@@ -284,7 +286,13 @@ def test_the_html_is_byte_for_byte_the_one_of_the_brand_preview(monkeypatch):
     for name, mail in ours.items():
         assert mail.html == vista["CORREOS"][name], name
     # Email 4 is never sent; every other preview is covered.
-    assert set(vista["CORREOS"]) - set(ours) == {"4-completada-ficha", "4-completada-cuenta"}
+    # Not sent by the offboarding: mail 4, and the billing mails (5 and up), which the
+    # billing process renders and tests on its own.
+    left = set(vista["CORREOS"]) - set(ours)
+    assert {n for n in left if not n.split("-")[0].isdigit() or int(n.split("-")[0]) < 5} == {
+        "4-completada-ficha",
+        "4-completada-cuenta",
+    }
 
 
 # --- escaping and the link ----------------------------------------------------------------

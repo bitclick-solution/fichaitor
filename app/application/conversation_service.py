@@ -96,6 +96,9 @@ class ReviewInput:
     text: str  # written by a third party: data, only ever shown
     reply: str  # the suggested reply, already validated by whoever drafted it
     location_id: str  # the active profile ("loc_...") the review is of: its lane
+    # No suggested reply: the free plan used its replies drafted by the model this month
+    # (app/domain/plans.py). The review is told and the owner is offered to write it.
+    write_own: bool = False
 
 
 @dataclass(frozen=True)
@@ -145,11 +148,21 @@ class Step:
 
 
 REVIEW_ASK, REVIEW_OPTIONS = "review.ask", "review.options"
+# A review without a suggested reply (the free plan used its replies drafted by the model
+# this month): the owner writes it, or leaves it without one.
+REVIEW_WRITE_ASK = "review.write_ask"
 REVIEW_EDIT_WAIT, REVIEW_EDIT_CONFIRM = "review.edit_wait", "review.edit_confirm"
 REVIEW_CLARIFY_TEXT = "review.clarify_text"
 HOLIDAY_ASK, KEYDATE_ASK = "holiday.ask", "keydate.ask"
 HOURS_WAIT, HOURS_OPTIONS, CHANGE_CONFIRM = "hours.wait", "hours.options", "change.confirm"
 ACTION_REJECTED = "action.rejected"
+
+
+def _review_options(proposal: Proposal) -> str:
+    """The step that asks again what to do with a review: with its suggested reply and
+    "Publicar", or, without one, "Escribir respuesta"."""
+    return REVIEW_OPTIONS if proposal.payload.get("reply") else REVIEW_WRITE_ASK
+
 
 _REVIEW_CHOICES = Step(
     ("publish", "edit", "no_reply"), "publish", "no_reply", confirming=frozenset({"publish"})
@@ -158,6 +171,7 @@ _YES = frozenset({"yes_send"})
 STEPS: Mapping[str, Step] = {
     REVIEW_ASK: _REVIEW_CHOICES,
     REVIEW_OPTIONS: _REVIEW_CHOICES,
+    REVIEW_WRITE_ASK: Step(("write", "no_reply"), "write", "no_reply"),
     REVIEW_EDIT_WAIT: Step(),
     REVIEW_EDIT_CONFIRM: Step(("yes_send", "change", "cancel"), "yes_send", "cancel", False, _YES),
     REVIEW_CLARIFY_TEXT: Step(("yes_send", "no"), "yes_send", "no", False, _YES),
@@ -321,11 +335,10 @@ class ConversationService:
         filtered = identity.location_filter is not None
         if not filtered and len(active) <= 1:
             # One business (or none active yet): the welcome of always, with its name.
+            # The preference of the panel names nothing here (step 9).
+            negocio = ""
             if active:
                 negocio = await self._store.location_label(identity.account_id, active[0])
-            else:
-                info = await self._store.get_account_info(identity.account_id)
-                negocio = cm.one_line(info.business_name, 80)
             await self._reply(
                 identity, "welcome.linked", nombre=nombre, negocio=negocio or "tu negocio"
             )
@@ -542,7 +555,9 @@ class ConversationService:
                 )
             else:
                 await self._show_step(
-                    self._collecting(proposal, REVIEW_OPTIONS), [identity], MessageKind.REPLY
+                    self._collecting(proposal, _review_options(proposal)),
+                    [identity],
+                    MessageKind.REPLY,
                 )
             return
         hours = rules.parse_hours(text) if step.hours else None
@@ -636,14 +651,14 @@ class ConversationService:
             await self._confirm(proposal, payload, confirmed, option, event, identity, now)
 
         step = proposal.step
-        review_choices = step in (REVIEW_ASK, REVIEW_OPTIONS)
+        review_choices = step in (REVIEW_ASK, REVIEW_OPTIONS, REVIEW_WRITE_ASK)
         ask_reply = (proposal, REVIEW_EDIT_WAIT, "review.edit_ask", option, identity)
         ask_hours = (proposal, HOURS_WAIT, "change.edit_ask", option, identity)
-        if review_choices and option == "publish":
+        if review_choices and option == "publish" and proposal.payload.get("reply"):
             await confirm(self._reply_payload(proposal, proposal.payload["reply"]), None)
         elif step in (REVIEW_EDIT_CONFIRM, REVIEW_CLARIFY_TEXT) and option == "yes_send":
             await confirm(self._reply_payload(proposal, proposal.slots["text"]), None)
-        elif (review_choices and option == "edit") or (step, option) == (
+        elif (review_choices and option in ("edit", "write")) or (step, option) == (
             REVIEW_EDIT_CONFIRM,
             "change",
         ):
@@ -651,7 +666,7 @@ class ConversationService:
         elif (step, option) == (REVIEW_CLARIFY_TEXT, "no"):
             await self._clear_buttons(proposal, option)
             await self._show_step(
-                self._collecting(proposal, REVIEW_OPTIONS, clarifications=1),
+                self._collecting(proposal, _review_options(proposal), clarifications=1),
                 [identity],
                 MessageKind.REPLY,
                 cleared=True,
@@ -858,7 +873,8 @@ class ConversationService:
             raise ValueError("reseña sin ficha")
         if not 1 <= review.stars <= 5:
             raise ValueError("estrellas fuera de rango")
-        if not _showable(review.reply) or len(review.reply) > cm.SHOWN_REPLY_MAX:
+        reply = "" if review.write_own else review.reply
+        if not review.write_own and (not _showable(reply) or len(reply) > cm.SHOWN_REPLY_MAX):
             raise ValueError("la respuesta propuesta no se puede mostrar entera")
         now = self._clock()
         proposal = Proposal(
@@ -870,8 +886,8 @@ class ConversationService:
             priority=review_priority(review.stars),
             created_at=now,
             scheduled_for=now,
-            payload={"stars": review.stars, "review_text": review.text, "reply": review.reply},
-            step=REVIEW_ASK,
+            payload={"stars": review.stars, "review_text": review.text, "reply": reply},
+            step=REVIEW_WRITE_ASK if review.write_own else REVIEW_ASK,
             step_token=_new_token(),
             location_id=review.location_id,
         )
@@ -1191,10 +1207,14 @@ class ConversationService:
         # The review is somebody else's text: one line, bounded, between quotes. The
         # reply is never cut; if space is short, the excerpt gives way.
         whole = cm.quoted(data["review_text"], 10_000)
+        own = not data["reply"]  # no suggested reply: the owner writes it
         if not whole:
-            key = "review.new.no_text"
+            key = "review.new.write_no_text" if own else "review.new.no_text"
             return key, cm.render(key, estrellas=stars, respuesta=data["reply"])
-        key = "review.new.negative" if data["stars"] <= 3 else "review.new.positive"
+        if own:
+            key = "review.new.write"
+        else:
+            key = "review.new.negative" if data["stars"] <= 3 else "review.new.positive"
         fixed = len(cm.render(key, estrellas=stars, extracto="", respuesta=data["reply"]))
         room = cm.review_excerpt_room(fixed, header)
         if room < min(cm.REVIEW_EXCERPT_MIN, len(whole)):
@@ -1205,7 +1225,7 @@ class ConversationService:
     def _step_message(self, proposal: Proposal, header: str = "") -> tuple[str, str]:
         """(key, text) of the message of the step the proposal is in, without its header."""
         step, slots = proposal.step, proposal.slots
-        if step in (REVIEW_ASK, HOLIDAY_ASK, KEYDATE_ASK):
+        if step in (REVIEW_ASK, REVIEW_WRITE_ASK, HOLIDAY_ASK, KEYDATE_ASK):
             return self._first_message(proposal, header)
         if step == REVIEW_OPTIONS:
             # With the suggested reply in the same message as its "Publicar".
@@ -1449,7 +1469,7 @@ class ConversationService:
     def _at_first_step(proposal: Proposal) -> Proposal:
         """Back to its opening question, with nothing collected."""
         if proposal.type is ProposalType.REVIEW_REPLY:
-            step = REVIEW_ASK
+            step = REVIEW_ASK if proposal.payload.get("reply") else REVIEW_WRITE_ASK
         else:
             holiday = proposal.payload["kind"] == rules.KIND_HOLIDAY
             asks_hours = holiday or proposal.payload.get("ask") == "hours"

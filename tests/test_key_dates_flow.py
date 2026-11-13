@@ -315,6 +315,13 @@ class Panel:
         account = self.api.store.accounts[SUB]
         self.account_id = account.id
         self.location_id = account.selected_location_id
+        # Pro: the free plan has no key dates (app/domain/plans.py).
+        changed = self.client.post(
+            f"/api/v1/me/locations/{self.location_id}/activation",
+            json={"plan": "pro"},
+            headers={"X-Requested-With": "fichaitor"},
+        )
+        assert changed.status_code == 200
         self.proposal_id = self.add(state, day)
         self.api.worker._registry.register(
             HOURS_KIND,

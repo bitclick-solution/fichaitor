@@ -80,11 +80,14 @@ def refused(url: str, sql: str, *args, setup: tuple[str, ...] = ()) -> bool:
 async def cleanup():
     mine = f"(SELECT id FROM account WHERE google_sub LIKE '{PREFIX}%')"
     for sql in (
-        f"UPDATE conversation SET active_proposal_id = NULL WHERE account_id IN {mine}",
+        f"DELETE FROM conversation_lane WHERE account_id IN {mine}",
         f"DELETE FROM conversation WHERE account_id IN {mine}",
         f"DELETE FROM proposal WHERE account_id IN {mine}",
         f"DELETE FROM action WHERE account_id IN {mine}",
         f"DELETE FROM offboarding WHERE account_id IN {mine}",
+        f"DELETE FROM location_activation_log WHERE account_id IN {mine}",
+        f"DELETE FROM location WHERE account_id IN {mine}",
+        f"DELETE FROM plan_entitlement WHERE account_id IN {mine}",
         f"DELETE FROM account WHERE id IN {mine}",
         f"DELETE FROM google_connection WHERE google_sub LIKE '{PREFIX}%'",
         f"DELETE FROM job WHERE payload->>'pytest' = '{PREFIX}'",
@@ -434,11 +437,7 @@ async def _proposals(account: str) -> dict[str, str]:
             f"pytest:{kind}",
         )
         ids[kind] = pid
-    await owner(
-        "INSERT INTO conversation (account_id, active_proposal_id) VALUES ($1::uuid, $2)",
-        account,
-        ids["review_reply"],
-    )
+    await owner("INSERT INTO conversation (account_id) VALUES ($1::uuid)", account)
     return ids
 
 
@@ -466,13 +465,17 @@ def test_key_dates_the_api_cannot_touch_a_review_proposal_of_any_account():
     )
 
 
-def test_key_dates_the_api_only_releases_a_thread_and_never_points_it_elsewhere():
+def test_key_dates_the_api_only_locks_a_thread_and_never_changes_it():
+    # Step 9: the thread no longer keeps a proposal. The API holds it while it answers a
+    # key date (SELECT ... FOR UPDATE) and changes nothing in it (conversation_api_lock).
     account, _ = run(new_account("hilo"))
-    ids = run(_proposals(account))
-    point = "UPDATE conversation SET active_proposal_id = $2 WHERE account_id = $1::uuid"
-    assert refused(API_URL, point, account, ids["key_date"])
-    release = "UPDATE conversation SET active_proposal_id = NULL WHERE account_id = $1::uuid"
-    assert run(attempt(API_URL, release, account)) == "UPDATE 1"
+    run(_proposals(account))
+    lock = "SELECT 1 FROM conversation WHERE account_id = $1::uuid FOR UPDATE"
+    assert run(attempt(API_URL, lock, account)) == "SELECT 1"
+    touch = "UPDATE conversation SET updated_at = now() WHERE account_id = $1::uuid"
+    assert refused(API_URL, touch, account)
+    streak = "UPDATE conversation SET unknown_streak = 0 WHERE account_id = $1::uuid"
+    assert refused(API_URL, streak, account)
 
 
 def test_b12_the_api_cancels_the_open_review_proposals_of_a_leave_and_nothing_else():
@@ -500,17 +503,26 @@ def test_b12_the_conversation_knows_an_account_on_leave():
                     sub,
                 )
             )[0]["id"]
+            location = (
+                await owner(
+                    "INSERT INTO location (account_id, gbp_account, gbp_location, title)"
+                    " VALUES ($1::uuid, 'accounts/1', $2, 'Bar') RETURNING id",
+                    account,
+                    f"locations/{sub}",
+                )
+            )[0]["id"]
             await owner(
-                "INSERT INTO proposal (id, account_id, type, source_ref, state)"
-                " VALUES ($1, $2::uuid, 'key_date', 'pytest:x', 'programada')",
+                "INSERT INTO proposal (id, account_id, type, source_ref, state, location_id)"
+                " VALUES ($1, $2::uuid, 'review_reply', 'pytest:x', 'programada', $3)",
                 f"prop_{uuid.uuid4().hex[:16]}",
                 account,
+                location,
             )
             during = await store.on_leave(account)
-            working = account in await store.accounts_with_open_work()
+            working = (account, location) in await store.lanes_with_open_work()
             await owner("UPDATE offboarding SET restored_at = now() WHERE id = $1", leave)
             after = await store.on_leave(account)
-            back = account in await store.accounts_with_open_work()
+            back = (account, location) in await store.lanes_with_open_work()
         finally:
             await pool.close()
         return before, during, working, after, back

@@ -176,7 +176,6 @@ def test_propose_review_proposes_in_the_lane_of_each_active_business_with_it():
         created_at=NOW - timedelta(hours=1),
         unanswered=True,
         live=True,
-        accounts=(),
         targets=((ACC, "loc_a"), ("acc-otra", "loc_o")),
     )
     replies = Replies()

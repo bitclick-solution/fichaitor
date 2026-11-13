@@ -43,8 +43,8 @@ class World:
     def __init__(self, router=None, weekly_cap=2):
         self.now = START
         self.store = MemoryConversationStore()
-        self.store.accounts[ACC] = AccountInfo(business_name="Bar Pepe")
-        self.store.accounts[OTHER] = AccountInfo(business_name="Otro Bar")
+        self.store.accounts[ACC] = AccountInfo()
+        self.store.accounts[OTHER] = AccountInfo()
         self.store.locations[LOCATION[ACC]] = MemoryLocation(ACC, "Bar Pepe")
         self.store.locations[LOCATION[OTHER]] = MemoryLocation(OTHER, "Otro Bar")
         self.telegram = FakeChannel("telegram")

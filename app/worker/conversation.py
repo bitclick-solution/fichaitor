@@ -112,12 +112,14 @@ def build_writer(settings: ScreenshotSettings) -> ReplyWriter | None:
         from app.adapters.screenshot_reader.fake import FakeScreenshotReader
 
         return FakeScreenshotReader()
-    api_key = settings.gemini_api_key.get_secret_value()
-    if api_key:
+    from app.adapters.gemini_provider import gemini_credentials
+
+    credentials = gemini_credentials(settings)  # AI Studio or Vertex AI
+    if credentials:
         from app.adapters.screenshot_reader.gemini import GeminiScreenshotReader
 
         return GeminiScreenshotReader(
-            api_key, settings.gemini_model, settings.screenshot_timeout_seconds
+            credentials, settings.gemini_model, settings.screenshot_timeout_seconds
         )
     return None
 

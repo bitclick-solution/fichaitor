@@ -35,6 +35,13 @@ x-endurecido: &endurecido
   cap_drop:
     - ALL
 
+# Clave de la cuenta de servicio de Vertex AI (docs/despliegue.md, «Gemini en Vertex AI»).
+# Una carpeta del servidor montada de solo lectura: nunca entra en la imagen ni en el
+# entorno. Si no existe, Docker la crea vacía (con FICHAITOR_GEMINI_PROVIDER=aistudio no
+# se lee). Es una carpeta y no un "secrets:" de Compose porque un secreto de archivo
+# hace fallar el arranque mientras el archivo no exista.
+x-secreto-vertex: &secreto-vertex ${FICHAITOR_ENV_DIR:-.}/vertex:/run/secrets/vertex:ro
+
 services:
   fichaitor-db:
     image: postgres:16-alpine
@@ -73,6 +80,8 @@ services:
     restart: unless-stopped
     env_file:
       - ${FICHAITOR_ENV_DIR:-.}/api.env
+    volumes:
+      - *secreto-vertex
     # Valores fijos de producción. Lo que se pone aquí gana a lo que diga api.env,
     # así que un despiste en el archivo no activa un modo de ejemplo.
     environment:
@@ -121,6 +130,8 @@ services:
     # El único archivo con FICHAITOR_TOKEN_PRIVATE_KEY.
     env_file:
       - ${FICHAITOR_ENV_DIR:-.}/worker.env
+    volumes:
+      - *secreto-vertex
     environment:
       FICHAITOR_FAKE_GOOGLE: "false"
       FICHAITOR_FAKE_SCREENSHOT: "false"
@@ -158,6 +169,8 @@ services:
     restart: unless-stopped
     env_file:
       - ${FICHAITOR_ENV_DIR:-.}/conversation.env
+    volumes:
+      - *secreto-vertex
     environment:
       FICHAITOR_FAKE_SCREENSHOT: "false"
       FICHAITOR_FAKE_MAIL: "false"

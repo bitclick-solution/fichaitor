@@ -144,7 +144,6 @@ async def cleanup():
     for sql in (
         f"DELETE FROM channel_message WHERE conversation_id IN"
         f" (SELECT id FROM conversation WHERE account_id IN {mine})",
-        f"UPDATE conversation SET active_proposal_id = NULL WHERE account_id IN {mine}",
         f"DELETE FROM conversation_lane WHERE account_id IN {mine}",
         f"DELETE FROM conversation WHERE account_id IN {mine}",
         f"DELETE FROM proposal WHERE account_id IN {mine}",
@@ -249,6 +248,7 @@ class Scene:
             account_id,
             BAR.location,
         )
+        await self.api.activate(account_id, rows[0]["id"])
         assert await self.api.select_location(account_id, rows[0]["id"])
         # Active, as the backfill of multinegocio leaves the selected profile: proposals
         # are only made for active profiles (docs/multinegocio.md, 3.6). Pro, because the
@@ -528,17 +528,17 @@ def test_review_targets_and_linked_profiles():
             high = await s.review_id("pytest-chan-high")
             target = await s.store.review_targets(high)
             assert target.stars == 5 and target.text == "Todo perfecto."
-            assert target.unanswered and target.live and target.accounts == ()
+            assert target.unanswered and target.live and target.targets == ()
             assert await s.store.linked_profiles() == []
             await s.link(account)
             # Linked after the review was written: history.
-            assert (await s.store.review_targets(high)).accounts == ()
+            assert (await s.store.review_targets(high)).targets == ()
             await owner(
                 "UPDATE channel_identity SET verified_at = $2 WHERE account_id = $1::uuid",
                 account,
                 NOW - timedelta(days=1),
             )
-            assert (await s.store.review_targets(high)).accounts == (account,)
+            assert [a for a, _ in (await s.store.review_targets(high)).targets] == [account]
             assert await s.store.linked_profiles() == [(SUB, BAR.location)]
             assert await s.store.review_targets("rev_00000000ffffffff") is None
             kind = "pytest-chan-sync"

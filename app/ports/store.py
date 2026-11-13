@@ -324,12 +324,11 @@ class Store(Protocol):
         ...
 
     async def select_location(self, account_id: str, location_id: str) -> bool:
-        """Make a profile the preference of the panel (the profile it shows when a
-        request names none). False, and nothing changes, if it is not of that account.
-
-        Until step 9 of docs/multinegocio.md (5.5), an inactive profile is first
-        activated with the default plan, so that the web that only knows "choose a
-        profile" keeps working: raises what `activate` raises if it does not fit.
+        """Make an ACTIVE profile the preference of the panel (the profile it shows
+        when a request names none). It activates nothing (step 9 of
+        docs/multinegocio.md): an inactive profile of that account raises
+        LocationInactive, and the web activates it first. False, and nothing changes,
+        if it is not of that account or Google no longer lists it.
         """
         ...
 
@@ -350,6 +349,15 @@ class Store(Protocol):
         with its plan and, if active, the status of its summary, its unanswered reviews
         and its key dates still to answer on `today` or later; and the entitlements of
         the account."""
+        ...
+
+    async def quota_used(self, scope: str, start: datetime) -> int:
+        """app/ports/quota.py: the store is also the quota store of the API."""
+        ...
+
+    async def location_plan(self, account_id: str, location_id: str) -> Plan | None:
+        """The plan of that profile if it is an active one of that account, without a
+        scheduled leave; None otherwise (of another account, unknown or inactive)."""
         ...
 
     async def active_profiles(self, account_id: str) -> list[ActiveProfile]:
@@ -374,9 +382,9 @@ class Store(Protocol):
     async def deactivate(self, account_id: str, location_id: str) -> bool:
         """Deactivate a profile of that account. In one transaction, holding the thread
         of the conversation: the profile stops being active, its open proposals are
-        cancelled (outcome location_inactive, new token) and its lane and the thread let
-        them go. If it was the preference, the preference moves to the oldest active
-        profile, or to none. False, and nothing changes, if it is not of that account.
+        cancelled (outcome location_inactive, new token) and its lane lets them go. If
+        it was the preference, the preference moves to the oldest active profile, or to
+        none. False, and nothing changes, if it is not of that account.
         Deactivating an inactive profile changes nothing and is not an error."""
         ...
 
@@ -394,10 +402,6 @@ class Store(Protocol):
         profile: an account never reads the summary written for another one, not even
         when both manage the same Google profile.
         """
-        ...
-
-    async def selected_profile(self, account_id: str) -> SelectedProfile | None:
-        """profile(account_id): the preference. Until step 9."""
         ...
 
     async def list_reviews(

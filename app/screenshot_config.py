@@ -1,16 +1,28 @@
 """Settings of the screenshot diagnosis. Kept apart from `app.config` on purpose."""
 
-from pydantic import Field, SecretStr
+from typing import Literal
+
+from pydantic import Field, SecretStr, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
 class ScreenshotSettings(BaseSettings):
     model_config = SettingsConfigDict(env_prefix="FICHAITOR_", env_file=".env", extra="ignore")
 
-    # Key of the Gemini API. SecretStr: it never shows up in a repr or a traceback.
+    # Who serves Gemini: AI Studio (the key below; the beta) or Vertex AI (a project of
+    # Google Cloud and a service account; production). See docs/despliegue.md.
+    gemini_provider: Literal["aistudio", "vertex"] = "aistudio"
+    # Key of the Gemini API (AI Studio only). SecretStr: never in a repr or a traceback.
     gemini_api_key: SecretStr = SecretStr("")
-    # With or without the "models/" prefix.
+    # With or without the "models/" prefix. Same name for both providers.
     gemini_model: str = "gemini-3.6-flash"
+    # Vertex AI only. The multi-region "eu" keeps the ML processing inside the EU and is
+    # where the Gemini Flash models are offered in Europe (docs/despliegue.md).
+    vertex_project: str = ""
+    vertex_location: str = "eu"
+    # Service account key (JSON) mounted read-only. Empty: Application Default
+    # Credentials (GOOGLE_APPLICATION_CREDENTIALS, gcloud, or the metadata server).
+    vertex_credentials_file: str = ""
     # No model: canned answers, for development and for laying out the web.
     fake_screenshot: bool = False
     # Gemini takes up to 20 MB per request with inline data, base64 and prompts included.
@@ -25,3 +37,13 @@ class ScreenshotSettings(BaseSettings):
     screenshot_timeout_seconds: float = Field(default=30.0, gt=0)
     # Below this confidence about which screen the image shows, the capture is rejected.
     screenshot_min_confidence: float = Field(default=0.6, ge=0, le=1)
+
+    @model_validator(mode="after")
+    def _vertex_needs_a_project(self) -> "ScreenshotSettings":
+        # Asked for Vertex but not said where: fail at start-up, not at the first call.
+        if self.gemini_provider == "vertex" and not self.fake_screenshot:
+            if not self.vertex_project.strip():
+                raise ValueError("FICHAITOR_GEMINI_PROVIDER=vertex exige FICHAITOR_VERTEX_PROJECT")
+            if not self.vertex_location.strip():
+                raise ValueError("FICHAITOR_VERTEX_LOCATION no puede estar vacía")
+        return self

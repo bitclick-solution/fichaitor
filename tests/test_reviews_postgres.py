@@ -192,6 +192,7 @@ class Scene:
             account_id,
             profile.location,
         )
+        await self.store.activate(account_id, rows[0]["id"])
         assert await self.store.select_location(account_id, rows[0]["id"])
 
     async def sync(self, sub: str, location: str = SHARED.location) -> None:
@@ -668,7 +669,7 @@ def test_the_executor_sends_exactly_the_confirmed_text_and_records_everything(ki
         ana = await s.account(ANA)
         await s.sync(ANA)
         rid = await s.review_id(ANA, "pytest-low")
-        before = await s.store.selected_profile(ana)
+        before = await s.store.profile(ana)
         action_id = await s.store.create_reply_action(ana, rid, TEXT, NOW)
         s.now = NOW + timedelta(seconds=5)
         await s.work()
@@ -679,7 +680,7 @@ def test_the_executor_sends_exactly_the_confirmed_text_and_records_everything(ki
             "jobs": await s.jobs(),
             "review": await s.store.get_review(ana, rid),
             "before": before.summary,
-            "after": (await s.store.selected_profile(ana)).summary,
+            "after": (await s.store.profile(ana)).summary,
             "stored": await s.store.get_action(ana, action_id),
             "pending": await s.store.list_reviews(ana, unanswered_only=True, limit=50),
         }
@@ -777,7 +778,7 @@ def test_a_profile_google_keeps_refusing_is_retired_and_its_data_no_longer_serve
             await _sync_refused(s, ANA, NOW + timedelta(hours=hour))
             seen.append(
                 (
-                    await s.store.selected_profile(ana),
+                    await s.store.profile(ana),
                     (await s.store.list_reviews(ana, unanswered_only=False, limit=50)).total,
                     await s.store.get_review(ana, rid),
                     await s.store.sentiment(ana, NOW),
@@ -906,7 +907,7 @@ def test_a_lost_grant_fails_the_action_without_retrying(kind):
             "audit": await s.audit(action_id),
             "jobs": await s.jobs(),
             "review": await s.store.get_review(ana, rid),
-            "summary": (await s.store.selected_profile(ana)).summary,
+            "summary": (await s.store.profile(ana)).summary,
         }
 
     seen = scene(kind, scenario)
@@ -968,13 +969,13 @@ def test_a_sync_right_after_keeps_a_reply_google_does_not_list_yet(kind):
         await s.sync(ANA)
         soon = (
             (await s.store.get_review(ana, rid)).reply_text,
-            (await s.store.selected_profile(ana)).summary.unanswered_count,
+            (await s.store.profile(ana)).summary.unanswered_count,
         )
         s.now = NOW + timedelta(hours=25)
         await s.sync(ANA)
         late = (
             (await s.store.get_review(ana, rid)).reply_text,
-            (await s.store.selected_profile(ana)).summary.unanswered_count,
+            (await s.store.profile(ana)).summary.unanswered_count,
         )
         return soon, late
 
@@ -1041,6 +1042,7 @@ def test_the_whole_journey_over_http_with_the_real_store_and_the_real_executor(k
             == 303
         )
         location_id = client.get("/api/v1/me").json()["locations"][0]["id"]
+        client.post(f"/api/v1/me/locations/{location_id}/activation", json={}, headers=HEADER)
         client.post("/api/v1/me/location", json={"location_id": location_id}, headers=HEADER)
         assert client.get("/api/v1/me/reviews").json()["status"] == "pendiente"
 

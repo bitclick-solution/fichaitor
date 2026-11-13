@@ -46,7 +46,7 @@ class ActionRequest:
     confirmed_channel: str
     confirmed_event_id: str
     # set_special_hours: the profile ("loc_...") the key date was proposed for. The
-    # implementation checks that it is still the selected one of the account.
+    # implementation checks that it is still an active profile of the account.
     location_id: str = ""
 
 

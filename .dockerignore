@@ -11,3 +11,6 @@ __pycache__
 tests
 web/app/node_modules
 web/app/dist
+# Clave de la cuenta de servicio de Vertex AI: solo en el servidor.
+**/vertex
+**/cuenta-servicio*.json
