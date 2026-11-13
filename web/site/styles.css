@@ -481,3 +481,12 @@ footer.pie.s { min-height: 0; }
 .no-hay { padding: clamp(64px, 16vh, 160px) 0 clamp(80px, 16vh, 160px); }
 .no-hay h1 { font-size: var(--cartel-l); margin-bottom: clamp(20px, 4vh, 32px); }
 .no-hay .acc { display: flex; flex-wrap: wrap; gap: 20px; margin-top: clamp(32px, 5vh, 48px); }
+
+/* ───── Baja de las comunicaciones comerciales (/baja-comunicaciones) ───── */
+.baja [hidden] { display: none; }
+.baja .lead { margin-bottom: 16px; }
+.baja-nota { max-width: 40em; color: var(--gris); }
+.baja-nota a, .baja-error { font-weight: 700; }
+.baja .btn { line-height: 1.15; text-align: left; max-width: 100%; }
+.baja .lead:focus { outline: none; }
+.baja-error { margin-top: 28px; max-width: 40em; color: var(--rojo-tinta); }

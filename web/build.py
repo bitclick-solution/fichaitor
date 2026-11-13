@@ -13,6 +13,8 @@ Modo «solo web» (FICHAITOR_SOLO_WEB=true en el contenedor, sin API detrás): a
 web/site/_solo/ con otra portada y la página de /app. En web/src/index.html, cada bloque que
 necesita la API va entre <!--api--> y <!--solo-->, seguido de lo que lo sustituye en este
 modo y de <!--/api-->. La imagen saca _solo/ de la raíz pública (ver web/Dockerfile).
+La página de baja de las comunicaciones (/baja-comunicaciones) se genera siempre, pero en ese
+modo nginx-solo-web.conf no la sirve: responde 404.
 """
 
 import re
@@ -75,6 +77,38 @@ MUY_PRONTO = '''<section class="no-hay">
   <p class="lead">El panel de Fichaitor todavía no está abierto. Estamos terminando las pruebas.</p>
   <div class="acc">
     <a class="btn" href="/">Volver al inicio <span class="fl" aria-hidden="true">→</span></a>
+  </div>
+</section>'''
+
+# Baja de las comunicaciones comerciales: el enlace de los correos (/baja-comunicaciones#<token>).
+# Contrato: docs/contrato-web-api.md, «Baja de las comunicaciones comerciales». La lógica está en
+# web/site/baja-comunicaciones.js: lee el token, lo quita de la URL y solo llama a la API al pulsar
+# el botón. Sin indexar, sin Referer, fuera del sitemap y sin el contador de visitas. En el modo
+# «solo web» no existe: web/nginx-solo-web.conf responde 404 en /baja-comunicaciones*.
+CABEZA_BAJA = '''<meta name="robots" content="noindex, nofollow">
+<meta name="referrer" content="no-referrer">
+<script src="/baja-comunicaciones.js" defer></script>'''
+
+BAJA = '''<section class="no-hay baja">
+  <h1 class="cartel">Darte de baja<span class="pt">.</span></h1>
+  <div id="baja-pedir">
+    <p class="lead">Deja de recibir nuestras comunicaciones comerciales: ofertas, novedades y boletín.</p>
+    <p class="baja-nota">Lo que sí te seguirá llegando son los correos necesarios de tu servicio: los códigos de confirmación, los avisos de baja, las facturas, los avisos de renovación y los cambios en el servicio.</p>
+    <div class="acc">
+      <button class="btn" type="button" id="baja-boton" hidden>Darme de baja de las comunicaciones comerciales</button>
+    </div>
+    <p class="baja-error" id="baja-error" role="alert" hidden></p>
+    <noscript><p class="baja-nota">Para darte de baja desde esta página hace falta JavaScript. Si no puedes activarlo, escríbenos a <a href="mailto:soporte@fichaitor.es">soporte@fichaitor.es</a> y lo hacemos nosotros.</p></noscript>
+  </div>
+  <div id="baja-hecho" hidden>
+    <p class="lead" id="baja-hecho-texto" tabindex="-1">Hecho: no te enviaremos más comunicaciones comerciales. Seguirás recibiendo los correos necesarios de tu servicio.</p>
+    <div class="acc">
+      <a class="btn sec" href="/">Volver al inicio</a>
+    </div>
+  </div>
+  <div id="baja-sin" hidden>
+    <p class="lead">Este enlace está incompleto. Vuelve a abrirlo desde el correo.</p>
+    <p class="baja-nota">Si no funciona, escríbenos a <a href="mailto:soporte@fichaitor.es">soporte@fichaitor.es</a> y te damos de baja nosotros.</p>
   </div>
 </section>'''
 
@@ -182,6 +216,14 @@ def main() -> None:
         newline="\n",
     )
     print("ok  web/site/404.html")
+    baja = SITE / "baja-comunicaciones" / "index.html"
+    baja.parent.mkdir(exist_ok=True)
+    baja.write_text(
+        TEMPLATE.format(title="Baja de las comunicaciones comerciales", cabeza=CABEZA_BAJA, contenido=BAJA, palabra=marca),
+        encoding="utf-8",
+        newline="\n",
+    )
+    print("ok  web/site/baja-comunicaciones/index.html")
     for name in ICONS:
         shutil.copyfile(ROOT / "brand" / name, SITE / name)
     if pending:
