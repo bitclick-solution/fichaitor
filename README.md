@@ -13,7 +13,7 @@ Estado: **en construcción**. La API, el worker, la base de datos y la web funci
 | API (`app/api`, FastAPI) | Funciona: diagnóstico público, lista de espera, conexión con Google, cuentas y sesiones, resumen y diagnóstico de la ficha conectada, y reseñas con borrador y publicación de la respuesta |
 | Worker (`app/worker`) | Funciona: cola de jobs en PostgreSQL, job `sync_profile`, que lee la ficha en Google y guarda sus cifras, los hechos del diagnóstico y las reseñas, job `reply_review`, que envía a Google la respuesta que el dueño confirma, y los jobs de la baja: `send_mail`, `apply_offboarding` (revoca los tokens en Google) y `retention` (borra lo que supera su plazo) |
 | Base de datos (PostgreSQL 16) | Funciona: `db/schema.sql` y `db/schema_worker.sql`, idempotentes, con un rol de mínimo privilegio para la API y otro para el worker |
-| Web (`web/`) | Funciona: sitio público con el diagnóstico y panel en `/app` (React + Vite), servidos por nginx en `http://127.0.0.1:8080` |
+| Web (`web/`) | Funciona: sitio público con el diagnóstico y panel en `/app` (React + Vite), servidos por nginx en `http://localhost:8080` (usa `localhost`, no `127.0.0.1`: Google vuelve a `localhost:8000` y la cookie del inicio de la conexión solo viaja al mismo nombre de máquina) |
 | Calendario de fechas clave | Datos y reglas listos ([docs/calendario.md](docs/calendario.md)). El diagnóstico del panel usa los festivos nacionales; las propuestas de fechas clave aún no las usa ningún servicio |
 | Integración continua | Formato, análisis estático y pruebas contra PostgreSQL en cada push ([docs/ci.md](docs/ci.md)) |
 
@@ -125,7 +125,7 @@ Para ver el recorrido completo sin Google (conectar, elegir ficha y ver el resum
    docker compose up -d --build
    ```
 
-4. Abre `http://127.0.0.1:8080/app`, conecta y elige la ficha de ejemplo. El worker usa su ficha de demostración y el resumen y el diagnóstico aparecen en unos segundos.
+4. Abre `http://localhost:8080/app`, conecta y elige la ficha de ejemplo. El worker usa su ficha de demostración y el resumen y el diagnóstico aparecen en unos segundos.
 
 > **Nota:** Sin base de datos (`FICHAITOR_DATABASE_URL` vacío y `FICHAITOR_FAKE_PLACES=true`) no hay cola ni worker. En ese modo, con `FICHAITOR_FAKE_GOOGLE=true`, la API escribe ella misma el resumen, los hechos y las reseñas de demostración en memoria, y da por enviada al momento la respuesta a una reseña.
 
