@@ -62,7 +62,7 @@ Lo que solo puedes hacer tú: cuentas, consolas, servidor, decisiones y pruebas 
 
 ## WhatsApp (número propio, sin Tech Provider)
 
-- [ ] Número de WhatsApp de Fichaitor dado de alta en la WABA de Bitclick (Cloud API).
+- [ ] Número de WhatsApp de Fichaitor dado de alta en la WABA de Bitclick (Cloud API). Número de envío decidido: **+34 614 07 67 36** (2026-11-13); falta su `phone_number_id` en `conversation.env`.
 - [ ] Usuario del sistema con token permanente (`whatsapp_business_messaging`) y el *app secret* de la app de Meta, solo en los archivos del servidor.
 - [ ] Enviar a aprobación las plantillas de utilidad que prepare el agente de WhatsApp.
 - [ ] Verificación del negocio en Meta, si todavía no está, para subir los límites de envío.
@@ -70,8 +70,9 @@ Lo que solo puedes hacer tú: cuentas, consolas, servidor, decisiones y pruebas 
 ## Decisiones pendientes
 
 - [x] Gemini: en producción por Vertex AI (decidido 2026-11-13).
+- [x] Vertex AI comprobado en la ubicación `eu` (2026-11-13).
 - [ ] Si Vertex con clave de API de Agent Platform: la clave tiene que estar **vinculada a una cuenta de servicio** (no la del modo exprés). Comprobar con una llamada real que funciona en la ubicación `eu`; si `eu` da 401/403, usar la cuenta de servicio, nunca `global`. Variables en `api.env`, `worker.env` y `conversation.env`: `FICHAITOR_GEMINI_PROVIDER=vertex`, `FICHAITOR_GEMINI_MODEL=gemini-3.8-flash`, `FICHAITOR_VERTEX_PROJECT`, `FICHAITOR_VERTEX_LOCATION=eu` y `FICHAITOR_VERTEX_API_KEY` (`docs/despliegue.md`, «Gemini en Vertex AI»).
-- [ ] Al pasar a Vertex: avisar a la sesión de interfaz para cambiar en la política la fila de Gemini (Vertex AI en la UE).
+- [x] Al pasar a Vertex: avisar a la sesión de interfaz para cambiar en la política la fila de Gemini (Vertex AI en la UE).
 - [ ] Pasarela de pago para cuando acabe la beta: proveedor y fecha.
 
 ## Cobro con Stripe y factura en Odoo (`docs/admin-facturacion.md`, sección 8)
