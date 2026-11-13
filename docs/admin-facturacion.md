@@ -771,7 +771,7 @@ stripe trigger invoice.payment_failed
 
 Decisión del propietario: **no se instala ningún módulo en el Odoo de Bitclick**. El proceso de cobro llama directamente a la API JSON-2 de Odoo (`/json/2/<modelo>/<método>`) con la clave de API de un usuario técnico que solo tiene permisos de facturación. Sustituye al módulo `fichaitor_bridge` de las secciones 4.3 y 7 (paso 4 eliminado).
 
-- **Referencia ya en producción** en otro SaaS de Bitclick, Conectores ERP: `D:\PROYECTOS\BITCLICK\odoo-mcp\odoo-copilot-saasppspi\src\cerp_api\invoicing.py` (y `billing.py`, `webhooks.py`, `fiscal.py`, `stripe_setup.py`). Cobra con Stripe y factura en Odoo: contacto, factura con `ref` = id de la factura de Stripe, validación, pago en el diario «Stripe», envío, comprobación del total y rectificativas. Se toma como base.
+- **Referencia ya en producción** en otro SaaS de Bitclick, Conectores ERP: `D:\PROYECTOS\BITCLICK\odoo-mcp\odoo-copilot-saas\apps\api\src\cerp_api\invoicing.py` (y `billing.py`, `webhooks.py`, `fiscal.py`, `stripe_setup.py`). Cobra con Stripe y factura en Odoo: contacto, factura con `ref` = id de la factura de Stripe, validación, pago en el diario «Stripe», envío, comprobación del total y rectificativas. Se toma como base.
 - **Idempotencia sin el módulo:** búsqueda por `ref` antes de crear, bloqueo por factura de Stripe en nuestra base (`billing_document` único por factura) y, tras un corte, el reintento encuentra la factura por `ref` y no la duplica.
 - **Secretos:** URL, base, clave de API e ids del diario y de los impuestos en `billing.env` del servidor (los pone el propietario). Nunca en GitHub ni en el repositorio.
 
